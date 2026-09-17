@@ -5,7 +5,7 @@ members = ["crates/*"]
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-license = "AGPL-3.0-only"
+license = "Apache-2.0"
 # 全部为内部 crate，不发布到 crates.io。
 # 这也使 cargo-deny 认可 `foo.workspace = true` 形式的依赖（版本由根统一钉住）。
 # 将来若要把某个 crate（例如 acmecast-acme）单独发布，需为其显式指定版本依赖

@@ -43,14 +43,31 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --release --target x86_64-unknown-linux-musl -p acmecast-server \
     && cp target/x86_64-unknown-linux-musl/release/acmecast-server /acmecast-server
 
+# ---- 前端 builder：SPA 静态产物 ----
+FROM node:22-slim AS frontend-builder
+
+# 与后端共用同一镜像源开关：npmmirror 加速依赖安装（仅进 builder 层）。
+ARG USE_CN_MIRROR=true
+RUN corepack enable
+
+WORKDIR /app/frontend
+COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml ./
+RUN if [ "$USE_CN_MIRROR" = "true" ]; then npm config set registry https://registry.npmmirror.com; fi \
+    && pnpm install --frozen-lockfile
+
+COPY frontend/ .
+RUN pnpm build
+
 # ---- 运行阶段：distroless static（非 root） ----
 FROM gcr.io/distroless/static-debian12:nonroot
 
 COPY --from=builder /acmecast-server /acmecast-server
+COPY --from=frontend-builder /app/frontend/dist /static
 
-# 数据目录（数据库、证书文件、凭据密钥）挂卷持久化；监听端口与 Dockerfile 保持一致。
+# 数据目录（数据库、证书文件、凭据密钥）挂卷持久化；前端产物目录交给静态托管。
 ENV ACMECAST_LISTEN=0.0.0.0:8080 \
-    ACMECAST_DATA_DIR=/data
+    ACMECAST_DATA_DIR=/data \
+    ACMECAST_STATIC_DIR=/static
 EXPOSE 8080
 VOLUME ["/data"]
 

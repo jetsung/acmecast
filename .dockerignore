@@ -12,3 +12,5 @@ data/
 
 # 本地文档与脚本（不影响构建）
 certd/
+frontend/node_modules
+frontend/dist

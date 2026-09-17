@@ -14,13 +14,13 @@ use serde::{Serialize, de::DeserializeOwned};
 use utoipa::ToSchema;
 
 /// 统一成功响应。
-#[derive(Debug, Clone, Serialize, PartialEq)]
-pub struct ApiResponse<T> {
+#[derive(Debug, Clone, Serialize, PartialEq, ToSchema)]
+pub struct ApiResponse<T: ToSchema> {
     /// 端点返回的数据。
     pub data: T,
 }
 
-impl<T> ApiResponse<T> {
+impl<T: ToSchema> ApiResponse<T> {
     /// 用数据构造成功响应。
     #[must_use]
     pub fn new(data: T) -> Self {
@@ -30,7 +30,7 @@ impl<T> ApiResponse<T> {
 
 impl<T> IntoResponse for ApiResponse<T>
 where
-    T: Serialize,
+    T: Serialize + ToSchema,
 {
     fn into_response(self) -> Response {
         Json(self).into_response()

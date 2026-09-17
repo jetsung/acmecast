@@ -140,4 +140,4 @@ JSON Schema 驱动的动态表单）、运行历史（按步骤分组日志）�
 
 ## 许可
 
-AGPL-3.0-only
+Apache-2.0（见 [LICENSE](LICENSE)）

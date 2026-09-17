@@ -73,9 +73,14 @@ pub(crate) fn routes() -> Router<HttpState> {
         )
         .route("/api/credentials/{id}/test", post(test_credential))
         .route("/api/credential-types", get(list_credential_types))
+        .route(
+            "/api/schedules",
+            get(list_schedules).post(create_schedule),
+        )
         .route("/api/tasks", get(list_tasks))
         .route("/api/tasks/{type_id}/schema", get(task_schema))
         .route("/api/histories", get(list_histories))
+        .route("/api/histories/{id}", get(get_history))
         .route("/api/histories/{id}/logs", get(history_logs))
 }
 
@@ -1169,6 +1174,96 @@ async fn test_credential(
     Ok(ApiResponse::new(response))
 }
 
+/// 调度配置响应。
+#[derive(Debug, Serialize, ToSchema)]
+pub(crate) struct ScheduleResponse {
+    /// 所属流水线。
+    pub pipeline_id: i64,
+    /// cron 表达式原文。
+    pub cron: Option<String>,
+    /// 是否启用。
+    pub enabled: bool,
+    /// 停机补跑策略。
+    pub catch_up: bool,
+    /// 负责续期的域名集合。
+    pub renewal_domains: Option<Vec<String>>,
+    /// 上次触发时间。
+    pub last_triggered_at: Option<DateTime<Utc>>,
+    /// 下次预计触发时间。
+    pub next_trigger_at: Option<DateTime<Utc>>,
+    /// 更新时间。
+    pub updated_at: DateTime<Utc>,
+}
+
+/// 新建调度请求。
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub(crate) struct ScheduleCreateRequest {
+    /// 所属流水线。
+    pub pipeline_id: i64,
+    /// cron 表达式（5 或 6 段）；`None`/空表示不按 cron 触发。
+    #[serde(default)]
+    pub cron: Option<String>,
+    /// 是否启用。
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// 停机补跑策略：追赶最近一次。
+    #[serde(default)]
+    pub catch_up: bool,
+    /// 负责续期的域名集合。
+    #[serde(default)]
+    pub renewal_domains: Option<Vec<String>>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn schedule_response(config: acmecast_store::repository::ScheduleConfig) -> ScheduleResponse {
+    ScheduleResponse {
+        pipeline_id: config.pipeline_id,
+        cron: config.cron,
+        enabled: config.enabled,
+        catch_up: config.catch_up,
+        renewal_domains: config.renewal_domains,
+        last_triggered_at: config.last_triggered_at,
+        next_trigger_at: config.next_trigger_at,
+        updated_at: config.updated_at,
+    }
+}
+
+/// 全部调度配置。
+async fn list_schedules(
+    State(state): State<HttpState>,
+) -> Result<ApiResponse<Vec<ScheduleResponse>>, ApiError> {
+    let configs = acmecast_store::repository::ScheduleRepository::new(&state.app.db)
+        .list_all()
+        .await
+        .map_err(ApiError::from)?;
+    Ok(ApiResponse::new(
+        configs.into_iter().map(schedule_response).collect(),
+    ))
+}
+
+/// 新建一条调度配置（含 cron 语法校验，非法时拒绝保存）。
+async fn create_schedule(
+    State(state): State<HttpState>,
+    ApiJson(request): ApiJson<ScheduleCreateRequest>,
+) -> Result<ApiResponse<ScheduleResponse>, ApiError> {
+    let config = acmecast_store::repository::ScheduleRepository::new(&state.app.db)
+        .save(
+            request.pipeline_id,
+            acmecast_store::repository::ScheduleInput {
+                cron: request.cron,
+                enabled: request.enabled,
+                catch_up: request.catch_up,
+                renewal_domains: request.renewal_domains,
+            },
+        )
+        .await
+        .map_err(ApiError::from)?;
+    Ok(ApiResponse::new(schedule_response(config)))
+}
+
 async fn list_credential_types(
     State(state): State<HttpState>,
 ) -> Result<ApiResponse<Vec<CredentialTypeResponse>>, ApiError> {
@@ -1301,6 +1396,41 @@ async fn list_histories_for(
         total: result.total,
         page: result.page,
         page_size: result.page_size,
+    }))
+}
+
+/// 单条运行历史（含终态与失败摘要），供详情页直接取用。
+async fn get_history(
+    State(state): State<HttpState>,
+    Path(id): Path<i64>,
+) -> Result<ApiResponse<HistoryResponse>, ApiError> {
+    // 直接查实体：分页接口在长历史下可能取不到目标行，按主键取才可靠。
+    let row = acmecast_store::entity::history::Entity::find_by_id(id)
+        .one(&state.app.db)
+        .await
+        .map_err(|error| ApiError::from(acmecast_store::Error::from(error)))?
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                format!("运行历史不存在: {id}"),
+            )
+        })?;
+    let status = acmecast_store::entity::history::RunStatus::parse(&row.status)
+        .ok_or_else(|| {
+            ApiError::from(acmecast_core::Error::Internal(format!(
+                "运行历史 {id} 的状态 `{}` 无法识别",
+                row.status
+            )))
+        })?;
+    Ok(ApiResponse::new(HistoryResponse {
+        id: row.id,
+        pipeline_id: row.pipeline_id,
+        trigger_source: row.trigger_source,
+        status: status.as_str().to_owned(),
+        started_at: row.started_at,
+        finished_at: row.finished_at,
+        error_message: row.error_message,
     }))
 }
 

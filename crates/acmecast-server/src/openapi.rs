@@ -12,6 +12,9 @@ use utoipa::openapi::OpenApi as OpenApiDoc;
 use utoipa::openapi::security::{Http, HttpAuthScheme, SecurityScheme};
 use utoipa::{Modify, OpenApi};
 
+use crate::handlers::PageResponse;
+use crate::response::ApiResponse;
+
 /// 当前 HTTP API 的 OpenAPI 文档。
 #[derive(Debug, OpenApi)]
 #[openapi(
@@ -44,7 +47,10 @@ use utoipa::{Modify, OpenApi};
         list_tasks,
         task_schema,
         list_histories,
+        get_history,
         list_pipeline_histories,
+        list_schedules,
+        create_schedule,
         history_logs
     ),
     components(
@@ -62,13 +68,19 @@ use utoipa::{Modify, OpenApi};
             crate::handlers::CertificateDownloadQuery,
             crate::handlers::RevokeRequest,
             crate::handlers::RevokeResponse,
+            crate::handlers::ScheduleCreateRequest,
+            crate::handlers::ScheduleResponse,
             crate::handlers::CredentialRequest,
             crate::handlers::CredentialResponse,
             crate::handlers::CredentialTypeResponse,
             crate::handlers::TaskTypeResponse,
             crate::handlers::HistoryResponse,
             crate::handlers::HistoryLogResponse,
-            crate::handlers::ConnectivityResponse
+            crate::handlers::ConnectivityResponse,
+            PageResponse<crate::handlers::PipelineSummaryResponse>,
+            PageResponse<crate::handlers::CertificateResponse>,
+            PageResponse<crate::handlers::CredentialResponse>,
+            PageResponse<crate::handlers::HistoryResponse>,
         )
     ),
     modifiers(&SecurityAddon)
@@ -92,59 +104,59 @@ impl Modify for SecurityAddon {
 fn healthz() {}
 
 /// 登录端点的文档占位函数。
-#[utoipa::path(post, path = "/api/login", request_body = crate::handlers::LoginRequest, responses((status = 200, body = crate::handlers::LoginResponse), (status = 401, body = crate::response::ApiErrorBody), (status = 429, body = crate::response::ApiErrorBody)))]
+#[utoipa::path(post, path = "/api/login", request_body = crate::handlers::LoginRequest, responses((status = 200, body = ApiResponse<crate::handlers::LoginResponse>), (status = 401, body = crate::response::ApiErrorBody), (status = 429, body = crate::response::ApiErrorBody)))]
 fn login() {}
 
-#[utoipa::path(get, path = "/api/pipelines", responses((status = 200, description = "流水线分页列表"), (status = 400, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
+#[utoipa::path(get, path = "/api/pipelines", params(("page" = Option<u64>, Query, description = "页码"), ("page_size" = Option<u64>, Query, description = "每页条数"), ("name" = Option<String>, Query, description = "名称模糊过滤"), ("enabled" = Option<bool>, Query, description = "启用状态过滤")), responses((status = 200, body = ApiResponse<PageResponse<crate::handlers::PipelineSummaryResponse>>, description = "流水线分页列表"), (status = 400, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
 fn list_pipelines() {}
 
-#[utoipa::path(post, path = "/api/pipelines", request_body = crate::handlers::PipelineRequest, responses((status = 200, body = crate::handlers::PipelineResponse), (status = 400, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
+#[utoipa::path(post, path = "/api/pipelines", request_body = crate::handlers::PipelineRequest, responses((status = 200, body = ApiResponse<crate::handlers::PipelineResponse>), (status = 400, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
 fn create_pipeline() {}
 
-#[utoipa::path(get, path = "/api/pipelines/{id}", params(("id" = i64, Path, description = "流水线标识")), responses((status = 200, body = crate::handlers::PipelineResponse), (status = 404, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
+#[utoipa::path(get, path = "/api/pipelines/{id}", params(("id" = i64, Path, description = "流水线标识")), responses((status = 200, body = ApiResponse<crate::handlers::PipelineResponse>), (status = 404, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
 fn get_pipeline() {}
 
-#[utoipa::path(put, path = "/api/pipelines/{id}", request_body = crate::handlers::PipelineRequest, responses((status = 200, body = crate::handlers::PipelineResponse), (status = 400, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
+#[utoipa::path(put, path = "/api/pipelines/{id}", params(("id" = i64, Path, description = "流水线标识")), request_body = crate::handlers::PipelineRequest, responses((status = 200, body = ApiResponse<crate::handlers::PipelineResponse>), (status = 400, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
 fn update_pipeline() {}
 
-#[utoipa::path(delete, path = "/api/pipelines/{id}", responses((status = 200, description = "删除成功"), (status = 404, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
+#[utoipa::path(delete, path = "/api/pipelines/{id}", params(("id" = i64, Path, description = "流水线标识")), responses((status = 200, description = "删除成功"), (status = 404, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
 fn delete_pipeline() {}
 
-#[utoipa::path(get, path = "/api/certificates", responses((status = 200, description = "证书分页列表")), security(("bearerAuth" = [])))]
+#[utoipa::path(get, path = "/api/certificates", params(("domain" = Option<String>, Query, description = "域名模糊过滤"), ("sort" = Option<String>, Query, description = "ascending / descending"), ("page" = Option<u64>, Query, description = "页码"), ("page_size" = Option<u64>, Query, description = "每页条数")), responses((status = 200, body = ApiResponse<PageResponse<crate::handlers::CertificateResponse>>, description = "证书分页列表")), security(("bearerAuth" = [])))]
 fn list_certificates() {}
 
-#[utoipa::path(post, path = "/api/certificates", request_body = crate::handlers::CertificateRequest, responses((status = 200, body = crate::handlers::CertificateResponse), (status = 400, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
+#[utoipa::path(post, path = "/api/certificates", request_body = crate::handlers::CertificateRequest, responses((status = 200, body = ApiResponse<crate::handlers::CertificateResponse>), (status = 400, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
 fn create_certificate() {}
 
-#[utoipa::path(get, path = "/api/certificates/{id}", responses((status = 200, body = crate::handlers::CertificateResponse), (status = 404, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
+#[utoipa::path(get, path = "/api/certificates/{id}", params(("id" = i64, Path, description = "证书标识")), responses((status = 200, body = ApiResponse<crate::handlers::CertificateResponse>), (status = 404, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
 fn get_certificate() {}
 
 #[utoipa::path(get, path = "/api/certificates/{id}/download", params(("id" = i64, Path, description = "证书标识"), ("format" = Option<String>, Query, description = "pem / der / pfx / jks / p7b"), ("password" = Option<String>, Query, description = "PFX / JKS 口令")), responses((status = 200, description = "证书文件下载", content_type = "application/octet-stream"), (status = 404, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
 fn download_certificate() {}
 
-#[utoipa::path(delete, path = "/api/certificates/{id}", responses((status = 200, description = "删除成功"), (status = 404, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
+#[utoipa::path(delete, path = "/api/certificates/{id}", params(("id" = i64, Path, description = "证书标识")), responses((status = 200, description = "删除成功"), (status = 404, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
 fn delete_certificate() {}
 
 /// 吊销端点的文档占位函数。
-#[utoipa::path(post, path = "/api/certificates/{id}/revoke", request_body = crate::handlers::RevokeRequest, responses((status = 200, body = crate::handlers::RevokeResponse), (status = 404, body = crate::response::ApiErrorBody), (status = 422, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
+#[utoipa::path(post, path = "/api/certificates/{id}/revoke", request_body = crate::handlers::RevokeRequest, responses((status = 200, body = ApiResponse<crate::handlers::RevokeResponse>), (status = 404, body = crate::response::ApiErrorBody), (status = 422, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
 fn revoke_certificate() {}
 
-#[utoipa::path(get, path = "/api/credentials", responses((status = 200, description = "凭据分页列表")), security(("bearerAuth" = [])))]
+#[utoipa::path(get, path = "/api/credentials", params(("page" = Option<u64>, Query, description = "页码"), ("page_size" = Option<u64>, Query, description = "每页条数")), responses((status = 200, body = ApiResponse<PageResponse<crate::handlers::CredentialResponse>>, description = "凭据分页列表")), security(("bearerAuth" = [])))]
 fn list_credentials() {}
 
-#[utoipa::path(post, path = "/api/credentials", request_body = crate::handlers::CredentialRequest, responses((status = 200, body = crate::handlers::CredentialResponse), (status = 400, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
+#[utoipa::path(post, path = "/api/credentials", request_body = crate::handlers::CredentialRequest, responses((status = 200, body = ApiResponse<crate::handlers::CredentialResponse>), (status = 400, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
 fn create_credential() {}
 
-#[utoipa::path(get, path = "/api/credentials/{id}", responses((status = 200, body = crate::handlers::CredentialResponse), (status = 404, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
+#[utoipa::path(get, path = "/api/credentials/{id}", params(("id" = i64, Path, description = "凭据标识")), responses((status = 200, body = ApiResponse<crate::handlers::CredentialResponse>), (status = 404, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
 fn get_credential() {}
 
-#[utoipa::path(put, path = "/api/credentials/{id}", request_body = crate::handlers::CredentialRequest, responses((status = 200, body = crate::handlers::CredentialResponse), (status = 400, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
+#[utoipa::path(put, path = "/api/credentials/{id}", params(("id" = i64, Path, description = "凭据标识")), request_body = crate::handlers::CredentialRequest, responses((status = 200, body = ApiResponse<crate::handlers::CredentialResponse>), (status = 400, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
 fn update_credential() {}
 
-#[utoipa::path(delete, path = "/api/credentials/{id}", responses((status = 200, description = "删除成功"), (status = 404, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
+#[utoipa::path(delete, path = "/api/credentials/{id}", params(("id" = i64, Path, description = "凭据标识")), responses((status = 200, description = "删除成功"), (status = 404, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
 fn delete_credential() {}
 
-#[utoipa::path(post, path = "/api/credentials/{id}/test", responses((status = 200, description = "连通性结果"), (status = 404, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
+#[utoipa::path(post, path = "/api/credentials/{id}/test", params(("id" = i64, Path, description = "凭据标识")), responses((status = 200, body = ApiResponse<crate::handlers::ConnectivityResponse>, description = "连通性结果"), (status = 404, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
 fn test_credential() {}
 
 #[utoipa::path(get, path = "/api/credential-types", responses((status = 200, description = "凭据类型与字段 Schema")), security(("bearerAuth" = [])))]
@@ -153,14 +165,26 @@ fn list_credential_types() {}
 #[utoipa::path(get, path = "/api/tasks", responses((status = 200, description = "任务类型列表")), security(("bearerAuth" = [])))]
 fn list_tasks() {}
 
-#[utoipa::path(get, path = "/api/tasks/{type_id}/schema", responses((status = 200, description = "任务输入 Schema"), (status = 404, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
+#[utoipa::path(get, path = "/api/tasks/{type_id}/schema", params(("type_id" = String, Path, description = "任务类型标识")), responses((status = 200, description = "任务输入 Schema"), (status = 404, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
 fn task_schema() {}
 
-#[utoipa::path(get, path = "/api/histories", responses((status = 200, description = "运行历史分页列表")), security(("bearerAuth" = [])))]
+#[utoipa::path(get, path = "/api/histories", params(("pipeline_id" = Option<i64>, Query, description = "按流水线过滤"), ("page" = Option<u64>, Query, description = "页码"), ("page_size" = Option<u64>, Query, description = "每页条数")), responses((status = 200, body = ApiResponse<PageResponse<crate::handlers::HistoryResponse>>, description = "运行历史分页列表")), security(("bearerAuth" = [])))]
 fn list_histories() {}
 
-#[utoipa::path(get, path = "/api/pipelines/{id}/histories", responses((status = 200, description = "流水线运行历史分页列表")), security(("bearerAuth" = [])))]
+/// 调度列表的文档占位函数。
+#[utoipa::path(get, path = "/api/schedules", responses((status = 200, body = ApiResponse<Vec<crate::handlers::ScheduleResponse>>, description = "调度配置列表")), security(("bearerAuth" = [])))]
+fn list_schedules() {}
+
+/// 新建调度的文档占位函数。
+#[utoipa::path(post, path = "/api/schedules", request_body = crate::handlers::ScheduleCreateRequest, responses((status = 200, body = ApiResponse<crate::handlers::ScheduleResponse>, description = "调度配置"), (status = 400, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
+fn create_schedule() {}
+
+/// 单条运行历史的文档占位函数。
+#[utoipa::path(get, path = "/api/histories/{id}", params(("id" = i64, Path, description = "历史主键")), responses((status = 200, body = ApiResponse<crate::handlers::HistoryResponse>), (status = 404, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
+fn get_history() {}
+
+#[utoipa::path(get, path = "/api/pipelines/{id}/histories", params(("id" = i64, Path, description = "流水线标识")), responses((status = 200, description = "流水线运行历史分页列表")), security(("bearerAuth" = [])))]
 fn list_pipeline_histories() {}
 
-#[utoipa::path(get, path = "/api/histories/{id}/logs", responses((status = 200, description = "步骤日志"), (status = 404, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
+#[utoipa::path(get, path = "/api/histories/{id}/logs", params(("id" = i64, Path, description = "历史主键")), responses((status = 200, body = ApiResponse<Vec<crate::handlers::HistoryLogResponse>>, description = "步骤日志"), (status = 404, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
 fn history_logs() {}
