@@ -73,10 +73,7 @@ pub(crate) fn routes() -> Router<HttpState> {
         )
         .route("/api/credentials/{id}/test", post(test_credential))
         .route("/api/credential-types", get(list_credential_types))
-        .route(
-            "/api/schedules",
-            get(list_schedules).post(create_schedule),
-        )
+        .route("/api/schedules", get(list_schedules).post(create_schedule))
         .route("/api/tasks", get(list_tasks))
         .route("/api/tasks/{type_id}/schema", get(task_schema))
         .route("/api/histories", get(list_histories))
@@ -1416,8 +1413,8 @@ async fn get_history(
                 format!("运行历史不存在: {id}"),
             )
         })?;
-    let status = acmecast_store::entity::history::RunStatus::parse(&row.status)
-        .ok_or_else(|| {
+    let status =
+        acmecast_store::entity::history::RunStatus::parse(&row.status).ok_or_else(|| {
             ApiError::from(acmecast_core::Error::Internal(format!(
                 "运行历史 {id} 的状态 `{}` 无法识别",
                 row.status
