@@ -39,6 +39,9 @@ export function HistoryDetailPage() {
       return await unwrapData<HistoryDetail>(result);
     },
     enabled: Number.isFinite(historyId),
+    // running 时轮询终态，与日志轮询同一节奏：手动触发后跳进来，状态会自行
+    // 从 running 变为 success/failed，不必手动刷新。
+    refetchInterval: (query) => (query.state.data?.status === "running" ? 5000 : false),
   });
 
   const { data: logs, isLoading } = useQuery({

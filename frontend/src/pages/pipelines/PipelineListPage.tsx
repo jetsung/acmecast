@@ -9,12 +9,13 @@ import { formatTime, unwrapData } from "@/api/helpers";
 
 type PipelineSummary = components["schemas"]["PipelineSummaryResponse"];
 
-/** 流水线列表（3.1）：概要、启用开关、删除确认。 */
+/** 流水线列表（3.1）：概要、启用开关、立即运行、删除确认。 */
 export function PipelineListPage() {
   const navigate = useNavigate();
   const { message } = App.useApp();
   const queryClient = useQueryClient();
   const [page, setPage] = useState(1);
+  const [runningId, setRunningId] = useState<number | null>(null);
 
   const { data, isFetching } = useQuery({
     queryKey: ["pipelines", page],
@@ -56,6 +57,31 @@ export function PipelineListPage() {
     }
     message.success(enabled ? "已启用" : "已停用");
     await queryClient.invalidateQueries({ queryKey: ["pipelines"] });
+  };
+
+  // 手动触发一次运行。后端异步执行并立即返回运行历史标识，这里直接跳到
+  // 运行详情页——它是轮询式的，进去就能看到 running 变成 success。
+  const runNow = async (row: PipelineSummary) => {
+    setRunningId(row.id);
+    try {
+      const result = await client.POST(`/api/pipelines/${row.id}/run`, {
+        params: { path: { id: row.id } },
+      });
+      if (result.error !== undefined) {
+        const body = result.error as { error?: { message?: string } };
+        message.error(body?.error?.message ?? "触发运行失败");
+        return;
+      }
+      const historyId = result.data?.data?.history_id;
+      message.success(
+        historyId === undefined ? "已开始运行" : `已开始运行，运行记录 #${historyId}`,
+      );
+      if (historyId !== undefined) {
+        navigate(`/histories/${historyId}`);
+      }
+    } finally {
+      setRunningId(null);
+    }
   };
 
   const confirmDelete = (row: PipelineSummary) => {
@@ -103,9 +129,17 @@ export function PipelineListPage() {
     },
     {
       title: "操作",
-      width: 120,
+      width: 220,
       render: (_, row) => (
         <Space>
+          <Button
+            size="small"
+            type="primary"
+            loading={runningId === row.id}
+            onClick={() => runNow(row)}
+          >
+            立即运行
+          </Button>
           <Button size="small" onClick={() => navigate(`/pipelines/${row.id}`)}>
             编辑
           </Button>

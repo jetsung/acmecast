@@ -5,14 +5,10 @@
 //! 与手动触发走同一条历史链路。连接被泄漏成 `'static`：启动器是进程级
 //! 单例，连接本就活到进程结束，仓储因此可以安全借用同一份句柄。
 
-use acmecast_pipeline::{
-    DatabaseStateStore, HistoryRecord, HistoryRepository, PipelineDefinition, PipelineRunner,
-    StepDefinition, StepRegistry,
-};
+use acmecast_pipeline::StepRegistry;
 use acmecast_scheduler::{
     Error, LaunchRequest, PipelineLauncher, Result, SchedulerConfig, SchedulerEngine,
 };
-use acmecast_store::entity::history::RunStatus;
 use acmecast_store::repository::PipelineRepository;
 use async_trait::async_trait;
 use sea_orm::DatabaseConnection;
@@ -90,88 +86,26 @@ impl PipelineLauncher for PipelineRunLauncher {
             return Ok(());
         }
 
-        let definition = PipelineDefinition {
-            id: pipeline.id,
-            steps: pipeline
-                .steps
-                .iter()
-                .map(|step| StepDefinition {
-                    order_index: step.order_index,
-                    type_id: step.type_id.clone(),
-                    input: step.input.clone(),
-                    enabled: step.enabled,
-                })
-                .collect(),
-        };
-
-        let started_at = chrono::Utc::now();
-        let history_id = HistoryRepository::new(self.db)
-            .record(HistoryRecord {
-                pipeline_id: request.pipeline_id,
-                trigger_source: request.source,
-                status: RunStatus::Running,
-                started_at,
-                finished_at: None,
-                error_message: None,
-                logs: Vec::new(),
-            })
+        // 创建运行历史、执行、写回终态都与手动触发共用同一条链路（见 crate::run）：
+        // 终态**原地更新**进同一条历史，另插一行会让原 running 记录永远停在
+        // running，所有「查运行中」的判定都会把流水线当成还在跑。
+        let definition = crate::run::definition_of(&pipeline);
+        let history_id = crate::run::start_run(self.db, request.pipeline_id, request.source)
             .await
             .map_err(Error::Pipeline)?;
+        let outcome = crate::run::execute_run(
+            self.db,
+            &self.steps,
+            &self.credentials,
+            &definition,
+            history_id,
+            request.source,
+        )
+        .await?;
 
-        let state = DatabaseStateStore::new(self.db);
-        let runner = PipelineRunner::new(&self.steps, &self.credentials, &state)
-            .with_trigger(request.source);
-        let outcome = runner.run(&definition, history_id).await?;
-
-        // 终态**原地更新**进同一条历史：另插一行会让原 running 记录永远
-        // 停在 running，所有「查运行中」的判定都会把流水线当成还在跑。
         // 运行失败要让调用方（调度器）知道：cron 触发靠 Err 保留触发点重试，
         // 续期触发靠它落「启动失败」的审计记录。吞掉失败 = 静默丢续期。
-        let failure = if outcome.is_success() {
-            None
-        } else {
-            Some(
-                outcome
-                    .failure
-                    .as_ref()
-                    .map(|failure| {
-                        format!(
-                            "第 {} 步（{}）：{}",
-                            failure.step_order + 1,
-                            failure.type_id,
-                            failure.reason
-                        )
-                    })
-                    .unwrap_or_else(|| "未知原因".to_owned()),
-            )
-        };
-        HistoryRepository::new(self.db)
-            .finish(
-                history_id,
-                if outcome.is_success() {
-                    RunStatus::Success
-                } else {
-                    RunStatus::Failed
-                },
-                failure.clone(),
-                outcome
-                    .steps
-                    .iter()
-                    .flat_map(|step| {
-                        step.logs
-                            .iter()
-                            .map(move |log| acmecast_pipeline::StepLogRecord {
-                                step_index: step.order_index,
-                                level: log.level,
-                                message: log.message.clone(),
-                                created_at: log.created_at,
-                            })
-                    })
-                    .collect(),
-            )
-            .await
-            .map_err(Error::Pipeline)?;
-        if let Some(failure) = failure {
+        if let Some(failure) = crate::run::failure_message(&outcome) {
             return Err(Error::InvalidConfig(format!(
                 "流水线 {} 运行失败：{failure}",
                 request.pipeline_id

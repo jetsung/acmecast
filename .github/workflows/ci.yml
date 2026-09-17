@@ -31,6 +31,39 @@ jobs:
       - name: Clippy（拒绝任何警告）
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+  # 前端与后端相互独立，各自成为一个 job 以便并行：前端失败不该等 Rust 编译完。
+  frontend:
+    name: 前端（测试 / 类型检查 / 构建）
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      # 版本与 frontend/package.json 的 `packageManager` 保持一致；这里显式写死，
+      # 是因为 pnpm/action-setup 默认只在仓库根找 package.json，而根目录没有。
+      - name: 安装 pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.20.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 跑用例（vitest + jsdom）
+        run: pnpm test
+
+      # build 里的 `tsc -b` 同时完成类型检查，不再单独跑一次 typecheck。
+      - name: 类型检查与生产构建
+        run: pnpm build
+
   build:
     name: 构建
     runs-on: ubuntu-latest

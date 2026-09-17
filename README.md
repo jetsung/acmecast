@@ -5,6 +5,9 @@
 扫描自动续期。提供带鉴权的 REST API 与 OpenAPI 文档，为前端 SPA 与第三方集成
 提供统一入口。
 
+> 完整使用文档（概念、配置、API、调度、部署、排障与已知限制）见
+> [docs/README.md](docs/README.md)。
+
 ## 快速开始（Docker）
 
 ```bash

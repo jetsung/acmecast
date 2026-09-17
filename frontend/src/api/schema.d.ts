@@ -247,6 +247,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    [path: `/api/pipelines/${number}/run`]: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["run_pipeline"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/schedules": {
         parameters: {
             query?: never;
@@ -709,6 +725,19 @@ export interface components {
                 revoked_at: string;
                 /** @description 是否本次调用完成了吊销（`false` 表示 CA 侧早已吊销，本次只是同步状态）。 */
                 revoked_now: boolean;
+            };
+        };
+        /** @description 统一成功响应。 */
+        ApiResponse_RunResponse: {
+            /** @description 手动触发一次流水线运行的响应。 */
+            data: {
+                /**
+                 * Format: int64
+                 * @description 本次运行的运行历史主键。
+                 */
+                history_id: number;
+                /** @description 运行状态；本接口立即返回，恒为 `running`。 */
+                status: string;
             };
         };
         /** @description 统一成功响应。 */
@@ -1292,6 +1321,16 @@ export interface components {
             revoked_at: string;
             /** @description 是否本次调用完成了吊销（`false` 表示 CA 侧早已吊销，本次只是同步状态）。 */
             revoked_now: boolean;
+        };
+        /** @description 手动触发一次流水线运行的响应。 */
+        RunResponse: {
+            /**
+             * Format: int64
+             * @description 本次运行的运行历史主键。
+             */
+            history_id: number;
+            /** @description 运行状态；本接口立即返回，恒为 `running`。 */
+            status: string;
         };
         /** @description 新建调度请求。 */
         ScheduleCreateRequest: {
@@ -2056,6 +2095,55 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    run_pipeline: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 流水线标识 */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 已开始运行，返回运行历史标识 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_RunResponse"];
+                };
+            };
+            /** @description 流水线已停用 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description 流水线正在运行中 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
             };
         };
     };

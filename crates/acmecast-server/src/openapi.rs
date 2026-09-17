@@ -49,6 +49,7 @@ use crate::response::ApiResponse;
         list_histories,
         get_history,
         list_pipeline_histories,
+        run_pipeline,
         list_schedules,
         create_schedule,
         history_logs
@@ -63,6 +64,7 @@ use crate::response::ApiResponse;
             crate::handlers::PipelineResponse,
             crate::handlers::PipelineStepResponse,
             crate::handlers::PipelineSummaryResponse,
+            crate::handlers::RunResponse,
             crate::handlers::CertificateRequest,
             crate::handlers::CertificateResponse,
             crate::handlers::CertificateDownloadQuery,
@@ -185,6 +187,10 @@ fn get_history() {}
 
 #[utoipa::path(get, path = "/api/pipelines/{id}/histories", params(("id" = i64, Path, description = "流水线标识")), responses((status = 200, description = "流水线运行历史分页列表")), security(("bearerAuth" = [])))]
 fn list_pipeline_histories() {}
+
+/// 手动触发流水线的文档占位函数。
+#[utoipa::path(post, path = "/api/pipelines/{id}/run", params(("id" = i64, Path, description = "流水线标识")), responses((status = 200, body = ApiResponse<crate::handlers::RunResponse>, description = "已开始运行，返回运行历史标识"), (status = 400, body = crate::response::ApiErrorBody, description = "流水线已停用"), (status = 404, body = crate::response::ApiErrorBody), (status = 409, body = crate::response::ApiErrorBody, description = "流水线正在运行中")), security(("bearerAuth" = [])))]
+fn run_pipeline() {}
 
 #[utoipa::path(get, path = "/api/histories/{id}/logs", params(("id" = i64, Path, description = "历史主键")), responses((status = 200, body = ApiResponse<Vec<crate::handlers::HistoryLogResponse>>, description = "步骤日志"), (status = 404, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
 fn history_logs() {}

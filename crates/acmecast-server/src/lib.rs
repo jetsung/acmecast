@@ -8,6 +8,7 @@ pub mod config;
 mod handlers;
 pub mod openapi;
 pub mod response;
+mod run;
 pub mod scheduler;
 pub mod steps;
 

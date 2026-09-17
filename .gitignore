@@ -6,3 +6,13 @@ data/
 *.db-shm
 *.db-wal
 *.tsbuildinfo
+
+# 前端依赖安装产生的 pnpm 内容寻址缓存（可重建，不入库）
+.pnpm-store/
+
+# CNB 云 IDE / 开发容器产物，与项目本身无关：
+# - .ide/Dockerfile 是 code-server + sshd 的 IDE 镜像，构建不了本项目；
+# - .cnb.yaml 是平台流水线配置，入库后 main 推送会触发镜像构建与推送。
+# 确需把 CNB 流水线纳入版本管理时，用 `git add -f` 显式加回。
+.cnb.yaml
+.ide/

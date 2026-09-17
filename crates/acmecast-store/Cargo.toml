@@ -25,6 +25,9 @@ tokio.workspace = true
 
 [features]
 # 启用需要真实数据库的集成测试。未启用时这些用例被跳过。
+# 这个特性必须声明，否则引用它的 `#[cfg(feature = "integration-db")]` 会触发
+# rustc 的 `unexpected_cfgs`，在 CI 的 `clippy -D warnings` 下直接失败。
+integration-db = []
 
 [dev-dependencies]
 tokio.workspace = true

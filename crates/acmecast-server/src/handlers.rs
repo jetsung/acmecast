@@ -51,6 +51,7 @@ pub(crate) fn routes() -> Router<HttpState> {
             "/api/pipelines/{id}/histories",
             get(list_pipeline_histories),
         )
+        .route("/api/pipelines/{id}/run", post(run_pipeline))
         .route(
             "/api/certificates",
             get(list_certificates).post(create_certificate),
@@ -851,6 +852,108 @@ async fn delete_pipeline(
     }
     tracing::info!(pipeline_id = id, "流水线已删除");
     Ok(ApiResponse::new(serde_json::json!({ "deleted": true })))
+}
+
+/// 手动触发一次流水线运行的响应。
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub(crate) struct RunResponse {
+    /// 本次运行的运行历史主键。
+    pub history_id: i64,
+    /// 运行状态；本接口立即返回，恒为 `running`。
+    pub status: &'static str,
+}
+
+/// 手动触发一次流水线运行（`POST /api/pipelines/{id}/run`）。
+///
+/// 运行在后台进行：先落一条 `running` 的运行历史，再立即返回，调用方拿
+/// `history_id` 轮询 `/api/histories/{id}` 与 `/api/histories/{id}/logs` 看结果。
+/// 一次签发可能耗时几分钟（挑战传播等待、CA 验证），同步等待只会把请求挂在
+/// 超时边缘，而且期间拿不到任何中间进展。
+///
+/// 与调度触发共用同一套执行与历史写回逻辑（见 `crate::run`），因此运行记录、
+/// 日志与失败摘要的形状与自动触发完全一致。
+async fn run_pipeline(
+    State(state): State<HttpState>,
+    Path(id): Path<i64>,
+) -> Result<ApiResponse<RunResponse>, ApiError> {
+    let pipeline = PipelineRepository::new(&state.app.db)
+        .find(id)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                format!("流水线不存在: {id}"),
+            )
+        })?;
+
+    // 停用的流水线手动也不跑：否则「停用」这个开关会有一个不显眼的例外。
+    if !pipeline.enabled {
+        return Err(ApiError::validation(
+            "enabled",
+            "流水线已停用，请先启用后再运行",
+        ));
+    }
+
+    // 与调度触发同一条约束：并发跑同一条流水线会让证书请求与文件写入互相踩踏。
+    if HistoryRepository::new(&state.app.db)
+        .has_running(id)
+        .await
+        .map_err(ApiError::from)?
+    {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "conflict",
+            format!("流水线 {id} 正在运行中，请等待本次运行结束"),
+        ));
+    }
+
+    // 没有加密密钥就无法还原凭据，流水线必然失败——不如在触发前就说清楚。
+    let cipher = state.runtime.cipher.as_ref().ok_or_else(|| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "configuration_error",
+            "未配置凭据加密密钥，无法执行流水线",
+        )
+    })?;
+    let cipher = Arc::clone(cipher);
+
+    let source = acmecast_store::entity::pipeline::TriggerSource::Manual;
+    let definition = crate::run::definition_of(&pipeline);
+    let history_id = crate::run::start_run(&state.app.db, id, source)
+        .await
+        .map_err(ApiError::from)?;
+
+    let db = state.app.db.clone();
+    let steps = Arc::clone(&state.runtime.step_registry);
+    let registry = Arc::clone(&state.runtime.credential_registry);
+    tokio::spawn(async move {
+        let credentials = CredentialStore::new(&db, registry, cipher);
+        let result =
+            crate::run::execute_run(&db, &steps, &credentials, &definition, history_id, source)
+                .await;
+        match result {
+            Ok(outcome) => tracing::info!(
+                pipeline_id = id,
+                history_id,
+                success = outcome.is_success(),
+                "手动触发的流水线运行结束"
+            ),
+            // 执行器或存储层出错：历史会停在 running，必须在日志里可见。
+            Err(error) => tracing::error!(
+                pipeline_id = id,
+                history_id,
+                %error,
+                "手动触发的流水线运行未能写回终态"
+            ),
+        }
+    });
+
+    Ok(ApiResponse::new(RunResponse {
+        history_id,
+        status: "running",
+    }))
 }
 
 async fn list_certificates(
