@@ -3,6 +3,15 @@
 //! 证书守护进程：ACME 签发、流水线编排、定时续期与 REST 管理接口。
 //! 真正的实现位于 `acmecast_server` 库 crate，本文件只负责启动：
 //! 读环境变量 → 打开数据目录 → 迁移数据库 → 开始服务，直到收到停机信号。
+//!
+//! 另提供 `hash-password` 子命令：在**运行环境**（无 Rust 工具链的宿主、
+//! distroless 容器内）生成管理员口令哈希，供 `ACMECAST_ADMIN_PASSWORD_HASH`
+//! 使用——
+//!
+//! ```text
+//! acmecast-server hash-password '你的口令'
+//! # 容器内：docker run --rm acmecast:dev hash-password '你的口令'
+//! ```
 
 use acmecast_server::auth::AuthMode;
 use acmecast_server::{AppState, assemble_router_with_runtime, serve, shutdown_signal};
@@ -12,6 +21,21 @@ use tokio::net::TcpListener;
 use tokio::sync::watch;
 
 fn main() {
+    // 子命令分发：hash-password 供运行环境生成口令哈希（distroless 内可用）。
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("hash-password") {
+        let password = args.get(2).cloned().unwrap_or_else(|| {
+            eprintln!("用法：acmecast-server hash-password '<口令>'");
+            std::process::exit(1);
+        });
+        let hash = acmecast_server::hash_password(&password).unwrap_or_else(|error| {
+            eprintln!("生成口令哈希失败: {error}");
+            std::process::exit(1);
+        });
+        println!("{hash}");
+        return;
+    }
+
     // 阻塞运行时由 tokio 的宏展开提供；启动失败直接退出并留下错误日志。
     let result = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -44,14 +68,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // 鉴权状态在启动时就要说清楚：关闭是显式选择，缺失配置是错误，
     // 两者都不该让人在第一次请求被拒时才发现。
-    let runtime = acmecast_server::RuntimeState::from_environment_with_steps(std::sync::Arc::new(
-        acmecast_server::steps::default_steps(
+    let runtime = acmecast_server::RuntimeState::from_environment_with_steps(
+        std::sync::Arc::new(acmecast_server::steps::default_steps(
             db.clone(),
             config.data_dir.clone(),
             acmecast_server::steps::default_dns_registry(),
             acmecast_server::steps::default_deploy_registry(),
-        ),
-    ))?;
+        )),
+    )?;
     match &runtime.auth {
         AuthMode::Disabled => {
             tracing::warn!("鉴权已关闭（ACMECAST_AUTH_DISABLED），仅适用于本地单机场景");

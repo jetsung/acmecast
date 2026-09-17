@@ -11,6 +11,20 @@ pub mod response;
 pub mod scheduler;
 pub mod steps;
 
+/// 生成管理员口令的 Argon2 PHC 哈希（`hash-password` 子命令与开发示例共用）。
+///
+/// 格式与 `ACMECAST_ADMIN_PASSWORD_HASH` 的解析端完全一致；错误仅在
+/// 哈希无法生成时出现。
+pub fn hash_password(password: &str) -> acmecast_core::Result<String> {
+    use argon2::{Argon2, PasswordHasher};
+
+    // 盐由实现自动生成并编入 PHC 字符串（与 auth.rs 的校验端同一 API）。
+    let hash = Argon2::default()
+        .hash_password(password.as_bytes())
+        .map_err(|e| acmecast_core::Error::Config(format!("生成口令哈希失败: {e}")))?;
+    Ok(hash.to_string())
+}
+
 use std::{future::Future, sync::Arc, time::Duration};
 
 use acmecast_access::CredentialRegistry;
