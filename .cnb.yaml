@@ -1,0 +1,38 @@
+$: # 兜底匹配所有分支
+  vscode:
+    - docker:
+        build: .ide/Dockerfile
+        image: cnbcool/default-dev-env:latest   # 构建失败时的回退镜像
+      services:
+        - vscode
+        - docker
+      stages:
+        - name: ls
+          script: ls -al
+
+main:
+  push:
+    - services:
+        - docker
+      stages:
+        - name: set docker tag
+          script: echo -n "${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}:dev"
+          exports:
+            info: IMAGE_TAG
+        - name: docker build
+          script: docker build -t $IMAGE_TAG .
+        - name: push image
+          script: docker push $IMAGE_TAG
+
+    - stages:
+        - name: zensical build
+          image: zensical/zensical
+          script: zensical build
+
+        - name: 部署到 EdgeOne Pages
+          image: tencentcom/deploy-eopages:latest
+          settings:
+            project_name: "$CNB_REPO_NAME"
+            api_token: $EDGEONE_API_TOKEN
+            directory: ./site
+

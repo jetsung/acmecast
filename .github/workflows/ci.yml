@@ -64,6 +64,25 @@ jobs:
       - name: 类型检查与生产构建
         run: pnpm build
 
+  # 文档站点：strict 模式下任何告警（配置错误、无效链接等）都会让构建失败，
+  # 避免文档悄悄烂掉。
+  docs:
+    name: 文档（构建）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # 固定版本：zensical 尚在 0.0.x，行为可能随版本变化。
+      - name: 安装 zensical
+        run: pip install zensical==0.0.62
+
+      - name: 构建文档（--strict：告警即失败）
+        run: zensical build --clean --strict
+
   build:
     name: 构建
     runs-on: ubuntu-latest

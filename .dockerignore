@@ -14,3 +14,7 @@ data/
 certd/
 frontend/node_modules
 frontend/dist
+
+# 文档站点构建产物与缓存（zensical 生成，不影响构建）
+site/
+.cache/
