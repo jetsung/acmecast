@@ -7,7 +7,7 @@
 use std::process::Command;
 use std::time::Duration;
 
-use acmecast_server::auth::{AuthConfig, AuthMode};
+use acmecast_server::auth::AuthConfig;
 use acmecast_server::hash_password;
 
 /// 用生成的哈希构造鉴权配置（与生产解析端同一实现）。
