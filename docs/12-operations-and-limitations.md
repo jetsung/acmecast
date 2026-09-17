@@ -98,20 +98,19 @@ docker run -d --name acmecast ... acmecast:<新版本>
 > 本节描述 **dev 分支当前代码**的实际能力，与 README 的部分描述可能不一致，
 > 请以此为准。
 
-### 最重要：当前无法通过 API 创建 DNS / SSH 凭据
+### 最重要：当前无法通过 API 创建 SSH 凭据
 
-- 服务启动时只注册了 **`acme.account`** 一种凭据类型
-  （见 `handlers::default_credential_registry()`）；
-- DNS 提供商（`cloudflare`、`aliyun`）与 SSH 目标的凭据字段 Schema **已在代码中定义**，
-  但没有对应的 `CredentialType` 注册，因此 `/api/credentials` 会以
-  `unknown_credential_type` 拒绝创建；
-- 后果：`cert.apply` 的 DNS-01 所需的 `dns_credential_id`、
-  `cert.deploy` 的 SSH 认证凭据，在当前构建下**无法配置**，相关步骤会在运行时失败。
+- 服务启动时注册了 **`acme.account`** 与 DNS 提供商（`cloudflare`、`aliyun`）
+  三类凭据（见 `handlers::default_credential_registry()` 与
+  `crates/acmecast-server/src/credentials.rs`）；
+- SSH 目标的凭据字段 Schema **已在代码中定义**，但没有对应的 `CredentialType`
+  注册，因此 `/api/credentials` 会以 `unknown_credential_type` 拒绝创建；
+- 后果：`cert.deploy` 的 SSH 认证凭据在当前构建下**无法配置**，相关步骤会在运行时失败。
 
-**影响**：当前开箱可用的是「ACME 账号凭据的创建/管理」与「本地部署」等不依赖上述
-未注册类型的功能。要打通 DNS-01 端到端，需要在装配处注册这些凭据类型
-（参考测试 `crates/acmecast-server/tests/pipeline_e2e.rs` 中自定义
-`CredentialType` 的做法）。
+**影响**：DNS-01 端到端已经可用（创建 DNS 提供商凭据 → `cert.apply` 填
+`dns_provider` / `dns_credential_id` → `cert.store` → 本地部署）；受影响的只剩
+SSH 远程部署。要支持 SSH，需要在装配处注册对应凭据类型
+（参考 `crates/acmecast-server/src/credentials.rs` 中 DNS 凭据类型的做法）。
 
 ### 手动触发
 

@@ -84,8 +84,6 @@ docker logs -f acmecast                        # 观察启动日志（数据库�
 
 ```bash
 sh <(curl -L https://nixos.org/nix/install) --daemon --yes   # 安装 Nix
-nix profile install nixpkgs#direnv                           # 安装 direnv
-echo 'eval "$(direnv hook zsh)"' >> ~/.zshrc                 # 让 direnv 接管 shell（bash 换 ~/.bashrc）
 ```
 
 容器 / WSL 没有 systemd，走单用户安装；下面两步前置动作不能省，否则安装器会失败：
@@ -96,6 +94,23 @@ sudo mkdir -p /etc/nix
 printf 'build-users-group =\n' | sudo tee -a /etc/nix/nix.conf # 单用户没有 nixbld 组，不置空则最后一步报错
 sh <(curl -L https://nixos.org/nix/install) --no-daemon --yes --no-channel-add
 ```
+
+两种安装方式都还要再开一次实验特性 —— 官方安装器默认关闭新 CLI 与 flakes，
+不开启的话 `nix develop`、`nix profile install`、`nix flake update` 都会报
+`experimental Nix feature 'nix-command' is disabled`：
+
+```bash
+mkdir -p ~/.config/nix
+printf 'experimental-features = nix-command flakes\n' >> ~/.config/nix/nix.conf
+nix profile install nixpkgs#direnv                             # 装完立刻可用，无需重启
+echo 'eval "$(direnv hook zsh)"' >> ~/.zshrc                   # 让 direnv 接管 shell（bash 换 ~/.bashrc）
+```
+
+> direnv 的 `use flake` 自带 `--extra-experimental-features` 参数，所以只有手敲 nix
+> 命令才需要上面那行。若 `--daemon` 安装后仍报同样错误，说明 nix-daemon 读的是自己的
+> 配置：把该行追加到 `/etc/nix/nix.conf` 并重启守护进程
+> （Linux `sudo systemctl restart nix-daemon`；macOS
+> `sudo launchctl kickstart -k system/org.nixos.nix-daemon`）。
 
 国内网络另加一行（`.envrc` 通过环境变量判断，写进机器级配置才生效）：
 
@@ -141,7 +156,8 @@ crates.io 镜像由 devShell 提供的 cargo 包装在运行时按 `IS_CHINA` �
 ```bash
 direnv allow                        # 授权 .envrc（按内容哈希）
 direnv reload                       # 改过 .envrc 后重新求值
-nix develop                         # 不用 direnv 时的等价入口（需启用 flakes）
+nix develop                         # 不用 direnv 时的等价入口（需按 1）开启 flakes）
+                                    # 旧命令 nix-shell 无效：仓库只有 flake.nix，没有 shell.nix / default.nix
 nix develop -c cargo test           # 一次性执行某条命令
 prek run --all-files                # 手动全量跑 Git 钩子
 prek run cargo-clippy --all-files --stage pre-push
@@ -184,9 +200,9 @@ cargo run -p acmecast-server
 
 ## 2.5 首个可用流程（按当前实现）
 
-> 当前 dev 分支只注册了 `acme.account` 一种凭据类型，**没有创建 DNS / SSH 凭据的
-> 接口**，也没有「立即运行一次流水线」的接口。下面先走通「能走通的部分」，
-> 完整的 DNS-01 端到端配置见 [12-operations-and-limitations.md](12-operations-and-limitations.md)。
+> 当前 dev 分支已能创建 `acme.account` 与 DNS 提供商（`cloudflare` / `aliyun`）凭据，
+> 但**还没有创建 SSH 凭据的接口**。下面先走通「能走通的部分」，完整的 DNS-01
+> 端到端配置见 [12-operations-and-limitations.md](12-operations-and-limitations.md)。
 
 ### 1）登录拿令牌
 

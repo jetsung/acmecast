@@ -181,9 +181,9 @@
 }
 ```
 
-> 注意：当前构建中 `dns_provider` / SSH 所需凭据类型未注册，上面的示例在
-> 「创建凭据」这一步会失败。完整的可用性说明见
-> [12-operations-and-limitations.md](12-operations-and-limitations.md)。
+> 注意：DNS 提供商凭据（`cloudflare` / `aliyun`）可以正常创建，上面的示例可用；
+> SSH 凭据类型尚未注册，涉及 SSH 部署的示例会在「创建凭据」这一步失败。完整的
+> 可用性说明见 [12-operations-and-limitations.md](12-operations-and-limitations.md)。
 
 ## 6.7 触发流水线
 

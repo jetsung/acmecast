@@ -33,6 +33,11 @@
 - 每种任务的输入表单由 `GET /api/tasks/{type_id}/schema` 返回的 JSON Schema
   **动态渲染**（支持 string / integer / number / boolean / enum / array<string> /
   一层嵌套 object）；
+- **按字段语义选控件**：枚举（如 `challenge`）渲染成下拉；取值是资源 ID 或固定标识的
+  字段也渲染成下拉——`account_credential_id` / `acme_account_credential_id` 列 ACME 账号
+  凭据，`dns_credential_id` 列 DNS 提供商凭据，`dns_provider` 列内置提供商，
+  `target` 列部署目标；值保持原类型（凭据 ID 仍是数字），无可选项时提示「暂无可选项」；
+- 无类型字段（如 `cert.deploy` 的 `config`，结构随所选目标变化）按 **JSON 文本**编辑；
 - 步骤可增删、上移下移、启用/停用；切换任务类型会清空该步骤的输入；
 - 保存是**整体替换**：前端提交完整 `name` / `description` / `enabled` / `steps`。
   列表页的启用开关同样走「先取详情再整体 PUT」。
@@ -83,16 +88,28 @@ pnpm dev          # http://localhost:5173
 | `pnpm dev` | 启动 Vite 开发服务器 |
 | `pnpm build` | 类型检查 + 生产构建（产物 `frontend/dist`） |
 | `pnpm typecheck` | 仅类型检查（含测试文件与 vite/vitest 配置） |
-| `pnpm test` | 跑前端用例（vitest + jsdom；当前覆盖路由懒加载） |
+| `pnpm test` | 跑前端用例（vitest + jsdom，覆盖路由懒加载、SchemaForm 各控件类型、流水线编辑器） |
+| `pnpm test:e2e` | 跑端到端用例（Playwright + Chromium，覆盖 jsdom 测不了的布局） |
 | `pnpm preview` | 预览已构建产物 |
 | `pnpm gen:api` | 从 `http://127.0.0.1:8080/api/openapi.json` 重新生成 `src/api/schema.d.ts` |
 
 > 后端接口变更后务必执行 `pnpm gen:api`，保持前端类型与 API 同步。
 
 CI 的 `frontend` job（`.github/workflows/ci.yml`）按
-`pnpm install --frozen-lockfile` → `pnpm test` → `pnpm build` 依次执行，
+`pnpm install --frozen-lockfile` → `pnpm test` → `pnpm build` →
+`playwright install --with-deps chromium` → `pnpm test:e2e` 依次执行，
 运行环境为 Node 24 + pnpm 11.20.0（与 `frontend/package.json` 的
 `packageManager` 一致）。
+
+### 端到端用例（11.7.1）
+
+单测跑在 jsdom 里，**没有布局引擎**——antd `autoSize` 的行高在那里恒为单行，
+量不出 `minRows` 的效果。这类只能靠真实浏览器验证的行为放在 `frontend/e2e/`：
+
+- 用 `page.route` 桩掉全部 `/api/**`，**不需要后端**；
+- 由 Playwright 的 `webServer` 先 `pnpm build` 再 `vite preview`（不用 dev server：
+  dev 首次访问懒加载路由会触发依赖预构建并整页 reload，动态 import 会偶发失败）；
+- 首次在本机跑需要装浏览器：`pnpm exec playwright install --with-deps chromium`。
 
 ## 11.8 生产托管
 

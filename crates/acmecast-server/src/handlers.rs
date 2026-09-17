@@ -30,6 +30,7 @@ use utoipa::ToSchema;
 use crate::{
     HttpState,
     auth::{AuthMode, ClientIp, issue_token},
+    credentials::{AliyunCredentialType, CloudflareCredentialType},
     response::{ApiError, ApiJson, ApiQuery, ApiResponse},
 };
 
@@ -1640,6 +1641,14 @@ pub(crate) fn default_credential_registry() -> Arc<CredentialRegistry> {
     registry
         .register(AcmeAccountType::new())
         .expect("默认 ACME 凭据类型不应重复注册");
+    // DNS 提供商凭据：cert.apply 的 DNS-01 需要按类型创建它们，注册后
+    // 前端凭据页与流水线的 dns_credential_id 下拉才有来源。
+    registry
+        .register(CloudflareCredentialType)
+        .expect("内置 Cloudflare 凭据类型不应重复注册");
+    registry
+        .register(AliyunCredentialType)
+        .expect("内置阿里云凭据类型不应重复注册");
     Arc::new(registry)
 }
 

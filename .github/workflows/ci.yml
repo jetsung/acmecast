@@ -33,7 +33,7 @@ jobs:
 
   # 前端与后端相互独立，各自成为一个 job 以便并行：前端失败不该等 Rust 编译完。
   frontend:
-    name: 前端（测试 / 类型检查 / 构建）
+    name: 前端（测试 / 类型检查 / 构建 / e2e）
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -63,6 +63,22 @@ jobs:
       # build 里的 `tsc -b` 同时完成类型检查，不再单独跑一次 typecheck。
       - name: 类型检查与生产构建
         run: pnpm build
+
+      # Playwright 浏览器体积大，缓存 ~/.cache/ms-playwright；key 跟着 lockfile 走，
+      # 升级 @playwright/test 会自动换缓存。
+      - name: 缓存 Playwright 浏览器
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('frontend/pnpm-lock.yaml') }}
+
+      # --with-deps 顺手装 Chromium 需要的系统库；缓存命中时只用装系统依赖。
+      - name: 安装 Playwright 浏览器与系统依赖
+        run: pnpm exec playwright install --with-deps chromium
+
+      # 真实 Chromium 里验证 jsdom 覆盖不到的布局（如 autoSize 行高）。
+      - name: 端到端用例（Playwright + Chromium）
+        run: pnpm test:e2e
 
   # 文档站点：strict 模式下任何告警（配置错误、无效链接等）都会让构建失败，
   # 避免文档悄悄烂掉。

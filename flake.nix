@@ -97,6 +97,8 @@
                 pkgs.tree
                 pkgs.curl
                 pkgs.git
+		pkgs.tree
+		pkgs.tmux
                 pkgs.cacert
                 pkgs.sqlite
               ]

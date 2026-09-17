@@ -5,6 +5,7 @@
 
 pub mod auth;
 pub mod config;
+pub mod credentials;
 mod handlers;
 pub mod openapi;
 pub mod response;

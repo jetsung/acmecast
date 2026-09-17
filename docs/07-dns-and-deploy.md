@@ -31,13 +31,11 @@ DNS 提供商注册表由 `default_dns_registry()` 装配，当前只注册上�
 新增提供商需要实现 `DnsProvider` trait（`type_id`、`display_name`、
 `credential_fields` Schema、`find_txt` / `create_txt` / `delete_txt`）并注册进去。
 
-### 重要：DNS 凭据当前无法通过 API 创建
+### DNS 凭据的创建
 
-DNS 提供商的凭据字段 Schema 已在代码中定义（见上表），但服务启动时**没有把
-`cloudflare` / `aliyun` 注册为凭据类型**，因此 `/api/credentials` 无法创建它们，
-`cert.apply` 运行时也取不到 DNS 凭据。详见
-[05-credentials.md](05-credentials.md) 5.3 与
-[12-operations-and-limitations.md](12-operations-and-limitations.md)。
+DNS 提供商的凭据类型（`cloudflare` / `aliyun`）已注册，可直接用 `/api/credentials`
+创建（字段见上表），流水线编辑器里的 `dns_credential_id` 也会以下拉形式列出它们。
+详见 [05-credentials.md](05-credentials.md) 5.3。
 
 ## 7.2 部署目标（`cert.deploy` 的 `target`）
 
@@ -123,4 +121,4 @@ DNS 提供商的凭据字段 Schema 已在代码中定义（见上表），但�
 > 仅记录 warn。生产请确保目标主机与网络可信。
 >
 > **限制**：SSH 凭据类型未注册，当前无法通过 API 创建（见
-> [05-credentials.md](05-credentials.md) 5.3）。
+> [05-credentials.md](05-credentials.md) 5.4）。

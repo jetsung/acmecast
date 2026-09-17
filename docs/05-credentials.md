@@ -76,18 +76,26 @@ curl -sS -X POST http://127.0.0.1:8080/api/credentials \
         "ca":"zerossl","eab_kid":"kid-xxx","eab_hmac_key":"base64url-key"}}'
 ```
 
-## 5.3 系统已定义但**当前未注册**的凭据类型
+## 5.3 DNS 提供商凭据
 
-下列字段定义在代码中已存在，但**当前 dev 分支的凭据注册表只注册了
-`acme.account`**，因此无法通过 `/api/credentials` 创建它们；任何引用它们的
-流水线步骤都会在运行时因取不到凭据而失败。
-
-### DNS 提供商凭据（定义于各 DNS 提供商）
+字段定义直接复用各 DNS 提供商的凭据结构体，字段名与 `cert.apply` 使用它们时的
+解析一致；连通性测试为「无从测试」（一次有效探测需要具体 zone，不做猜测）。
 
 | 提供商 `type_id` | 字段 | 说明 |
 | --- | --- | --- |
 | `cloudflare` | `api_token` | 需对目标域名具备 DNS 编辑权限的 API Token（推荐 Token 而非 Global API Key） |
 | `aliyun` | `access_key_id`、`access_key_secret` | 阿里云 DNS 的 AccessKey |
+
+```bash
+curl -sS -X POST http://127.0.0.1:8080/api/credentials \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"cf-main","type_id":"cloudflare","fields":{"api_token":"cf-token"}}'
+```
+
+创建后，流水线编辑器里 `cert.apply` 的 `dns_credential_id` 会以下拉形式列出这些
+凭据（按名称选择，提交数字 ID）。
+
+## 5.4 系统已定义但**当前未注册**的凭据类型
 
 ### SSH 凭据（定义于 SSH 部署目标）
 
@@ -98,18 +106,17 @@ SSH 目标按认证方式从凭据里取字段：
 | `private_key` | `private_key`（OpenSSH 或 PEM 格式私钥） |
 | `password` | `password`（登录口令） |
 
-字段名与部署目标实现一致，但当前**没有为它们注册 `CredentialType`**。
+字段名与部署目标实现一致，但当前**没有为它们注册 `CredentialType`**，因此无法通过
+`/api/credentials` 创建；引用它们的部署步骤会在运行时因取不到凭据而失败。
 
 ### 如何启用
 
 注册是显式的：在服务启动装配处调用 `CredentialRegistry::register`，为每种类型提供
 `type_id` / `display_name` / 字段 Schema / `validate` / 可选 `test_connectivity`。
-测试代码 `crates/acmecast-server/tests/pipeline_e2e.rs` 展示了与内置 DNS 提供商配套的
-凭据类型实现方式。若要开箱支持 Cloudflare / 阿里云 / SSH，需要把这些类型注册进
-`handlers::default_credential_registry()`。详见
-[12-operations-and-limitations.md](12-operations-and-limitations.md)。
+DNS 提供商的做法见 `crates/acmecast-server/src/credentials.rs`；SSH 类型尚未注册，
+详见 [12-operations-and-limitations.md](12-operations-and-limitations.md)。
 
-## 5.4 凭据的引用与删除
+## 5.5 凭据的引用与删除
 
 - 流水线步骤通过 `account_credential_id`（`cert.apply`、`cert.store`）、
   `dns_credential_id`（`cert.apply`）或 SSH 认证的 `credential_id` 引用凭据；

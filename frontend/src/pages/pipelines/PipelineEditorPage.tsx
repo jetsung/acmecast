@@ -1,15 +1,62 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { App, Button, Card, Form, Input, Select, Space, Switch, Typography } from "antd";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import type { components } from "@/api/schema";
 import { client } from "@/api/client";
 import { unwrapData } from "@/api/helpers";
 import { SchemaForm } from "@/components/SchemaForm";
 
+/** `account_credential_id` 一类字段只接受这类凭据。 */
+const ACME_ACCOUNT_TYPE_ID = "acme.account";
+
+/**
+ * 内置 DNS 提供商（与 `steps::default_dns_registry()` 对齐）。
+ * 后端没有「列出 DNS 提供商」的接口，这份清单只能前端维护。
+ */
+const DNS_PROVIDERS = [
+  { value: "cloudflare", label: "Cloudflare" },
+  { value: "aliyun", label: "阿里云" },
+];
+const DNS_PROVIDER_TYPE_IDS = new Set(DNS_PROVIDERS.map((provider) => provider.value));
+
+/** 内置部署目标（与 `steps::default_deploy_registry()` 对齐）。 */
+const DEPLOY_TARGETS = [
+  { value: "local", label: "本地文件系统" },
+  { value: "ssh", label: "SSH 远程主机" },
+];
+
+interface FieldOption {
+  value: string | number;
+  label: string;
+}
+
+/**
+ * 字段名 → 选项来源：取值是「某个资源的 ID」或「固定的几个标识」时改成下拉，
+ * 免得手填一个界面上看不见的主键、或手打一个标识。
+ *
+ * 按字段名而不是任务类型匹配：同名语义一致（如任何任务里的
+ * `account_credential_id` 都是 ACME 账号凭据）。
+ */
+const FIELD_OPTIONS: Record<
+  string,
+  { fromCredentials: (typeId: string) => boolean } | { fixed: FieldOption[] }
+> = {
+  account_credential_id: { fromCredentials: (typeId) => typeId === ACME_ACCOUNT_TYPE_ID },
+  acme_account_credential_id: { fromCredentials: (typeId) => typeId === ACME_ACCOUNT_TYPE_ID },
+  dns_credential_id: { fromCredentials: (typeId) => DNS_PROVIDER_TYPE_IDS.has(typeId) },
+  dns_provider: { fixed: DNS_PROVIDERS },
+  // 部署目标类型；当前只有 cert.deploy 用它。
+  target: { fixed: DEPLOY_TARGETS },
+};
+
+/** 字段名 → 该字段的可选项。 */
+type FieldOptions = Record<string, FieldOption[]>;
+
 interface StepRow {
+  /** 本地稳定 id：任务输入按它挂到表单路径上，增删/排序都不会串值。 */
+  id: number;
   type_id: string;
-  input: Record<string, unknown>;
   enabled: boolean;
 }
 
@@ -34,6 +81,8 @@ export function PipelineEditorPage() {
   const [form] = Form.useForm();
   const [steps, setSteps] = useState<StepRow[]>([]);
   const [saving, setSaving] = useState(false);
+  // 步骤本地 id 生成器；只增不减，删除后不复用，避免残留的表单值被误读。
+  const nextStepId = useRef(1);
 
   const { data: tasks } = useQuery({
     queryKey: ["tasks"],
@@ -42,6 +91,33 @@ export function PipelineEditorPage() {
       return unwrapData<TaskType[]>(result);
     },
   });
+
+  // 凭据列表：把「凭据 ID」字段渲染成按名称选择的下拉。
+  const { data: credentials } = useQuery({
+    queryKey: ["credentials"],
+    queryFn: async () => {
+      const result = await client.GET("/api/credentials", {
+        params: { query: { page: 1, page_size: 100 } },
+      });
+      return unwrapData<{ items: components["schemas"]["CredentialResponse"][] }>(result);
+    },
+  });
+  const fieldOptions = useMemo<FieldOptions>(() => {
+    const items = credentials?.items ?? [];
+    const resolved: FieldOptions = {};
+    for (const [field, source] of Object.entries(FIELD_OPTIONS)) {
+      resolved[field] =
+        "fixed" in source
+          ? source.fixed
+          : items
+              .filter((credential) => source.fromCredentials(credential.type_id))
+              .map((credential) => ({
+                value: credential.id,
+                label: `${credential.name}（id=${credential.id}）`,
+              }));
+    }
+    return resolved;
+  }, [credentials]);
 
   // 编辑模式：载入既有定义。
   useEffect(() => {
@@ -62,22 +138,31 @@ export function PipelineEditorPage() {
         description: full.description ?? undefined,
         enabled: full.enabled,
       });
-      setSteps(
-        full.steps.map((step) => ({
-          type_id: step.type_id,
-          input: (step.input ?? {}) as Record<string, unknown>,
-          enabled: step.enabled,
-        })),
-      );
+      const loaded = full.steps.map((step) => ({
+        id: nextStepId.current++,
+        type_id: step.type_id,
+        enabled: step.enabled,
+      }));
+      setSteps(loaded);
+      // 把已存的步骤输入回填到表单 store：SchemaForm 按 ["inputs", id] 读取，
+      // 与步骤顺序解耦（所以排序、删除都不会让输入错位）。
+      form.setFieldsValue({
+        inputs: Object.fromEntries(
+          loaded.map((step, index) => [step.id, (full.steps[index].input ?? {}) as Record<string, unknown>]),
+        ),
+      });
     })();
   }, [editingId, form, message, navigate]);
 
   const addStep = () => {
-    setSteps((current) => [...current, { type_id: tasks?.[0]?.type_id ?? "", input: {}, enabled: true }]);
+    setSteps((current) => [
+      ...current,
+      { id: nextStepId.current++, type_id: tasks?.[0]?.type_id ?? "", enabled: true },
+    ]);
   };
 
-  const removeStep = (index: number) => {
-    setSteps((current) => current.filter((_, i) => i !== index));
+  const removeStep = (id: number) => {
+    setSteps((current) => current.filter((step) => step.id !== id));
   };
 
   const move = (index: number, delta: number) => {
@@ -97,7 +182,13 @@ export function PipelineEditorPage() {
         name: values.name,
         description: values.description ?? null,
         enabled: values.enabled,
-        steps,
+        // 任务输入的值由 SchemaForm 写进表单 store（路径 ["inputs", step.id]），
+        // 不在 steps 状态里，保存时按 id 取回。
+        steps: steps.map((step) => ({
+          type_id: step.type_id,
+          input: (form.getFieldValue(["inputs", step.id]) ?? {}) as Record<string, unknown>,
+          enabled: step.enabled,
+        })),
       };
       const result =
         editingId === null
@@ -148,7 +239,7 @@ export function PipelineEditorPage() {
         <Typography.Title level={5}>步骤</Typography.Title>
         {steps.map((step, index) => (
           <Card
-            key={index}
+            key={step.id}
             size="small"
             title={`步骤 ${index + 1}`}
             extra={
@@ -163,7 +254,7 @@ export function PipelineEditorPage() {
                 >
                   下移
                 </Button>
-                <Button size="small" danger onClick={() => removeStep(index)}>
+                <Button size="small" danger onClick={() => removeStep(step.id)}>
                   移除
                 </Button>
               </Space>
@@ -181,10 +272,12 @@ export function PipelineEditorPage() {
                 }))}
                 onChange={(value) => {
                   setSteps((current) =>
-                    current.map((item, i) =>
-                      i === index ? { ...item, type_id: value, input: {} } : item,
+                    current.map((item) =>
+                      item.id === step.id ? { ...item, type_id: value } : item,
                     ),
                   );
+                  // 换类型清空该步骤的输入，避免上一类型的残留字段混入新类型。
+                  form.setFieldValue(["inputs", step.id], {});
                 }}
               />
               <span>启用：</span>
@@ -192,12 +285,18 @@ export function PipelineEditorPage() {
                 checked={step.enabled}
                 onChange={(value) => {
                   setSteps((current) =>
-                    current.map((item, i) => (i === index ? { ...item, enabled: value } : item)),
+                    current.map((item) =>
+                      item.id === step.id ? { ...item, enabled: value } : item,
+                    ),
                   );
                 }}
               />
             </Space>
-            <TaskSchemaFields typeId={step.type_id} index={index} />
+            <TaskSchemaFields
+              typeId={step.type_id}
+              stepId={step.id}
+              fieldOptions={fieldOptions}
+            />
           </Card>
         ))}
         <Button onClick={addStep} style={{ marginBottom: 24 }}>
@@ -218,7 +317,15 @@ export function PipelineEditorPage() {
 }
 
 /** 单个步骤的任务输入表单：从后端拉 schema 并交给 SchemaForm 渲染。 */
-function TaskSchemaFields({ typeId, index }: { typeId: string; index: number }) {
+function TaskSchemaFields({
+  typeId,
+  stepId,
+  fieldOptions,
+}: {
+  typeId: string;
+  stepId: number;
+  fieldOptions: FieldOptions;
+}) {
   const { data: schema } = useQuery({
     queryKey: ["task-schema", typeId],
     queryFn: async () => {
@@ -230,11 +337,37 @@ function TaskSchemaFields({ typeId, index }: { typeId: string; index: number }) 
     enabled: typeId !== "",
   });
 
+  const decorated = useMemo(
+    () => withFieldOptions(schema, fieldOptions),
+    [schema, fieldOptions],
+  );
+
   if (!schema) {
     return <Typography.Text type="secondary">（无输入定义）</Typography.Text>;
   }
-  // 输入值挂在 steps[index].input 路径下，与 Form 值树对齐。
-  return <SchemaFormBridge schema={schema} prefix={["steps", index, "input"]} />;
+  // 输入值挂在 ["inputs", stepId] 路径下：用稳定 id 而非下标，步骤排序/删除后不会串值。
+  return <SchemaFormBridge schema={decorated} prefix={["inputs", stepId]} />;
+}
+
+/**
+ * 给「应该选一个」的字段注入 `x-options`（SchemaForm 的客户端扩展），
+ * 把裸输入换成下拉；值仍是原来的类型（凭据主键是数字，标识是字符串），后端不用改。
+ */
+function withFieldOptions(schema: unknown, options: FieldOptions): unknown {
+  const root = schema as
+    | { properties?: Record<string, Record<string, unknown>> }
+    | undefined;
+  const properties = root?.properties;
+  if (!properties) return schema;
+
+  const next = { ...properties };
+  let changed = false;
+  for (const [field, fieldOptions] of Object.entries(options)) {
+    if (!next[field]) continue;
+    next[field] = { ...next[field], "x-options": fieldOptions };
+    changed = true;
+  }
+  return changed ? { ...root, properties: next } : schema;
 }
 
 function SchemaFormBridge({

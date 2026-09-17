@@ -49,6 +49,7 @@ curl -sS -X POST http://127.0.0.1:8080/api/login \
 交互式 API 文档在 `http://127.0.0.1:8080/swagger-ui`（JSON：`/api/openapi.json`）。
 
 > **重要**：请先阅读 [12-operations-and-limitations.md](12-operations-and-limitations.md)
-> 的「当前实现状态」。当前 **dev** 分支只注册了 `acme.account` 一种凭据类型，
-> DNS / SSH 凭据无法通过 API 创建，这会影响你如何配置第一套流程。
+> 的「当前实现状态」。当前 **dev** 分支已注册 `acme.account` 与 DNS 提供商
+> （`cloudflare` / `aliyun`）凭据类型；**SSH 凭据仍无法通过 API 创建**，
+> 这会影响你如何配置第一套流程。
 > 触发流水线可用 `POST /api/pipelines/{id}/run` 手动发起，或配置调度自动触发。
