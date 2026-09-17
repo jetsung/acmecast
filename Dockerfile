@@ -44,7 +44,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     && cp target/x86_64-unknown-linux-musl/release/acmecast-server /acmecast-server
 
 # ---- 前端 builder：SPA 静态产物 ----
-FROM node:22-slim AS frontend-builder
+FROM node:24-slim AS frontend-builder
 
 # 与后端共用同一镜像源开关：npmmirror 加速依赖安装（仅进 builder 层）。
 ARG USE_CN_MIRROR=true

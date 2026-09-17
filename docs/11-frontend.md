@@ -91,7 +91,7 @@ pnpm dev          # http://localhost:5173
 
 CI 的 `frontend` job（`.github/workflows/ci.yml`）按
 `pnpm install --frozen-lockfile` → `pnpm test` → `pnpm build` 依次执行，
-运行环境为 Node 22 + pnpm 11.20.0（与 `frontend/package.json` 的
+运行环境为 Node 24 + pnpm 11.20.0（与 `frontend/package.json` 的
 `packageManager` 一致）。
 
 ## 11.8 生产托管
@@ -136,4 +136,3 @@ CI 的 `frontend` job（`.github/workflows/ci.yml`）按
   因为 antd/react 是骨架必须在首屏，页面代码本身只有几十 KB；
 - 改动业务代码只会让入口 chunk 哈希变化，依赖 chunk 继续命中浏览器缓存；
 - 页面与其专属依赖改为首次导航时才下载，各页面 chunk 多在 2–5KB。
-

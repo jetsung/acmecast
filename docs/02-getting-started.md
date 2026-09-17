@@ -3,7 +3,8 @@
 ## 2.1 前置条件
 
 - Docker 部署：Docker 20+；
-- 源码构建：Rust 1.98+（workspace edition 2024）；前端另需 Node 22 + pnpm；
+- 源码构建：Rust 1.98+（workspace edition 2024）；前端另需 Node 24 + pnpm。
+  这些工具链可由仓库自带的 Nix 环境一键提供，见 2.3；不用 Nix 时需自行准备同版本；
 - 一个可用的 ACME CA（默认 Let's Encrypt 生产环境）；
 - 一个 DNS 服务商账号（DNS-01 挑战需要，见 [07-dns-and-deploy.md](07-dns-and-deploy.md)）；
 - 部署目标（本机目录或一台可 SSH 登录的主机）。
@@ -72,7 +73,91 @@ docker logs -f acmecast                        # 观察启动日志（数据库�
 
 浏览器打开 `http://127.0.0.1:8080/` 进入控制台，或 `/swagger-ui` 查看接口文档。
 
-## 2.3 从源码构建
+## 2.3 源码开发环境（Nix + direnv）
+
+仓库用 `flake.nix` + `flake.lock` 声明开发环境，用 `.envrc` 交给 direnv 自动加载。
+工具链版本固定，各机器一致；每台机器只需一次性准备 Nix 与 direnv，之后进入目录即自动就绪。
+
+### 1）准备机器（每台一次）
+
+常规 Linux（有 systemd）与 Apple Silicon macOS：
+
+```bash
+sh <(curl -L https://nixos.org/nix/install) --daemon --yes   # 安装 Nix
+nix profile install nixpkgs#direnv                           # 安装 direnv
+echo 'eval "$(direnv hook zsh)"' >> ~/.zshrc                 # 让 direnv 接管 shell（bash 换 ~/.bashrc）
+```
+
+容器 / WSL 没有 systemd，走单用户安装；下面两步前置动作不能省，否则安装器会失败：
+
+```bash
+sudo mkdir -m 0755 /nix                                       # 安装器建 /nix 依赖 sudo，容器里常没有
+sudo mkdir -p /etc/nix
+printf 'build-users-group =\n' | sudo tee -a /etc/nix/nix.conf # 单用户没有 nixbld 组，不置空则最后一步报错
+sh <(curl -L https://nixos.org/nix/install) --no-daemon --yes --no-channel-add
+```
+
+国内网络另加一行（`.envrc` 通过环境变量判断，写进机器级配置才生效）：
+
+```bash
+mkdir -p ~/.config/direnv
+echo 'export IS_CHINA=1' >> ~/.config/direnv/direnvrc
+```
+
+`IS_CHINA=1` 会同时启用腾讯云的 rustup/npm/pnpm 镜像、清华的 Nix 二进制缓存，
+并把 nixpkgs 输入换成清华的 channel tarball。最后一项有取舍：channel 的内容是
+Hydra 测过的 revision，未必等于 `flake.lock` 记录的 commit，因此国内与外网/CI 侧的
+pnpm、prek 等次要工具版本可能有小差异；要严格对齐 lock 的 rev，按 `.envrc` 里的
+注释换成 atomgit 镜像（需保留 `shallow=1`，否则会全量克隆 nixpkgs）。
+
+### 2）克隆后（每个 clone 两次操作）
+
+```bash
+git clone <repo> && cd acmecast
+direnv allow      # 授权 .envrc（按内容哈希）；改过 .envrc 后需重新执行
+prek install      # 写入 .git/hooks/；钩子不随仓库分发，每个 clone 都要装
+```
+
+### 3）环境提供什么
+
+| 类别 | 内容 |
+| --- | --- |
+| Rust | rustc / cargo 1.98.0、clippy、rustfmt、rust-analyzer |
+| 前端 | Node 24、pnpm（对应 `frontend/package.json` 的 `packageManager`） |
+| 构建依赖 | gcc、pkg-config、gnumake、perl（Linux；darwin 走系统 clang） |
+| 排查工具 | jq、tree、curl、git、sqlite、cacert |
+| Git 钩子 | prek，配置见 `prek.toml`：提交前跑格式与文件卫生检查，推送前跑 clippy |
+
+生效范围：`flake.nix` 决定工具链；镜像环境变量来自 `.envrc`（仅 direnv 目录内）；
+crates.io 镜像由 devShell 提供的 cargo 包装在运行时按 `IS_CHINA` 注入 `--config`，
+且只对会访问 registry 的子命令（`fetch`/`build`/`clippy`/`test`/`install` 等）生效，
+`--version`、`fmt`、`new`、`clean` 之类原样直通（cargo 的源替换不认环境变量，这样做
+就不必在仓库或 `$CARGO_HOME` 里放 `config.toml`；包装排在 PATH 最前，
+`nix develop -c cargo …` 与 prek 钩子同样覆盖）。
+系统包不需要额外安装，链接器与 make/perl 都由环境提供。
+
+### 4）日常命令
+
+```bash
+direnv allow                        # 授权 .envrc（按内容哈希）
+direnv reload                       # 改过 .envrc 后重新求值
+nix develop                         # 不用 direnv 时的等价入口（需启用 flakes）
+nix develop -c cargo test           # 一次性执行某条命令
+prek run --all-files                # 手动全量跑 Git 钩子
+prek run cargo-clippy --all-files --stage pre-push
+nix flake update nixpkgs            # 升级 nixpkgs（会改写 flake.lock，需一并提交）
+```
+
+> 钩子里的 cargo 取的是 PATH 上的版本，因此**提交要在环境内进行**（direnv 目录内或
+> `nix develop` 里）；IDE、GUI Git 客户端等不经 shell 的场合不会加载该环境。
+
+支持平台为 Linux（x86_64 / aarch64）与 Apple Silicon macOS；Intel Mac 不受支持
+（`flake.lock` 钉住的 nixpkgs 已移除 `x86_64-darwin`），Windows 请用 WSL。
+另外 `rust-overlay` 输入仍取自 GitHub，国内首次拉取会走 GitHub，之后进本地缓存。
+
+## 2.4 从源码构建
+
+以下命令都应在 2.3 的环境内执行（`direnv` 已加载或 `nix develop`）：
 
 ```bash
 # 后端
@@ -97,7 +182,7 @@ cargo run -p acmecast-server
 托管前端静态资源时额外设置 `ACMECAST_STATIC_DIR=/path/to/frontend/dist`；
 未设置时服务只提供 API（`/swagger-ui` 仍可用）。
 
-## 2.4 首个可用流程（按当前实现）
+## 2.5 首个可用流程（按当前实现）
 
 > 当前 dev 分支只注册了 `acme.account` 一种凭据类型，**没有创建 DNS / SSH 凭据的
 > 接口**，也没有「立即运行一次流水线」的接口。下面先走通「能走通的部分」，
@@ -217,7 +302,7 @@ curl -sS -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/api/histories/1
 
 也可以在前端「运行历史」页查看按步骤分组的日志。
 
-## 2.5 调试建议
+## 2.6 调试建议
 
 - 想尽快验证链路：直接 `POST /api/pipelines/{id}/run` 立即触发，或把 `cron` 设为
   `* * * * *`（下一分钟触发）；

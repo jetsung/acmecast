@@ -12,3 +12,6 @@ data/
 
 # 文档站点构建产物（zensical build 生成，可重建，不入库）
 /site/
+
+# direnv 的本地状态（缓存的 flake profile，可重建，不入库）
+/.direnv/
