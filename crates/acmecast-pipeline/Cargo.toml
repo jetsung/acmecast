@@ -1,0 +1,29 @@
+[package]
+name = "acmecast-pipeline"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "流水线引擎：步骤契约、执行上下文与运行编排"
+
+[dependencies]
+acmecast-core.workspace = true
+# 步骤在执行时按标识取解密后的凭据，因此上下文需要凭据体系的入口。
+acmecast-access.workspace = true
+# 流水线级状态要落库；`PipelineStateStore` 是 trait，数据库实现放在本 crate。
+acmecast-store.workspace = true
+async-trait.workspace = true
+chrono.workspace = true
+sea-orm.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,34 @@
+[package]
+name = "acmecast-access"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "凭据体系：类型化的凭据定义、注册表与按标识注入"
+
+[dependencies]
+acmecast-core.workspace = true
+# 连通性测试要发起网络调用，因此 `CredentialType` 是异步 trait。
+async-trait.workspace = true
+# 凭据类型要描述「ACME 账号长什么样」，因此需要 ACME 客户端暴露的账号模型
+# （CA 别名、Directory URL 解析、可持久化的账号凭据）。方向是 access → acme，单向。
+acmecast-acme.workspace = true
+# 凭据实例存在库里：access 负责「按标识取出并解密」，持久层归 store。
+acmecast-store.workspace = true
+# update_fields 写回凭据时要盖 updated_at 时间戳。
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+schemars.workspace = true
+sea-orm.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+# 用 acme 的进程内 mock 验证连通性测试的两条分支，不必依赖外网。
+acmecast-acme = { workspace = true, features = ["testing"] }
+tokio.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,40 @@
+[package]
+name = "acmecast-cert"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "证书处理：PEM / DER 编解码、X.509 语义解析、格式转换"
+
+[dependencies]
+acmecast-core.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+chrono.workspace = true
+base64.workspace = true
+sha2.workspace = true
+x509-parser = "0.18.1"
+ring = "0.17"
+p12-keystore = "0.3.2"
+# JKS（Java KeyStore）。必须关掉默认特性：其 `pkcs12` 特性调用
+# `P12KeyStore::from_pkcs12(buf, pass)`，而 p12-keystore 0.3.2 已要求第三个
+# `Pkcs12ImportPolicy` 参数，开默认特性直接编译不过。PFX 由 4.4 的 p12-keystore 负责，
+# 这里只要 JKS 本体，`rand` 用于生成密钥保护器的随机 salt。
+#
+# 代价：该 crate 的依赖偏老，会引入 asn1-rs 0.5、thiserror 1.0、rand 0.8 等重复版本
+# （`cargo deny` 的 multiple-versions 为 warn，不致失败）。其 SHA-1 依赖不是我们的选择
+# ——JKS 格式本身就用 SHA-1 做密钥保护器，这是无法回避的格式限制。
+jks = { version = "0.3.3", default-features = false, features = ["rand"] }
+cms = { version = "0.2.3", features = ["builder", "alloc"] }
+# 版本必须与 cms 对齐，否则 x509-cert 的类型在两者间不互通。
+x509-cert = "0.2.5"
+der = "0.7.10"
+const-oid = "0.9"
+
+[dev-dependencies]
+# 在测试中现场生成证书，避免把固定证书样本写进仓库（样本一旦过期就变成噪声）。
+rcgen = "0.14.10"
+uuid.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,14 @@
+# 构建产物与本地数据不进上下文：前者巨大，后者含凭据密钥与数据库。
+target/
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# 编辑器与系统文件
+.vscode/
+.idea/
+.DS_Store
+
+# 本地文档与脚本（不影响构建）
+certd/

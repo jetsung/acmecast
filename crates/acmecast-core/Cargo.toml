@@ -1,0 +1,25 @@
+[package]
+name = "acmecast-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "acmecast 核心：错误类型、配置装载、凭据加密原语"
+
+[dependencies]
+thiserror.workspace = true
+serde.workspace = true
+serde_yaml.workspace = true
+serde_json.workspace = true
+aes-gcm.workspace = true
+rand.workspace = true
+base64.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+serial_test = "3"
+
+[lints]
+workspace = true
