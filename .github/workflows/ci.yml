@@ -45,7 +45,7 @@ jobs:
         run: cargo build --workspace --all-targets
 
   test:
-    name: 单元测试（SQLite）
+    name: 全量测试（SQLite 内存 + pebble 端到端）
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -62,7 +62,7 @@ jobs:
           distribution: temurin
           java-version: "21"
 
-      - name: 运行全部单元测试
+      - name: 运行全部测试（含 pebble 端到端与 hash-password 子命令）
         run: cargo test --workspace
 
   license:
@@ -94,10 +94,8 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: 运行集成测试
-        env:
-          ACMECAST__DATABASE__URL: "sqlite:///tmp/acmecast-ci.db?mode=rwc"
-        run: cargo test --workspace --features integration-db
+      - name: 运行集成测试（SQLite 内存，测试自行建库）
+        run: cargo test --workspace
 
   integration-mysql:
     name: 集成测试（MySQL）
@@ -105,7 +103,7 @@ jobs:
     needs: [build]
     services:
       mysql:
-        image: mysql:8
+        image: mysql:8.4
         env:
           MYSQL_ROOT_PASSWORD: acmecast
           MYSQL_DATABASE: acmecast
@@ -123,10 +121,10 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: 运行集成测试
+      - name: 运行方言等价性套件（MySQL 直连）
         env:
-          ACMECAST__DATABASE__URL: "mysql://root:acmecast@127.0.0.1:3306/acmecast"
-        run: cargo test --workspace --features integration-db
+          ACMECAST_TEST_MYSQL_URL: "mysql://root:acmecast@127.0.0.1:3306/acmecast"
+        run: cargo test -p acmecast-server --test dialect_equivalence -- mysql_
 
   integration-postgres:
     name: 集成测试（PostgreSQL）
@@ -152,7 +150,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: 运行集成测试
+      - name: 运行方言等价性套件（PostgreSQL 直连）
         env:
-          ACMECAST__DATABASE__URL: "postgres://postgres:acmecast@127.0.0.1:5432/acmecast"
-        run: cargo test --workspace --features integration-db
+          ACMECAST_TEST_POSTGRES_URL: "postgres://postgres:acmecast@127.0.0.1:5432/acmecast"
+        run: cargo test -p acmecast-server --test dialect_equivalence -- postgres_
