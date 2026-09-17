@@ -115,6 +115,23 @@ export ACMECAST_DATABASE_URL='mysql://user:pass@db.example.com:3306/acmecast'
 停机错过 cron 触发点时默认跳过补跑（可配置为追赶最近一次）；同一时间窗口内
 的重复续期触发会自动去重。每次自动触发都落审计记录，可按流水线与时间查询。
 
+## 前端
+
+控制台 SPA 位于 `frontend/`（React 19 + TypeScript + Ant Design 6），镜像构建
+时自动打包，产物由后端静态托管（`ACMECAST_STATIC_DIR=/static`），与 API 同源。
+
+```bash
+# 开发：先起后端，再启动前端 dev server（/api 代理到 8080）
+cd frontend && pnpm install && pnpm dev   # http://localhost:5173
+# 后端接口变更后重新生成 API 类型
+pnpm gen:api
+```
+
+页面：仪表盘、证书（列表/详情/多格式下载/吊销）、流水线编排（由任务
+JSON Schema 驱动的动态表单）、运行历史（按步骤分组日志）、凭据管理、
+调度配置。API 类型从 `/api/openapi.json` 生成，后端接口变更后执行
+`pnpm gen:api` 保持同步。
+
 ## 已知限制
 
 - SSH 部署目标未接入 known_hosts，主机指纹暂不校验（代码中留有告警）；
