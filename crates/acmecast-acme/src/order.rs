@@ -5,7 +5,7 @@
 use std::time::Duration;
 
 use instant_acme::{
-    AuthorizationStatus, Challenge, ChallengeStatus, ChallengeType, Order, RetryPolicy,
+    AuthorizationStatus, Challenge, ChallengeStatus, ChallengeType, Order, Problem, RetryPolicy,
 };
 
 use crate::error::{AcmeError, Result};
@@ -304,6 +304,45 @@ impl PendingOrder {
         Ok(map_order_status(state.status))
     }
 
+    /// CA 拒绝本次验证时给出的原因。
+    ///
+    /// 订单变 `invalid` 只说明「失败了」；真正的原因（如 DNS 跟随 CNAME 后
+    /// 取不到 TXT、限速、账户问题）藏在订单的 problem 文档和各挑战的 error
+    /// 里，不捞出来运维就只能对着「订单状态 invalid」猜。
+    /// 尽力而为：任何一步取不到都跳过，全空时给占位文案，不掩盖原始错误。
+    pub async fn rejection_reason(&mut self) -> String {
+        let mut reasons: Vec<String> = Vec::new();
+
+        if let Ok(state) = self.inner.refresh().await
+            && let Some(problem) = &state.error
+        {
+            reasons.push(problem_text(problem));
+        }
+
+        let mut stream = self.inner.authorizations();
+        while let Some(Ok(mut handle)) = stream.next().await {
+            let Ok(state) = handle.refresh().await else {
+                continue;
+            };
+            let identifier = state.identifier().to_string();
+            for challenge in &state.challenges {
+                if let Some(problem) = &challenge.error {
+                    reasons.push(format!(
+                        "`{identifier}` 的 {} 挑战: {}",
+                        challenge_type_name(&challenge.r#type),
+                        problem_text(problem)
+                    ));
+                }
+            }
+        }
+
+        if reasons.is_empty() {
+            "CA 未给出具体原因".to_owned()
+        } else {
+            reasons.join("；")
+        }
+    }
+
     /// 订单 URL，用于排障与续期关联。
     #[must_use]
     pub fn url(&self) -> &str {
@@ -341,6 +380,37 @@ pub(crate) fn retry_policy(
         .initial_delay(initial_delay)
         .backoff(backoff)
         .timeout(timeout)
+}
+
+/// 把 CA 的 problem 文档压成一行可读文本（`Display` 的前缀是「API error」，
+/// 对日志没有信息量，这里只留 detail、类型与子问题）。
+fn problem_text(problem: &Problem) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(detail) = &problem.detail {
+        parts.push(detail.clone());
+    }
+    if let Some(kind) = &problem.r#type {
+        parts.push(format!("({kind})"));
+    }
+    for sub in &problem.subproblems {
+        parts.push(sub.to_string());
+    }
+    if parts.is_empty() {
+        "CA 未给出原因".to_owned()
+    } else {
+        parts.join(" ")
+    }
+}
+
+fn challenge_type_name(kind: &ChallengeType) -> String {
+    match kind {
+        ChallengeType::Http01 => "http-01".to_owned(),
+        ChallengeType::Dns01 => "dns-01".to_owned(),
+        ChallengeType::TlsAlpn01 => "tls-alpn-01".to_owned(),
+        ChallengeType::DeviceAttest01 => "device-attest-01".to_owned(),
+        ChallengeType::Unknown(name) => name.clone(),
+        _ => "未知挑战".to_owned(),
+    }
 }
 
 /// 把底层挑战映射为项目类型；不认识的挑战类型被跳过而非报错。
@@ -517,6 +587,42 @@ mod tests {
         // 超时很短的用例在测试里能快速失败。
         let policy = retry_policy(Duration::from_millis(10), 1.5, Duration::from_millis(50));
         let _ = policy;
+    }
+
+    #[test]
+    fn problem_text_prefers_detail_and_keeps_type() {
+        let problem = Problem {
+            r#type: Some("urn:ietf:params:acme:error:dns".to_owned()),
+            detail: Some(
+                "DNS problem: NXDOMAIN looking up TXT for _acme-challenge.example.com".to_owned(),
+            ),
+            status: Some(400),
+            subproblems: vec![],
+        };
+        let text = problem_text(&problem);
+        assert!(text.contains("NXDOMAIN"), "{text}");
+        assert!(text.contains("urn:ietf:params:acme:error:dns"), "{text}");
+        assert!(!text.contains("API error"), "{text}");
+    }
+
+    #[test]
+    fn empty_problem_still_gives_a_placeholder() {
+        let problem = Problem {
+            r#type: None,
+            detail: None,
+            status: None,
+            subproblems: vec![],
+        };
+        assert_eq!(problem_text(&problem), "CA 未给出原因");
+    }
+
+    #[test]
+    fn challenge_type_names_are_stable() {
+        assert_eq!(challenge_type_name(&ChallengeType::Dns01), "dns-01");
+        assert_eq!(
+            challenge_type_name(&ChallengeType::Unknown("weird-01".to_owned())),
+            "weird-01"
+        );
     }
 
     #[test]

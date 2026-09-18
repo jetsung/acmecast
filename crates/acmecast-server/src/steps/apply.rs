@@ -306,10 +306,11 @@ async fn wait_for_ready(order: &mut acmecast_acme::PendingOrder) -> Result<()> {
         {
             acmecast_acme::OrderStatus::Ready => return Ok(()),
             acmecast_acme::OrderStatus::Invalid => {
+                let reason = order.rejection_reason().await;
                 return Err(acmecast_pipeline::Error::Core(
-                    acmecast_core::Error::Internal(
-                        "CA 拒绝了本次验证（订单状态 invalid）".to_owned(),
-                    ),
+                    acmecast_core::Error::Internal(format!(
+                        "CA 拒绝了本次验证（订单状态 invalid）：{reason}"
+                    )),
                 ));
             }
             acmecast_acme::OrderStatus::Valid => return Ok(()),
