@@ -256,6 +256,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /** 手动触发流水线的文档占位函数。 */
         post: operations["run_pipeline"];
         delete?: never;
         options?: never;
@@ -405,8 +406,41 @@ export interface components {
             };
         };
         /** @description 统一成功响应。 */
+        ApiResponse_CredentialDetailResponse: {
+            /**
+             * @description 凭据详情响应：额外带回**解密后的字段值**。
+             *
+             *     编辑表单必须能回填现值——PUT 是整体替换语义，拿不到旧值的编辑等于
+             *     一保存就把密钥清空。端点仅管理员令牌可达，与「谁能改凭据」同权限；
+             *     列表响应（`CredentialResponse`）依旧不带字段。
+             */
+            data: {
+                /**
+                 * Format: date-time
+                 * @description 创建时间。
+                 */
+                created_at: string;
+                /** @description 解密后的字段值（编辑回填用）。 */
+                fields: unknown;
+                /**
+                 * Format: int64
+                 * @description 主键。
+                 */
+                id: number;
+                /** @description 展示名称。 */
+                name: string;
+                /** @description 凭据类型。 */
+                type_id: string;
+                /**
+                 * Format: date-time
+                 * @description 更新时间。
+                 */
+                updated_at: string;
+            };
+        };
+        /** @description 统一成功响应。 */
         ApiResponse_CredentialResponse: {
-            /** @description 凭据响应。永远不返回加密字段。 */
+            /** @description 凭据列表项响应。不返回加密字段。 */
             data: {
                 /**
                  * Format: date-time
@@ -916,6 +950,36 @@ export interface components {
             /** @description `ok`、`unavailable` 或 `not_testable`。 */
             status: string;
         };
+        /**
+         * @description 凭据详情响应：额外带回**解密后的字段值**。
+         *
+         *     编辑表单必须能回填现值——PUT 是整体替换语义，拿不到旧值的编辑等于
+         *     一保存就把密钥清空。端点仅管理员令牌可达，与「谁能改凭据」同权限；
+         *     列表响应（`CredentialResponse`）依旧不带字段。
+         */
+        CredentialDetailResponse: {
+            /**
+             * Format: date-time
+             * @description 创建时间。
+             */
+            created_at: string;
+            /** @description 解密后的字段值（编辑回填用）。 */
+            fields: unknown;
+            /**
+             * Format: int64
+             * @description 主键。
+             */
+            id: number;
+            /** @description 展示名称。 */
+            name: string;
+            /** @description 凭据类型。 */
+            type_id: string;
+            /**
+             * Format: date-time
+             * @description 更新时间。
+             */
+            updated_at: string;
+        };
         /** @description 凭据创建/更新 DTO。 */
         CredentialRequest: {
             /** @description 未加密字段值；仅在进程内短暂存在。 */
@@ -925,7 +989,7 @@ export interface components {
             /** @description 已注册的凭据类型。 */
             type_id: string;
         };
-        /** @description 凭据响应。永远不返回加密字段。 */
+        /** @description 凭据列表项响应。不返回加密字段。 */
         CredentialResponse: {
             /**
              * Format: date-time
@@ -1677,12 +1741,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
+            /** @description 凭据详情（含解密字段值，供编辑回填） */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiResponse_CredentialResponse"];
+                    "application/json": components["schemas"]["ApiResponse_CredentialDetailResponse"];
                 };
             };
             404: {

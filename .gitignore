@@ -17,3 +17,5 @@ data/
 /.direnv/
 
 .env
+.admin-password
+.admin-hash

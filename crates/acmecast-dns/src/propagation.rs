@@ -1,11 +1,17 @@
 //! 记录的传播等待。
 //!
-//! 写完 TXT 记录并不等于它能被查到：厂商的 API 立刻承认，但公共解析器还要
-//! 等自己的缓存与权威链走完。CA 校验时用的是**公共解析器**的视角，所以
-//! 我们必须按同样的视角确认一遍。
+//! 写完 TXT 记录并不等于它能被查到：厂商的 API 立刻承认，但 DNS 世界还要
+//! 等各级缓存走完。所以记录写入后、通知 CA 之前，我们必须按 CA 的视角
+//! 确认它真的查得到。
 //!
 //! 分两段：先向提供商侧确认记录确实收下了（它都不认，下游无从谈起），
-//! 再向若干公共解析器查询——**全部**看到期望值才算就绪。
+//! 再逐个询问解析器——**只要有一家**看到期望值就算就绪。要求「全部看到」
+//! 会把等待绑死在最慢（或根本不可达）的那家解析器上。
+//!
+//! 默认用 [`crate::authoritative::AuthoritativeResolver`] **直查权威 NS**：
+//! 公共解析器的否定缓存（NXDOMAIN 按 SOA minimum 缓存，常见 600–1800 秒）
+//! 会在「写入→删除→重试」的循环里稳定地查不到新记录，等待永远超时。
+//! `ACMECAST_DOH_RESOLVERS` 可显式改回公共解析器集合（或 `none` 跳过等待）。
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -22,7 +28,7 @@ use crate::provider::{DnsProvider, TxtRecord};
 /// TXT 记录的 DNS 类型号。
 const TXT_TYPE: u64 = 16;
 
-/// 一个公共递归解析器。
+/// 一个「解析器视角」：从某个位置（公共递归或权威 NS）回答「这条 TXT 现在查得到吗」。
 #[async_trait]
 pub trait DnsResolver: Send + Sync + std::fmt::Debug {
     /// 解析器名称，用于错误信息——「Google DNS 上还看不到」比「某个解析器上」有用。
@@ -63,6 +69,37 @@ impl DohResolver {
             endpoint: "https://cloudflare-dns.com/dns-query".to_owned(),
         }
     }
+
+    /// 腾讯 DNSPod 公共解析。
+    #[must_use]
+    pub fn tencent(http: Arc<dyn HttpTransport>) -> Self {
+        Self {
+            http,
+            name: "腾讯 DNSPod".to_owned(),
+            endpoint: "https://1.12.12.12/resolve".to_owned(),
+        }
+    }
+
+    /// 阿里公共解析。
+    #[must_use]
+    pub fn aliyun(http: Arc<dyn HttpTransport>) -> Self {
+        Self {
+            http,
+            name: "阿里 DNS".to_owned(),
+            endpoint: "https://120.53.53.53/resolve".to_owned(),
+        }
+    }
+
+    /// 任意 DNS-over-JSON 端点（遵循 RFC 8484 之外的 Google JSON 约定，
+    /// 腾讯/阿里/Cloudflare/Google 均兼容 `?name=&type=` 与 `Accept: application/dns-json`）。
+    #[must_use]
+    pub fn custom(http: Arc<dyn HttpTransport>, name: impl Into<String>, endpoint: impl Into<String>) -> Self {
+        Self {
+            http,
+            name: name.into(),
+            endpoint: endpoint.into(),
+        }
+    }
 }
 
 #[async_trait]
@@ -100,11 +137,18 @@ impl DnsResolver for DohResolver {
     }
 }
 
-/// 默认的解析器集合：Google 与 Cloudflare 两家。
+/// 默认的解析器集合。
 ///
-/// 用两家而不是一家：单个解析器可能因为自身缓存或线路问题给出滞后的答案，
-/// 而 CA 用的是哪个解析器我们无从知道——多问几家能显著降低
-/// 「本地已经生效、CA 那边还没有」的概率。
+/// 内置四家：腾讯 DNSPod、阿里、Google、Cloudflare。默认四家全用——
+/// 单个解析器可能因为自身缓存、线路或**网络可达性**问题给出滞后甚至查不到的答案
+/// （Google/Cloudflare 的 DoH 在部分网络环境下不可达），多问几家既能降低
+/// 「本地已生效、CA 那边还没有」的概率，也能避免一家被墙就整体卡死：
+/// 查询失败的解析器按「未传播」处理，只要有一家看到即可继续。
+///
+/// 可用环境变量 `ACMECAST_DOH_RESOLVERS` 覆盖默认集合：逗号分隔的
+/// `名称=端点`（或仅端点，名称取主机名），如
+/// `ACMECAST_DOH_RESOLVERS="dns.google=https://dns.google/resolve,https://1.12.12.12/resolve"`。
+/// 设为 `none` 可跳过传播等待（不推荐，CA 侧可能因记录未传播而校验失败）。
 ///
 /// 返回 `Vec<Box<dyn DnsResolver>>` 而非引用切片，是因为解析器要有地方存；
 /// 调用方按下面这样把它交给 [`wait_until_visible`]：
@@ -116,10 +160,94 @@ impl DnsResolver for DohResolver {
 /// ```
 #[must_use]
 pub fn default_resolvers(http: Arc<dyn HttpTransport>) -> Vec<Box<dyn DnsResolver>> {
+    let Ok(spec) = std::env::var(RESOLVERS_ENV_KEY) else {
+        return builtin_resolvers(http);
+    };
+    let spec = spec.trim().to_owned();
+    if spec.is_empty() {
+        return builtin_resolvers(http);
+    }
+    if spec.eq_ignore_ascii_case("none") {
+        return Vec::new();
+    }
+
+    let resolvers = spec
+        .split(',')
+        .filter_map(|entry| {
+            let entry = entry.trim();
+            if entry.is_empty() {
+                return None;
+            }
+            let (name, endpoint) = match entry.split_once('=') {
+                Some((name, endpoint)) => (name.trim().to_owned(), endpoint.trim().to_owned()),
+                None => (host_of(entry).to_owned(), entry.to_owned()),
+            };
+            if endpoint.is_empty() {
+                return None;
+            }
+            let resolver: Box<dyn DnsResolver> = Box::new(DohResolver::custom(
+                Arc::clone(&http),
+                name,
+                endpoint,
+            ));
+            Some(resolver)
+        })
+        .collect::<Vec<_>>();
+
+    if resolvers.is_empty() {
+        tracing::warn!(env = RESOLVERS_ENV_KEY, value = %spec, "配置未解析出任何解析器，回退到内置集合");
+        return builtin_resolvers(http);
+    }
+    tracing::info!(count = resolvers.len(), "使用环境变量配置的 DoH 解析器");
+    resolvers
+}
+
+/// 传播等待解析器配置的环境变量名。
+const RESOLVERS_ENV_KEY: &str = "ACMECAST_DOH_RESOLVERS";
+
+/// 某个 zone 应使用哪组解析器来确认「CA 能查到这条记录」。
+///
+/// 默认走**权威 NS 直查**（见 [`crate::authoritative`]）：公共解析器的否定缓存
+/// （NXDOMAIN 按 SOA minimum 缓存，常见 600–1800 秒）会在「写入→删除→重试」
+/// 的循环里稳定地查不到新记录，让等待永远超时——而 CA 是从根区递归到权威
+/// NS 取答案的，根本不看这些缓存。
+///
+/// 若显式设置了 `ACMECAST_DOH_RESOLVERS`（含 `none`=跳过等待），按配置走，
+/// 保留排障与定制能力。
+#[must_use]
+pub fn resolvers_for_zone(
+    http: Arc<dyn HttpTransport>,
+    zone: &str,
+) -> Vec<Box<dyn DnsResolver>> {
+    if std::env::var(RESOLVERS_ENV_KEY)
+        .is_ok_and(|value| !value.trim().is_empty())
+    {
+        return default_resolvers(http);
+    }
+    let _ = http;
+    vec![Box::new(crate::authoritative::AuthoritativeResolver::new(
+        zone,
+    ))]
+}
+
+/// 内置解析器集合：腾讯/阿里（国内可达）+ Google/Cloudflare（国际可达）。
+fn builtin_resolvers(http: Arc<dyn HttpTransport>) -> Vec<Box<dyn DnsResolver>> {
     vec![
+        Box::new(DohResolver::tencent(Arc::clone(&http))),
+        Box::new(DohResolver::aliyun(Arc::clone(&http))),
         Box::new(DohResolver::google(Arc::clone(&http))),
         Box::new(DohResolver::cloudflare(http)),
     ]
+}
+
+/// 从端点 URL 里取主机名，作为未显式命名时的解析器名称。
+fn host_of(endpoint: &str) -> &str {
+    endpoint
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .split('/')
+        .next()
+        .unwrap_or(endpoint)
 }
 
 /// 传播等待的策略。
@@ -142,11 +270,21 @@ impl Default for PropagationPolicy {
     }
 }
 
-/// 等这条记录在**全部**解析器上都可见。
+/// 单次解析器查询的超时。
+///
+/// 不可达的端点（被墙的 DoH）要**快速**失败：查询本身没有超时的话，
+/// 一次 TCP 连接挂起到内核超时要一分多钟——120 秒的总预算里只跑得动
+/// 两轮，「排除不可达」之类的机制根本没机会生效。
+const LOOKUP_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// 等这条记录在**任意一家**解析器上可见。
 ///
 /// 未可见时按 `policy.interval` 重试，直到 `policy.timeout`——
 /// 超时返回的错误会指明卡在哪一段：是提供商侧就没认，还是解析器还没看到。
 /// 两者要查的方向完全不同，混成一句「超时了」等于没说。
+///
+/// `resolvers` 为空（`ACMECAST_DOH_RESOLVERS=none`）时跳过解析器阶段，
+/// 提供商侧确认后立即返回。
 pub async fn wait_until_visible(
     provider: &dyn DnsProvider,
     credentials: &Value,
@@ -157,8 +295,9 @@ pub async fn wait_until_visible(
     let deadline = Instant::now() + policy.timeout;
     let mut published = false;
     let mut round = 0_u32;
-    // 跨轮保留，供超时错误指明「是谁没跟上」。
+    // 跨轮保留，供超时错误指明「是谁没跟上」「是谁查不了」。
     let mut missing: Vec<String> = Vec::new();
+    let mut unreachable: Vec<String> = Vec::new();
 
     loop {
         round += 1;
@@ -169,45 +308,53 @@ pub async fn wait_until_visible(
             published = found.iter().any(|value| value == &record.value);
         }
 
-        if published {
-            // 第二段：逐个解析器查，收集**还没看到**的那些。
-            missing.clear();
-            for resolver in resolvers {
-                let values = match resolver.lookup_txt(&record.name).await {
-                    Ok(values) => values,
-                    Err(err) => {
-                        // 查询**失败**与「查到了但值不对」是两回事：后者是传播
-                        // 还没到，前者多半是这个解析器本身出了问题。两者都按
-                        // 「未传播」处理（继续等），但失败的值得留一条 warn。
-                        warn!(
-                            resolver = resolver.name(),
-                            error = %err,
-                            "解析器查询失败，按未传播处理"
-                        );
-                        Vec::new()
-                    }
-                };
+        if published && resolvers.is_empty() {
+            info!(name = %record.name, round, "传播等待已禁用，提供商侧确认即就绪");
+            return Ok(());
+        }
 
-                if !values.iter().any(|value| value == &record.value) {
-                    missing.push(resolver.name().to_owned());
+        if published {
+            missing.clear();
+            unreachable.clear();
+            for resolver in resolvers {
+                // 查询**失败**（含超时）与「查到了但值不对」是两回事：前者多半是
+                // 这个解析器本身出了问题（端点不可达、被墙），按「不可达」归类，
+                // 不参与判定——任一家看到即可放行，所以失败只会让自己出局，
+                // 不会像旧的「全部可见」语义那样把整个等待拖死。
+                let outcome = match tokio::time::timeout(LOOKUP_TIMEOUT, resolver.lookup_txt(&record.name)).await {
+                    Ok(result) => result,
+                    Err(_elapsed) => Err(Error::provider(format!(
+                        "{} 查询 `{}` 超时（{} 秒）",
+                        resolver.name(),
+                        record.name,
+                        LOOKUP_TIMEOUT.as_secs()
+                    ))),
+                };
+                match outcome {
+                    Ok(values) => {
+                        if values.iter().any(|value| value == &record.value) {
+                            info!(
+                                name = %record.name,
+                                round,
+                                resolver = resolver.name(),
+                                "记录已在解析器上可见"
+                            );
+                            return Ok(());
+                        }
+                        missing.push(resolver.name().to_owned());
+                    }
+                    Err(err) => {
+                        warn!(resolver = resolver.name(), error = %err, "解析器查询失败，按不可达处理");
+                        unreachable.push(resolver.name().to_owned());
+                    }
                 }
             }
 
-            if missing.is_empty() {
-                info!(
-                    name = %record.name,
-                    round,
-                    resolvers = resolvers.len(),
-                    "记录已在全部解析器上可见"
-                );
-                return Ok(());
-            }
-
-            debug!(name = %record.name, round, missing = ?missing, "尚未在全部解析器上可见");
+            debug!(name = %record.name, round, missing = ?missing, unreachable = ?unreachable, "尚无解析器可见该记录");
         }
 
         if Instant::now() >= deadline {
-            return Err(timeout_error(published, record, &missing, policy));
+            return Err(timeout_error(published, record, &missing, &unreachable, policy));
         }
         sleep(policy.interval).await;
     }
@@ -221,6 +368,7 @@ fn timeout_error(
     published: bool,
     record: &TxtRecord,
     missing: &[String],
+    unreachable: &[String],
     policy: &PropagationPolicy,
 ) -> Error {
     let waited = humanize(policy.timeout);
@@ -232,10 +380,23 @@ fn timeout_error(
         ));
     }
 
+    // 「没看到的」与「查不了的」分开列：前者是传播问题，后者是网络问题，
+    // 排查方向完全不同。
+    let mut parts: Vec<String> = Vec::new();
+    if !missing.is_empty() {
+        parts.push(format!("{} 上不可见", missing.join("、")));
+    }
+    if !unreachable.is_empty() {
+        parts.push(format!("{} 查询失败（网络不可达？）", unreachable.join("、")));
+    }
+    if parts.is_empty() {
+        parts.push("全部解析器查询均失败".to_owned());
+    }
+
     Error::provider(format!(
-        "记录 `{}` 已写入提供商侧，但等待 {waited} 后仍未在 {} 上可见",
+        "记录 `{}` 已写入提供商侧，但等待 {waited} 后：{}",
         record.name,
-        missing.join("、")
+        parts.join("；")
     ))
 }
 
@@ -256,6 +417,79 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
+
+    /// 环境变量会跨测试共享进程状态，解析配置的测试统一串行。
+    /// `serde_json` 无关；这里用 `Mutex` 占住一把全局锁来串行化。
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// 设置环境变量并返回恢复句柄（drop 时还原）。
+    ///
+    /// `set_var`/`remove_var` 在 edition 2024 下是 unsafe（多线程读环境变量
+    /// 理论上有竞争）；测试进程内用 `ENV_LOCK` 串行化，安全性由测试约定保证。
+    struct EnvGuard(&'static str);
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            // SAFETY: 所有读环境变量的测试都持有 ENV_LOCK，无并发访问。
+            unsafe { std::env::set_var(key, value) };
+            Self(key)
+        }
+    }
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: 同上。
+            unsafe { std::env::remove_var(self.0) };
+        }
+    }
+
+    #[test]
+    fn env_var_overrides_builtin_resolvers() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _env = EnvGuard::set(
+            "ACMECAST_DOH_RESOLVERS",
+            "my-dns=https://dns.example.com/resolve,https://1.12.12.12/resolve",
+        );
+        let http: Arc<dyn HttpTransport> = Arc::new(crate::http::ReqwestTransport::default());
+        let resolvers = default_resolvers(http);
+        assert_eq!(resolvers.len(), 2);
+        assert_eq!(resolvers[0].name(), "my-dns");
+        // 未命名时取主机名。
+        assert_eq!(resolvers[1].name(), "1.12.12.12");
+    }
+
+    #[test]
+    fn env_var_none_disables_propagation_wait() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let _env = EnvGuard::set("ACMECAST_DOH_RESOLVERS", "none");
+        let http: Arc<dyn HttpTransport> = Arc::new(crate::http::ReqwestTransport::default());
+        assert!(default_resolvers(http).is_empty());
+    }
+
+    #[test]
+    fn empty_or_invalid_env_falls_back_to_builtin() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let http: Arc<dyn HttpTransport> = Arc::new(crate::http::ReqwestTransport::default());
+
+        let _env = EnvGuard::set("ACMECAST_DOH_RESOLVERS", "  ");
+        assert_eq!(default_resolvers(Arc::clone(&http)).len(), 4);
+
+        // 全是无法解析的碎片：回退内置。
+        let _env = EnvGuard::set("ACMECAST_DOH_RESOLVERS", " ,, =");
+        assert_eq!(default_resolvers(http).len(), 4);
+    }
+
+    #[test]
+    fn builtin_set_contains_china_and_global_resolvers() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let http: Arc<dyn HttpTransport> = Arc::new(crate::http::ReqwestTransport::default());
+        let names = default_resolvers(http)
+            .iter()
+            .map(|r| r.name().to_owned())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"腾讯 DNSPod".to_owned()));
+        assert!(names.contains(&"阿里 DNS".to_owned()));
+        assert!(names.contains(&"Google DNS".to_owned()));
+        assert!(names.contains(&"Cloudflare DNS".to_owned()));
+    }
 
     /// 按脚本应答的解析器：每调一次前进一格，用完后一直返回最后一个。
     #[derive(Debug)]
@@ -381,7 +615,7 @@ mod tests {
         .await;
 
         let err = result.expect_err("应超时");
-        assert!(err.to_string().contains("未在"), "{err}");
+        assert!(err.to_string().contains("不可见"), "{err}");
 
         assert_eq!(
             provider.deleted(),
@@ -444,49 +678,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn every_resolver_must_see_the_value() {
-        // spec 场景：多个解析器不一致时等全部返回期望值。
+    async fn any_single_visible_resolver_is_enough() {
+        // 任一家看到即放行：另一家滞后（负缓存、线路）不再阻塞整个等待。
         let provider = Publishes::always("value-1");
+        let lagging = ScriptedResolver::new("慢的", vec![vec![]]);
         let ready = ScriptedResolver::new("先就绪的", vec![vec!["value-1".to_owned()]]);
-        let lagging =
-            ScriptedResolver::new("慢的", vec![vec![], vec![], vec!["value-1".to_owned()]]);
 
         wait_until_visible(
             &provider,
             &serde_json::json!({}),
             &record(),
-            &[&ready, &lagging],
+            &[&lagging, &ready],
             &fast_policy(),
         )
         .await
-        .expect("全部可见才返回");
-        assert_eq!(lagging.calls(), 3);
+        .expect("一家可见即返回");
+        assert_eq!(lagging.calls(), 1, "判定不陪慢的那家等到底");
     }
 
     #[tokio::test]
-    async fn verification_waits_until_every_resolver_agrees() {
-        // 快的那家第一轮就一致了，但它后面还要被再问一次——说明等待以
-        // 「全部一致」为准，而不是先到先得就放行。
+    async fn no_resolvers_means_provider_confirmation_only() {
+        // `ACMECAST_DOH_RESOLVERS=none`：跳过解析器阶段，提供商侧认了就算就绪。
         let provider = Publishes::always("value-1");
-        let ready = ScriptedResolver::new("快的", vec![vec!["value-1".to_owned()]]);
-        let lagging = ScriptedResolver::new("慢的", vec![vec![], vec!["value-1".to_owned()]]);
 
         wait_until_visible(
             &provider,
             &serde_json::json!({}),
             &record(),
-            &[&ready, &lagging],
+            &[],
             &fast_policy(),
         )
         .await
-        .expect("全部一致后才返回");
-
-        assert_eq!(ready.calls(), 2, "早就一致的那家也要陪跑到最后");
-        assert_eq!(lagging.calls(), 2, "等到它一致为止");
+        .expect("无解析器时提供商侧确认即就绪");
     }
 
     #[test]
-    fn the_default_set_covers_two_public_resolvers() {
+    fn the_default_set_covers_public_resolvers() {
         use crate::http::HttpResponse;
 
         #[derive(Debug)]
@@ -499,10 +726,14 @@ mod tests {
             }
         }
 
+        // default_resolvers 会读环境变量，必须与其它 env 测试串行。
+        let _guard = ENV_LOCK.lock().unwrap();
         let resolvers = default_resolvers(Arc::new(Unused));
         let names: Vec<&str> = resolvers.iter().map(|resolver| resolver.name()).collect();
 
-        assert_eq!(names.len(), 2, "至少两家才谈得上「多解析器」");
+        assert_eq!(names.len(), 4, "国内+国际各两家，避免单点不可达");
+        assert!(names.contains(&"腾讯 DNSPod"), "{names:?}");
+        assert!(names.contains(&"阿里 DNS"), "{names:?}");
         assert!(names.contains(&"Google DNS"), "{names:?}");
         assert!(names.contains(&"Cloudflare DNS"), "{names:?}");
     }
@@ -532,24 +763,58 @@ mod tests {
     #[tokio::test]
     async fn a_timeout_names_the_resolvers_that_never_saw_it() {
         let provider = Publishes::always("value-1");
-        let ready = ScriptedResolver::new("快的", vec![vec!["value-1".to_owned()]]);
-        let stuck = ScriptedResolver::new("卡住的", vec![vec![]]);
+        let stale = ScriptedResolver::new("卡住的", vec![vec!["旧值".to_owned()]]);
+        let stuck = ScriptedResolver::new("查不到的", vec![vec![]]);
 
         let err = wait_until_visible(
             &provider,
             &serde_json::json!({}),
             &record(),
-            &[&ready, &stuck],
+            &[&stale, &stuck],
             &fast_policy(),
         )
         .await
-        .expect_err("有解析器看不到应超时");
+        .expect_err("没有任何解析器看到应超时");
 
         let text = err.to_string();
         assert!(text.contains("已写入提供商侧"), "{text}");
-        assert!(text.contains("卡住的"), "应指出是哪个解析器没跟上: {text}");
-        // 已经就绪的那个不必再提。
-        assert!(!text.contains("快的"), "{text}");
+        assert!(text.contains("卡住的"), "应指出没跟上的解析器: {text}");
+        assert!(text.contains("查不到的"), "{text}");
+        assert!(text.contains("不可见"), "{text}");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_hanging_resolver_query_is_cut_off_by_the_lookup_timeout() {
+        // 被阻断的 DoH 端点会让 TCP 连接挂起一分多钟。没有单次查询超时的话，
+        // 一轮就吃掉大半个总超时——「快速排除不可达」根本轮不到发生。
+        use crate::http::HttpResponse;
+
+        #[derive(Debug)]
+        struct Hangs;
+
+        #[async_trait]
+        impl HttpTransport for Hangs {
+            async fn send(&self, _request: HttpRequest) -> Result<HttpResponse> {
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+                Ok(HttpResponse::new(200, "{}"))
+            }
+        }
+
+        let provider = Publishes::always("value-1");
+        let resolver = DohResolver::google(Arc::new(Hangs));
+        let err = wait_until_visible(
+            &provider,
+            &serde_json::json!({}),
+            &record(),
+            &[&resolver],
+            &fast_policy(),
+        )
+        .await
+        .expect_err("挂起的查询应被超时切断并判为失败");
+
+        let text = err.to_string();
+        assert!(text.contains("Google DNS"), "{text}");
+        assert!(text.contains("查询失败"), "挂起应归类为查不了而不是没看到: {text}");
     }
 
     #[tokio::test]
@@ -582,6 +847,39 @@ mod tests {
         .expect_err("一直失败应超时");
 
         assert!(err.to_string().contains("总是失败"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn an_always_unreachable_resolver_does_not_block_the_visible_ones() {
+        // 一个解析器（如被墙的 DoH 端点）永远查询失败，另一个正常返回记录值：
+        // 不可达的那家被排除出判定，等待应成功返回而不是拖到超时。
+        #[derive(Debug)]
+        struct AlwaysFails;
+
+        #[async_trait]
+        impl DnsResolver for AlwaysFails {
+            fn name(&self) -> &str {
+                "被墙的"
+            }
+
+            async fn lookup_txt(&self, _name: &str) -> Result<Vec<String>> {
+                Err(Error::provider("网络不通"))
+            }
+        }
+
+        let provider = Publishes::always("value-1");
+        let failing = AlwaysFails;
+        let seeing = ScriptedResolver::new("正常的", vec![vec!["value-1".to_owned()]]);
+
+        wait_until_visible(
+            &provider,
+            &serde_json::json!({}),
+            &record(),
+            &[&failing, &seeing],
+            &fast_policy(),
+        )
+        .await
+        .expect("可达解析器已看到记录，不可达的不应阻塞");
     }
 
     // ---- DoH 解析器 ----

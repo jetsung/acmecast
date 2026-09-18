@@ -3,6 +3,7 @@
 //! 对应 `specs/dns-challenge/spec.md`。本 crate 定义「怎么在某家 DNS 服务上
 //! 增删 TXT 记录」，以及挑战流程本身（写入、等待传播、清理）。
 
+pub mod authoritative;
 pub mod challenge;
 pub mod error;
 pub mod http;
@@ -12,12 +13,14 @@ pub mod provider;
 pub mod providers;
 pub mod registry;
 
+pub use authoritative::{Authority, AuthoritativeResolver, HickoryAuthority};
 pub use challenge::{ChallengeKind, challenge_record_name, ensure_kind_covers, with_txt_record};
 pub use error::{Error, Result};
 pub use http::{HttpRequest, HttpResponse, HttpTransport, ReqwestTransport};
 pub use http01::Http01Answer;
 pub use propagation::{
-    DnsResolver, DohResolver, PropagationPolicy, default_resolvers, wait_until_visible,
+    DnsResolver, DohResolver, PropagationPolicy, default_resolvers, resolvers_for_zone,
+    wait_until_visible,
 };
 pub use provider::{DnsProvider, TxtRecord, parse_credentials};
 pub use providers::{AliyunProvider, CloudflareProvider};

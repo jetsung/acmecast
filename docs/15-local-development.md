@@ -26,19 +26,35 @@
 
 ## 15.2 准备密钥与口令
 
-三个变量必须先在**运行后端的那个 shell** 里导出：
+三个变量必须先在**运行后端的那个 shell** 里提供。两把密钥只能走环境变量；
+管理员口令哈希额外支持文件方式（`ACMECAST_ADMIN_PASSWORD_HASH_FILE`，文件优先，
+文件缺失或内容为空白时回退到环境变量）——本地开发把哈希写进 git 忽略的文件里，
+换终端时少导出一个变量，也更贴近容器里的挂载文件方式：
 
 ```bash
 # 1) 两把必需密钥（妥善保存；更换 CREDENTIAL_KEY 会使已存凭据无法解密）
 export ACMECAST_JWT_SECRET="$(openssl rand -base64 32)"
 export ACMECAST_CREDENTIAL_KEY="$(openssl rand -base64 32)"
 
-# 2) 管理员口令哈希（开发环境，直接在源码环境内生成）
+# 2) 管理员口令哈希——环境变量方式
 export ACMECAST_ADMIN_PASSWORD_HASH="$(cargo run -q -p acmecast-server --example hash-password -- '你的口令')"
 ```
 
+或文件方式（生成一次，之后重启/换终端都不用再动；文件别提交进 git）：
+
+```bash
+echo 'local-dev' > .admin-password          # 明文口令仅本地开发用
+cargo run -q -p acmecast-server --example hash-password -- "$(cat .admin-password)" > .admin-hash
+export ACMECAST_ADMIN_PASSWORD_HASH_FILE="$PWD/.admin-hash"
+```
+
+> 文件内容会被去首尾空白，`echo` 追加的换行无影响；文件存在但读不了
+> （权限不足、指向目录）会**拒绝启动**并明确报错，而不是静默回退。
+> `JWT_SECRET` / `CREDENTIAL_KEY` 当前不支持 `_FILE` 方式。
+
 各变量含义见 [03-configuration.md](03-configuration.md) 3.1 与
-[13-docker-deployment.md](13-docker-deployment.md) 13.2。
+[13-docker-deployment.md](13-docker-deployment.md) 13.2（文件方式的容器做法见
+13.3 的第 2）小节）。
 
 ## 15.3 启动后端
 
@@ -67,6 +83,10 @@ pnpm dev          # http://localhost:5173
 Vite dev server 会把 `/api` 代理到 `127.0.0.1:8080`（见 `vite.config.ts`），
 因此前后端同源、无 CORS。打开 `http://localhost:5173` 即进入控制台，
 **不需要 swagger-ui**——所有操作都能在界面上完成。
+
+> 若通过内网穿透或反向代理用自定义域名（如 `dev.example.com`）访问 5173，
+> `vite.config.ts` 已设置 `server.allowedHosts: true` 放行任意 Host；
+> 若担心安全，可改为数组仅列出自己的域名。
 
 > 若后端接口有变更，记得 `pnpm gen:api` 重新生成前端类型；首次拉起无需此步。
 

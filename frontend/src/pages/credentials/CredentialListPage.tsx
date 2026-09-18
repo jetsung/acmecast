@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { App, Button, Card, Form, Input, Modal, Select, Space, Table, Tag, Typography } from "antd";
 import type { TableColumnsType } from "antd";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { components } from "@/api/schema";
 import { ApiError, client } from "@/api/client";
 import { formatTime, unwrapData } from "@/api/helpers";
@@ -211,6 +211,35 @@ function CredentialEditorModal({
   const [saving, setSaving] = useState(false);
 
   const currentType = types.find((item) => item.type_id === selectedType);
+
+  // 编辑要回填本条记录的现值：PUT 是整体替换语义，空表单直接保存会把
+  // 已存的密钥清成空。字段值只有详情接口带回（列表接口不带）。
+  const { data: detail } = useQuery({
+    queryKey: ["credential-detail", editingId],
+    queryFn: async () => {
+      if (editingId === null) throw new Error("编辑目标不存在");
+      const result = await client.GET(`/api/credentials/${editingId}`, {
+        params: { path: { id: editingId } },
+      });
+      return unwrapData<{ name: string; type_id: string; fields: Record<string, unknown> }>(
+        result,
+      );
+    },
+    enabled: open && editingId !== null,
+  });
+
+  useEffect(() => {
+    if (!open) return;
+    if (detail) {
+      form.setFieldsValue({
+        name: detail.name,
+        type_id: detail.type_id,
+        fields: detail.fields ?? {},
+      });
+    } else if (editingId === null) {
+      form.resetFields();
+    }
+  }, [open, detail, editingId, form]);
 
   const onTypeSelect = (typeId: string) => {
     onTypeChange(typeId);

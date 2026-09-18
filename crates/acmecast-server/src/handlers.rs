@@ -608,7 +608,7 @@ pub(crate) struct CredentialQuery {
     pub page_size: Option<u64>,
 }
 
-/// 凭据响应。永远不返回加密字段。
+/// 凭据列表项响应。不返回加密字段。
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub(crate) struct CredentialResponse {
     /// 主键。
@@ -617,6 +617,27 @@ pub(crate) struct CredentialResponse {
     pub name: String,
     /// 凭据类型。
     pub type_id: String,
+    /// 创建时间。
+    pub created_at: DateTime<Utc>,
+    /// 更新时间。
+    pub updated_at: DateTime<Utc>,
+}
+
+/// 凭据详情响应：额外带回**解密后的字段值**。
+///
+/// 编辑表单必须能回填现值——PUT 是整体替换语义，拿不到旧值的编辑等于
+/// 一保存就把密钥清空。端点仅管理员令牌可达，与「谁能改凭据」同权限；
+/// 列表响应（`CredentialResponse`）依旧不带字段。
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub(crate) struct CredentialDetailResponse {
+    /// 主键。
+    pub id: i64,
+    /// 展示名称。
+    pub name: String,
+    /// 凭据类型。
+    pub type_id: String,
+    /// 解密后的字段值（编辑回填用）。
+    pub fields: serde_json::Value,
     /// 创建时间。
     pub created_at: DateTime<Utc>,
     /// 更新时间。
@@ -1108,7 +1129,7 @@ async fn list_credentials(
 async fn get_credential(
     State(state): State<HttpState>,
     Path(id): Path<i64>,
-) -> Result<ApiResponse<CredentialResponse>, ApiError> {
+) -> Result<ApiResponse<CredentialDetailResponse>, ApiError> {
     let row = acmecast_store::entity::credential::Entity::find_by_id(id)
         .one(&state.app.db)
         .await
@@ -1120,7 +1141,32 @@ async fn get_credential(
                 format!("凭据不存在: {id}"),
             )
         })?;
-    Ok(ApiResponse::new(row.into()))
+    // 编辑回填需要现值；没有加密密钥就连值都解不出来（也从来存不进去）。
+    let cipher = state.runtime.cipher.as_ref().ok_or_else(|| {
+        ApiError::new(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "configuration_error",
+            "未配置凭据加密密钥，无法读取凭据字段",
+        )
+    })?;
+    let plaintext = cipher
+        .decrypt_string(&row.encrypted_fields)
+        .map_err(ApiError::from)?;
+    let fields: serde_json::Value = serde_json::from_str(&plaintext).map_err(|error| {
+        ApiError::new(
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "deserialization_error",
+            error.to_string(),
+        )
+    })?;
+    Ok(ApiResponse::new(CredentialDetailResponse {
+        id: row.id,
+        name: row.name,
+        type_id: row.type_id,
+        fields,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+    }))
 }
 
 async fn create_credential(
@@ -1159,6 +1205,9 @@ async fn save_credential(
     credential_type
         .validate(&request.fields)
         .map_err(ApiError::from)?;
+    // 保存前统一去掉字符串字段的首尾空白：凭据通常从剪贴板粘贴，带上的
+    // 换行/空格会让厂商 API 回「认证失败」，而且存进去就一直是脏的。
+    let fields = trim_credential_strings(&request.fields);
     let cipher = state.runtime.cipher.as_ref().ok_or_else(|| {
         ApiError::new(
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -1167,7 +1216,7 @@ async fn save_credential(
         )
     })?;
     let encrypted_fields = cipher
-        .encrypt_string(&serde_json::to_string(&request.fields).map_err(|error| {
+        .encrypt_string(&serde_json::to_string(&fields).map_err(|error| {
             ApiError::new(
                 axum::http::StatusCode::BAD_REQUEST,
                 "serialization_error",
@@ -1214,6 +1263,25 @@ async fn save_credential(
         .map_err(|error| ApiError::from(acmecast_store::Error::from(error)))?,
     };
     Ok(row.into())
+}
+
+/// 递归去掉凭据 JSON 里所有字符串的首尾空白。
+///
+/// 与 `parse_credentials` 侧的处理保持同一语义：读取时也 trim，这样
+/// 在此修复之前已经存脏的凭据同样能被救回来。
+fn trim_credential_strings(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::String(text) => serde_json::Value::String(text.trim().to_owned()),
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.iter().map(trim_credential_strings).collect())
+        }
+        serde_json::Value::Object(map) => serde_json::Value::Object(
+            map.iter()
+                .map(|(key, value)| (key.clone(), trim_credential_strings(value)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
 }
 
 async fn delete_credential(

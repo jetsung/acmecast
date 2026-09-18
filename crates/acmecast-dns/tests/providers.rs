@@ -213,6 +213,8 @@ async fn aliyun_creates_a_txt_record() {
     assert!(url.contains("RR=_acme-challenge"), "{url}");
     assert!(url.contains("Type=TXT"), "{url}");
     assert!(url.contains("Value=digest-value-xyz"), "{url}");
+    // 阿里云只接受 600–86400 的 TTL，60s 会被钳到下限（见下一个用例）。
+    assert!(url.contains("TTL=600"), "{url}");
     // 签名所需的公共参数一个都不能少。
     for expected in [
         "Signature=",
@@ -222,6 +224,27 @@ async fn aliyun_creates_a_txt_record() {
         "SignatureNonce=",
     ] {
         assert!(url.contains(expected), "请求里应含 {expected}: {url}");
+    }
+}
+
+#[tokio::test]
+async fn aliyun_clamps_ttl_into_the_vendor_range() {
+    // run 24 的失败原因：上层惯用的 60/120s TTL 被原样发给
+    // AddDomainRecord，阿里云回 400 QuotaExceeded.TTL（合法区间 600–86400）。
+    for (input, expected) in [(60, "TTL=600"), (3600, "TTL=3600"), (100_000, "TTL=86400")] {
+        let transport =
+            ScriptedTransport::new(vec![HttpResponse::new(200, r#"{"RecordId":"rec-9"}"#)]);
+        let provider =
+            AliyunProvider::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
+        let record = TxtRecord::new("example.com", "_acme-challenge.example.com", "v", input);
+
+        provider
+            .create_txt(&aliyun_keys(), &record)
+            .await
+            .expect("应能创建记录");
+
+        let url = &transport.requests()[0].url;
+        assert!(url.contains(expected), "TTL={input} 应发出 {expected}: {url}");
     }
 }
 

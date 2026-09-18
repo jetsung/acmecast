@@ -149,6 +149,13 @@
 { "name": "string", "type_id": "acme.account", "fields": { } }
 ```
 
+PUT 为**整体替换**语义：未出现在 `fields` 中的旧值会被清除，因此编辑弹窗
+必须先经详情接口回填现值。
+
+**GET /api/credentials/{id}** 响应 `CredentialDetailResponse`：`id`、`name`、
+`type_id`、`fields`（**解密后的明文**，专供编辑回填）、`created_at`、
+`updated_at`。该端点与编辑凭据同权限（仅管理员），列表接口仍不返回字段。
+
 **POST /api/credentials/{id}/test** 响应：
 
 ```json

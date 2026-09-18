@@ -82,6 +82,55 @@ describe("SchemaForm", () => {
     expect(onFinish).not.toHaveBeenCalled();
   });
 
+  it("x-required-when：条件命中时字段转必填，不命中时可留空", async () => {
+    // acme.account 的诉求：ca=custom 时 directory_url 必填；内置 CA 上它是
+    // 可选的端点覆盖项。条件由后端 schema 以 x-required-when 扩展下发。
+    const onFinish = vi.fn();
+    render(
+      <Harness
+        onFinish={onFinish}
+        schema={objectSchema(
+          {
+            ca: { type: "string", enum: ["letsencrypt", "custom"] },
+            directory_url: {
+              type: "string",
+              "x-required-when": { Equals: { field: "ca", values: ["custom"] } },
+            },
+          },
+          ["ca"],
+        )}
+      />,
+    );
+
+    // 内置 CA：留空也能提交。
+    fireEvent.mouseDown(screen.getByRole("combobox"));
+    fireEvent.click(await screen.findByTitle("letsencrypt"));
+    expect(await submitAndGet(onFinish)).toEqual({ fields: { ca: "letsencrypt" } });
+
+    // 切到 custom：同一字段转必填，空值提交被拦下。
+    onFinish.mockClear();
+    fireEvent.mouseDown(screen.getByRole("combobox"));
+    fireEvent.click(await screen.findByTitle("custom"));
+    // 等联动重渲染落地（label 出现必填星号）再提交，避免与规则更新竞态。
+    await waitFor(() => {
+      expect(
+        document.querySelector("#fields_directory_url[aria-required='true']"),
+      ).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "确定" }));
+    expect(await screen.findByText("请填写 directory_url")).toBeTruthy();
+    expect(onFinish).not.toHaveBeenCalled();
+
+    // 补上值后即可提交。
+    onFinish.mockClear();
+    fireEvent.change(screen.getByLabelText("directory_url"), {
+      target: { value: "https://ca.internal/dir" },
+    });
+    expect(await submitAndGet(onFinish)).toEqual({
+      fields: { ca: "custom", directory_url: "https://ca.internal/dir" },
+    });
+  });
+
   it("boolean：Switch 的 checked 能提交", async () => {
     const onFinish = vi.fn();
     render(

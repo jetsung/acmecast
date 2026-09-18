@@ -91,6 +91,10 @@ export default defineConfig({
     },
   },
   server: {
+    // 允许通过自定义域名（内网穿透 / 反向代理）访问 dev server，
+    // 否则 Vite 会以 "Blocked request ... not allowed" 拒绝非 localhost 的 Host。
+    allowedHosts: true,
+    host: true,
     proxy: {
       "/api": {
         target: "http://127.0.0.1:8080",

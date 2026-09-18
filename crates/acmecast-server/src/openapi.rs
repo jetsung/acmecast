@@ -74,6 +74,7 @@ use crate::response::ApiResponse;
             crate::handlers::ScheduleResponse,
             crate::handlers::CredentialRequest,
             crate::handlers::CredentialResponse,
+            crate::handlers::CredentialDetailResponse,
             crate::handlers::CredentialTypeResponse,
             crate::handlers::TaskTypeResponse,
             crate::handlers::HistoryResponse,
@@ -149,7 +150,7 @@ fn list_credentials() {}
 #[utoipa::path(post, path = "/api/credentials", request_body = crate::handlers::CredentialRequest, responses((status = 200, body = ApiResponse<crate::handlers::CredentialResponse>), (status = 400, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
 fn create_credential() {}
 
-#[utoipa::path(get, path = "/api/credentials/{id}", params(("id" = i64, Path, description = "凭据标识")), responses((status = 200, body = ApiResponse<crate::handlers::CredentialResponse>), (status = 404, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
+#[utoipa::path(get, path = "/api/credentials/{id}", params(("id" = i64, Path, description = "凭据标识")), responses((status = 200, body = ApiResponse<crate::handlers::CredentialDetailResponse>, description = "凭据详情（含解密字段值，供编辑回填）"), (status = 404, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
 fn get_credential() {}
 
 #[utoipa::path(put, path = "/api/credentials/{id}", params(("id" = i64, Path, description = "凭据标识")), request_body = crate::handlers::CredentialRequest, responses((status = 200, body = ApiResponse<crate::handlers::CredentialResponse>), (status = 400, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]

@@ -33,7 +33,8 @@ interface JsonSchemaNode {
 }
 
 interface Extension {
-  "x-visible-when"?: { Equals?: { field: string; values: unknown[] } };
+  "x-visible-when"?: Condition;
+  "x-required-when"?: Condition;
   "x-hidden"?: boolean;
   /**
    * 下拉选项，由调用方注入（后端 schema 里没有）。用于「字段值是某个资源的 ID」
@@ -43,6 +44,10 @@ interface Extension {
 }
 
 type SchemaObject = JsonSchemaNode & Extension;
+
+interface Condition {
+  Equals?: { field: string; values: unknown[] };
+}
 
 export interface SchemaFormProps {
   /** 后端返回的 JSON Schema（schemars RootSchema 去壳后的对象部分）。 */
@@ -95,13 +100,18 @@ function deref(node: JsonSchemaNode, root: JsonSchemaNode): JsonSchemaNode {
   return flattenEnum(node);
 }
 
-/** 读取一个字段的显隐标记；解析失败按「不隐藏」处理（宁多显示不误隐藏）。 */
-function visibleWhen(node: SchemaObject, values: Record<string, unknown>): boolean {
-  const condition = node["x-visible-when"];
+/** 求值一条 `Equals` 条件；条件缺失或形态不认识时按「不满足」处理。 */
+function conditionSatisfied(condition: Condition | undefined, values: Record<string, unknown>): boolean {
   const equals = condition?.Equals;
-  if (!equals) return true;
+  if (!equals) return false;
   const actual = values[equals.field];
   return actual !== undefined && equals.values.some((value) => value === actual);
+}
+
+/** 读取一个字段的显隐标记；解析失败按「不隐藏」处理（宁多显示不误隐藏）。 */
+function visibleWhen(node: SchemaObject, values: Record<string, unknown>): boolean {
+  if (!node["x-visible-when"]?.Equals) return true;
+  return conditionSatisfied(node["x-visible-when"], values);
 }
 
 export function SchemaForm({ schema, form, namePrefix = [], disabled }: SchemaFormProps) {
@@ -139,7 +149,13 @@ export function SchemaForm({ schema, form, namePrefix = [], disabled }: SchemaFo
         }
 
         const rules: Rule[] = [];
-        if (required.has(name)) {
+        // 必填来源有二：字段本身在 required 列表里；或带了 x-required-when 且
+        // 当前取值命中条件（如 directory_url 仅在 ca=custom 时必填）。
+        const conditionallyRequired = conditionSatisfied(
+          node["x-required-when"],
+          values as Record<string, unknown>,
+        );
+        if (required.has(name) || conditionallyRequired) {
           // 报错文案不复用 description：那是帮助文本，红字里出现会让人以为
           // 「值不合法」，实际只是没填。description 仍作为 tooltip 展示。
           rules.push({ required: true, message: `请填写 ${name}` });

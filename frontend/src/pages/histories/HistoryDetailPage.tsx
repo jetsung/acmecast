@@ -27,7 +27,7 @@ export function HistoryDetailPage() {
   const historyId = Number(id);
   const queryClient = useQueryClient();
 
-  const { data: history } = useQuery({
+  const { data: history, error: historyError } = useQuery({
     queryKey: ["history", historyId],
     queryFn: async () => {
       const result = await client.GET(`/api/histories/${historyId}`, {
@@ -63,6 +63,18 @@ export function HistoryDetailPage() {
       void queryClient.invalidateQueries({ queryKey: ["histories"] });
     }
   }, [history?.status, history, queryClient]);
+
+  if (historyError) {
+    // 失败要说明白：吞掉错误只留 Spin 的话，「查不到」和「还在查」看起来一样。
+    return (
+      <Alert
+        type="error"
+        showIcon
+        message="运行详情加载失败"
+        description={historyError.message}
+      />
+    );
+  }
 
   if (!history || isLoading) {
     return <Spin />;

@@ -14,6 +14,7 @@
 | `ACMECAST_DATABASE_URL` | 数据目录下的 SQLite | 数据库连接串（见 3.3） |
 | `ACMECAST_STATIC_DIR` | 未设置 | 前端静态资源目录；未设置时不托管静态资源（仅 API） |
 | `ACMECAST_BODY_LIMIT_BYTES` | `2097152`（2 MiB） | 请求体体积上限，超出返回 `413 payload_too_large` |
+| `ACMECAST_DOH_RESOLVERS` | 未设置（走权威 NS 直查） | DNS-01 传播检测方式。**默认直查域名的权威名字服务器**（不受公共解析器负缓存影响，并跟随 `_acme-challenge` CNAME 委派）。显式设置为逗号分隔的 `名称=端点` 时改用这些 DoH 公共解析器；设为 `none` 跳过传播等待（不推荐） |
 
 ### 安全（部署前必须核对）
 

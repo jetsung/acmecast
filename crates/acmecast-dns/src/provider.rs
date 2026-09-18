@@ -102,11 +102,62 @@ pub trait DnsProvider: Send + Sync + std::fmt::Debug + 'static {
 ///
 /// 失败时描述里会带上 serde 的原始信息——它形如
 /// ``missing field `api_token` ``，字段名就在其中。
+///
+/// 字符串字段在解析前统一去除首尾空白：凭据往往从剪贴板粘贴进来，
+/// 拖一个换行或空格进去，各家 API 的表现是「认证失败」而非「格式错误」
+/// （Cloudflare 回 Invalid request headers，阿里云回 InvalidAccessKeyId），
+/// 很难定位到是凭据值脏了。
 pub fn parse_credentials<T>(credentials: &Value) -> Result<T>
 where
     T: serde::de::DeserializeOwned,
 {
-    serde_json::from_value(credentials.clone()).map_err(|e| {
+    let cleaned = trim_strings(credentials);
+    serde_json::from_value(cleaned).map_err(|e| {
         Error::invalid_credentials("(凭据字段)", format!("内容不符合本提供商的凭据定义: {e}"))
     })
+}
+
+/// 递归去掉 JSON 里所有字符串的首尾空白。
+fn trim_strings(value: &Value) -> Value {
+    match value {
+        Value::String(text) => Value::String(text.trim().to_owned()),
+        Value::Array(items) => Value::Array(items.iter().map(trim_strings).collect()),
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(key, value)| (key.clone(), trim_strings(value)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::Deserialize;
+    use serde_json::json;
+
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct FakeCredentials {
+        api_token: String,
+    }
+
+    #[test]
+    fn string_fields_are_trimmed_on_parse() {
+        let credentials: FakeCredentials =
+            parse_credentials(&json!({ "api_token": "  tok\n" })).expect("应解析成功");
+        assert_eq!(credentials.api_token, "tok");
+    }
+
+    #[test]
+    fn non_string_fields_are_untouched() {
+        let cleaned = trim_strings(&json!({ "id": 3, "flag": true, "n": null }));
+        assert_eq!(cleaned, json!({ "id": 3, "flag": true, "n": null }));
+    }
+
+    #[test]
+    fn nested_strings_are_trimmed() {
+        let cleaned = trim_strings(&json!({ "a": [" x "], "b": { "c": " y\n" } }));
+        assert_eq!(cleaned, json!({ "a": ["x"], "b": { "c": "y" } }));
+    }
 }

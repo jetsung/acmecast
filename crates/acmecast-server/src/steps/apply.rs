@@ -235,9 +235,11 @@ impl CertApplyStep {
             .challenge_materials(&authorization.identifier, acme_kind)
             .await
             .map_err(|e| domain_error("读取挑战材料", e))?;
-        let zone = match &input.dns_zone {
-            Some(zone) => zone.clone(),
-            None => zone_of(&authorization.identifier).ok_or_else(|| {
+        // 显式给了 zone 就用它；留空（未填或空串）则从主域名推导——
+        // 表单里“没填”很容易存成空串，不该让用户撞上「找不到域名 ``」这种错。
+        let zone = match input.dns_zone.as_deref().map(str::trim) {
+            Some(zone) if !zone.is_empty() => zone.to_owned(),
+            _ => zone_of(&authorization.identifier).ok_or_else(|| {
                 acmecast_pipeline::Error::Core(acmecast_core::Error::Internal(format!(
                     "无法从 {} 推导 DNS zone，请显式配置 dns_zone",
                     authorization.identifier
@@ -260,7 +262,7 @@ impl CertApplyStep {
                 let http = Arc::new(acmecast_dns::ReqwestTransport::new().map_err(|e| {
                     acmecast_dns::Error::provider(format!("构造解析器客户端: {e}"))
                 })?);
-                let resolvers = acmecast_dns::default_resolvers(http);
+                let resolvers = acmecast_dns::resolvers_for_zone(http, &zone);
                 let refs: Vec<&dyn acmecast_dns::DnsResolver> =
                     resolvers.iter().map(|resolver| resolver.as_ref()).collect();
                 wait_until_visible(
@@ -274,7 +276,7 @@ impl CertApplyStep {
                     },
                 )
                 .await?;
-                ctx.log_info(format!("TXT 记录已在公共解析器可见：{}", record.name));
+                ctx.log_info(format!("TXT 记录已在权威/公共解析器可见：{}", record.name));
             }
             ready
                 .await
@@ -336,6 +338,19 @@ fn transport_options(input: &AcmeApplyInput) -> acmecast_acme::ProxyConfig {
 fn generate_key_and_csr(domains: &[String]) -> Result<(String, Vec<u8>)> {
     let key = rcgen::KeyPair::generate().map_err(|e| domain_error("生成密钥", e))?;
     let mut params = rcgen::CertificateParams::default();
+    // 必须换掉 rcgen 的默认 CN（「rcgen self signed cert」）：CA 会把 subject
+    // 也当作申请标识符校验，带空格的假名直接吃 rejectedIdentifier。
+    // CN 不放通配符（LE 拒绝 `*.` 开头的标识符），取第一个非通配域名。
+    let mut dn = rcgen::DistinguishedName::new();
+    if let Some(cn) = domains
+        .iter()
+        .map(String::as_str)
+        .find(|d| !d.starts_with("*."))
+        .or_else(|| domains.first().map(|d| d.trim_start_matches("*.")))
+    {
+        dn.push(rcgen::DnType::CommonName, cn.to_owned());
+    }
+    params.distinguished_name = dn;
     params.subject_alt_names = domains
         .iter()
         .map(|domain| {

@@ -244,7 +244,28 @@ impl CredentialType for AcmeAccountType {
     }
 
     fn fields_schema(&self) -> RootSchema {
-        schema_for!(AcmeAccountFields)
+        let mut schema = schema_for!(AcmeAccountFields);
+
+        // schemars 只认类型不认语义：`ca: String` 出来是自由文本框。
+        // 这里把 CA 别名的合法取值补成 enum（前端据此渲染下拉），
+        // 并给 `directory_url` 挂上「仅 ca=custom 时必填」的条件——
+        // 内置 CA 上它仍是可选的端点覆盖项，所以不能直接进 required。
+        let Some(object) = schema.schema.object.as_mut() else {
+            return schema;
+        };
+        if let Some(schemars::schema::Schema::Object(ca)) = object.properties.get_mut("ca") {
+            ca.enum_values = Some(CaKind::ALL.iter().map(|alias| (*alias).into()).collect());
+        }
+        if let Some(schemars::schema::Schema::Object(url)) =
+            object.properties.get_mut("directory_url")
+        {
+            url.extensions.insert(
+                "x-required-when".to_owned(),
+                serde_json::json!({ "Equals": { "field": "ca", "values": ["custom"] } }),
+            );
+        }
+
+        schema
     }
 
     fn validate(&self, fields: &serde_json::Value) -> acmecast_core::Result<()> {
@@ -511,6 +532,42 @@ mod tests {
                 "Schema 缺少字段 {field}: {rendered}"
             );
         }
+    }
+
+    #[test]
+    fn ca_is_a_dropdown_and_directory_url_is_conditionally_required() {
+        let schema = AcmeAccountType::new().fields_schema();
+        let object = schema.schema.object.as_ref().expect("应是对象 schema");
+
+        let schemars::schema::Schema::Object(ca) = &object.properties["ca"] else {
+            panic!("ca 应是对象型 schema");
+        };
+        let values = ca.enum_values.as_ref().expect("ca 应带枚举选项");
+        for alias in ["letsencrypt", "custom"] {
+            assert!(
+                values.contains(&serde_json::Value::from(alias)),
+                "枚举应含 {alias}: {values:?}"
+            );
+        }
+
+        let schemars::schema::Schema::Object(url) = &object.properties["directory_url"] else {
+            panic!("directory_url 应是对象型 schema");
+        };
+        let condition = url
+            .extensions
+            .get("x-required-when")
+            .expect("directory_url 应带条件必填标记");
+        assert_eq!(condition["Equals"]["field"], serde_json::Value::from("ca"));
+        assert_eq!(
+            condition["Equals"]["values"][0],
+            serde_json::Value::from("custom")
+        );
+        // 不能进 required：内置 CA 上它是可选的端点覆盖项。
+        assert!(
+            !object.required.iter().any(|f| f == "directory_url"),
+            "{:?}",
+            object.required
+        );
     }
 
     #[tokio::test]

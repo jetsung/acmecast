@@ -25,6 +25,10 @@ type HmacSha1 = Hmac<Sha1>;
 const API_ENDPOINT: &str = "https://alidns.aliyuncs.com/";
 /// 阿里云 DNS 的 API 版本。
 const API_VERSION: &str = "2015-01-09";
+/// AddDomainRecord 接受的 TTL 区间（秒）。上层惯用的 60/120s 在阿里云
+/// 会直接 400（QuotaExceeded.TTL——名字骗人，其实是参数校验）。
+const TTL_MIN: u32 = 600;
+const TTL_MAX: u32 = 86400;
 
 /// 阿里云的凭据字段。
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -148,7 +152,7 @@ impl DnsProvider for AliyunProvider {
             ("RR".to_owned(), record.relative_name()?),
             ("Type".to_owned(), "TXT".to_owned()),
             ("Value".to_owned(), record.value.clone()),
-            ("TTL".to_owned(), record.ttl.to_string()),
+            ("TTL".to_owned(), record.ttl.clamp(TTL_MIN, TTL_MAX).to_string()),
         ]);
 
         self.call(&credentials, "AddDomainRecord", extra).await?;

@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Select, Table, Tag, Typography } from "antd";
+import { Alert, Select, Table, Tag, Typography } from "antd";
 import type { TableColumnsType } from "antd";
 import { useState } from "react";
 import { useNavigate } from "react-router";
@@ -27,7 +27,7 @@ export function HistoryListPage() {
   const [pipelineId, setPipelineId] = useState<number | undefined>();
   const [page, setPage] = useState(1);
 
-  const { data, isFetching } = useQuery({
+  const { data, isFetching, error } = useQuery({
     queryKey: ["histories", pipelineId, page],
     queryFn: async () => {
       const result = await client.GET("/api/histories", {
@@ -84,6 +84,17 @@ export function HistoryListPage() {
   return (
     <div>
       <Typography.Title level={4}>运行历史</Typography.Title>
+      {error && (
+        // 查询失败时把原因摆出来：吞掉错误会让「没数据」和「没加载成功」无法区分。
+        <Alert
+          type="error"
+          showIcon
+          closable
+          message="运行历史加载失败"
+          description={error.message}
+          style={{ marginBottom: 16 }}
+        />
+      )}
       <Select
         allowClear
         placeholder="按流水线过滤"
