@@ -205,7 +205,7 @@ sudo nginx -t && sudo systemctl reload nginx
 nginx 的 TLS 证书本身也可以用 acmecast 签发后部署到本机（`cert.deploy`
 `target: local`，`cert_path`/`key_path` 指向 nginx 的证书路径，
 `reload_command` 填 `systemctl reload nginx`）——用
-[16-console-operation-flow.md](16-console-operation-flow.md) 的流程先签一张：
+[11-frontend.md](11-frontend.md) 11.10 的流程先签一张：
 
 ```nginx
 server {
@@ -237,7 +237,7 @@ curl -sS -X POST https://acmecast.example.com/api/login \
 ```
 
 浏览器打开 `https://acmecast.example.com/` 进入控制台；随后的凭据、流水线与
-签发验证步骤与 [15-local-development.md](15-local-development.md) 15.5 完全一致，
+签发验证步骤与 [11-frontend.md](11-frontend.md) 11.10 的流程完全一致，
 只是域名从 `localhost:5173` 换成本节的服务器地址。
 
 ## 17.8 升级

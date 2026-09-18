@@ -20,12 +20,11 @@ acmecast 是一个**证书自动签发与部署系统**：以 ACME 协议向 Let
 | [08-scheduling-renewal.md](08-scheduling-renewal.md) | cron 调度、到期扫描与自动续期 |
 | [09-certificates.md](09-certificates.md) | 证书列表、下载格式、吊销与手动登记 |
 | [10-rest-api.md](10-rest-api.md) | REST API 完整参考与错误码 |
-| [11-frontend.md](11-frontend.md) | 前端控制台的使用与开发 |
+| [11-frontend.md](11-frontend.md) | 前端控制台的使用、开发与操作流程图（登录 → 凭据 → 流水线 → 运行 → 验证） |
 | [12-operations-and-limitations.md](12-operations-and-limitations.md) | 备份迁移、排障、已知限制与当前实现状态 |
 | [13-docker-deployment.md](13-docker-deployment.md) | Docker 部署：密钥、口令哈希、启动、验证与升级 |
 | [14-docker-image.md](14-docker-image.md) | Docker 镜像：Dockerfile、构建与 USE_CN_MIRROR、.dockerignore |
-| [15-local-development.md](15-local-development.md) | 本地开发（无 Docker）：前端 + 后端启动，界面走通一次签发 |
-| [16-console-operation-flow.md](16-console-operation-flow.md) | 控制台操作流程图（登录 → 凭据 → 流水线 → 运行 → 验证） |
+| [15-local-development.md](15-local-development.md) | 本地开发与调试（无 Docker）：前端 + 后端启动、调试日志 |
 | [17-backend-hosting-frontend.md](17-backend-hosting-frontend.md) | 无 Docker 部署：源码构建 + systemd 常驻 + nginx 反向代理合并前后端 |
 
 ## 一分钟速览

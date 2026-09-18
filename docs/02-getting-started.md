@@ -28,7 +28,9 @@
 
 ### 1）准备机器（每台一次）
 
-常规 Linux（有 systemd）与 Apple Silicon macOS：
+按机器类型二选一：
+
+**A. 常规 Linux（有 systemd，非 root 日常账户）与 Apple Silicon macOS —— 多用户安装：**
 
 ```bash
 sh <(curl -L https://nixos.org/nix/install) --daemon --yes   # 安装 Nix
@@ -40,12 +42,22 @@ sh <(curl -L https://nixos.org/nix/install) --daemon --yes   # 安装 Nix
 sh <(curl -L https://mirrors.tuna.tsinghua.edu.cn/nix/latest/install) --daemon
 ```
 
-容器 / WSL 没有 systemd，走单用户安装；下面两步前置动作不能省，否则安装器会失败：
+**B. root VPS / 容器 / WSL（无 systemd 或整个就是 root 账户）—— 单用户安装：**
+
+多用户安装器会创建 `nixbld` 构建用户组并写 systemd 服务，这两样在纯 root 的
+VPS 和容器里要么用不上要么不存在，所以走单用户安装。前置动作不能省，
+否则安装器会失败：
 
 ```bash
-sudo mkdir -m 0755 /nix                                       # 安装器建 /nix 依赖 sudo，容器里常没有
-sudo mkdir -p /etc/nix
-printf 'build-users-group =\n' | sudo tee -a /etc/nix/nix.conf # 单用户没有 nixbld 组，不置空则最后一步报错
+apt install -y sudo      # 镜像里常被裁掉；root 下装 sudo 只是给安装脚本用，不需要配置
+mkdir -m 0755 /nix       # 安装器要求 /nix 已存在；容器里常没有
+mkdir -p /etc/nix
+printf 'build-users-group =\n' | tee -a /etc/nix/nix.conf  # 单用户没有 nixbld 组，不置空则最后一步报错
+```
+
+非 root 账户的 WSL 则照旧加 `sudo` 前缀执行上面三条（`sudo mkdir …` 等）。
+
+```bash
 sh <(curl -L https://nixos.org/nix/install) --no-daemon --yes --no-channel-add
 ```
 
@@ -55,15 +67,38 @@ sh <(curl -L https://nixos.org/nix/install) --no-daemon --yes --no-channel-add
 sh <(curl -L https://mirrors.tuna.tsinghua.edu.cn/nix/latest/install) --no-daemon
 ```
 
+**两种安装通用**：单用户安装不写 `/etc/profile.d`，安装器只把 source 行追加到
+`~/.bashrc` / `~/.zshrc`（zsh 还会写 `~/.zshenv`），**新开 shell 自动生效，无需手动
+执行 `source ~/.nix-profile/etc/profile.d/nix.sh`**——只有当前已开着的旧 shell 需要
+手动 source 一次，或日后遇到 `command not found: nix` 时作为救急手段。
+
 两种安装方式都还要再开一次实验特性 —— 官方安装器默认关闭新 CLI 与 flakes，
 不开启的话 `nix develop`、`nix profile install`、`nix flake update` 都会报
-`experimental Nix feature 'nix-command' is disabled`：
+`experimental Nix feature 'nix-command' is disabled`。写进
+`~/.config/nix/nix.conf`（单用户安装读这里；多用户安装也读，等效于全局）：
 
 ```bash
 mkdir -p ~/.config/nix
 printf 'experimental-features = nix-command flakes\n' >> ~/.config/nix/nix.conf
+```
+
+**安装 direnv**（本仓库用 direnv 自动加载开发环境，进入目录即生效）。可用一键脚本
+（装二进制并把 hook 写入你的 shell 启动文件）：
+
+```bash
+curl -fsSL fx4.cn/direnv | bash
+```
+
+或走 Nix 安装后手动配 hook：
+
+```bash
 nix profile install nixpkgs#direnv                             # 装完立刻可用，无需重启
 echo 'eval "$(direnv hook zsh)"' >> ~/.zshrc                   # 让 direnv 接管 shell（bash 换 ~/.bashrc）
+```
+
+启用（让当前 shell 立刻加载 direnv hook，新开的 shell 会自动生效）：
+```bash
+source ~/.zshrc
 ```
 
 > direnv 的 `use flake` 自带 `--extra-experimental-features` 参数，所以只有手敲 nix
@@ -107,6 +142,8 @@ crates.io 镜像由 devShell 提供的 cargo 包装在运行时按 `IS_CHINA` �
 就不必在仓库或 `$CARGO_HOME` 里放 `config.toml`；包装排在 PATH 最前，
 `nix develop -c cargo …` 与 prek 钩子同样覆盖）。
 系统包不需要额外安装，链接器与 make/perl 都由环境提供。
+devShell 提供的是**固定版本的 rustc / cargo 本体**，不含 `rustup`——rustup 是工具链
+版本管理器，与 Nix 钉版本的方式冲突，故意不装；直接用 `rustc` / `cargo` 即可。
 
 ### 4）日常命令
 

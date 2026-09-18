@@ -1,16 +1,22 @@
-# 15. 本地开发（无 Docker）
+# 15. 本地开发与调试（无 Docker）
 
-面向希望在本机直接跑起来（**前端界面 + 后台服务**）并以最短路径拿到一张证书的
-开发者。不需要 Docker、不需要 swagger-ui；全程在源码开发环境内完成。
+面向希望在本机直接跑起来（**前端界面 + 后台服务**）的开发者。不需要 Docker、
+不需要 swagger-ui；跑通之后如何「登录 → 建凭据 → 建流水线 → 签下第一张证书」
+走控制台操作流程即可（见 [11-frontend.md](11-frontend.md) 11.10 的流程图，
+取值细节与 [02-getting-started.md](02-getting-started.md) 2.4 一致）。
 
 > 本文是 [02-getting-started.md](02-getting-started.md) 的精简实战版：
-> 02 文档讲完整的 Nix + direnv 工具链与全部命令行用法，本文只关心
-> 「前端 + 后端 + 能签下证书」这一条路径。Docker 部署见
+> 02 文档讲完整的 Nix + direnv 工具链、镜像加速与全部命令行用法，本文只关心
+> 「把前端和后端在本机跑起来」。Docker 部署见
 > [13-docker-deployment.md](13-docker-deployment.md)。
 
 ## 15.1 前置条件
 
 - Rust 1.98+、Node 24 + pnpm（仓库自带 Nix 环境一键提供，见 02 文档 2.2）；
+  root VPS / 容器 / WSL 走单用户安装、其余机器走多用户安装，两条路径与
+  「是否需要手动 source nix.sh」「是否需要装 sudo」的说明见 02 文档 2.2 第 1）步；
+- direnv（用来自动加载 Nix 开发环境，进入仓库目录即生效）：
+  `curl -fsSL fx4.cn/direnv | bash`，详见 02 文档 2.2 第 1）步；
 - 一个 ACME CA —— **调试请用 `letsencrypt-staging`**，避免触发生产速率限制；
 - 一个 DNS 服务商账号（Cloudflare 或阿里云，DNS-01 挑战需要）；
 - 一个你拥有 DNS 控制权的域名（可指向 staging 就能验证）。
@@ -64,97 +70,42 @@ Vite dev server 会把 `/api` 代理到 `127.0.0.1:8080`（见 `vite.config.ts`�
 
 > 若后端接口有变更，记得 `pnpm gen:api` 重新生成前端类型；首次拉起无需此步。
 
-## 15.5 界面走通一次签发
+## 15.4.1 打开调试日志（本地调试 / 测试环境）
 
-以下步骤全部在 `http://localhost:5173` 的控制台里完成。
+日志由 `RUST_LOG` 控制（tracing 过滤指令，详见
+[03-configuration.md](03-configuration.md) 3.1），默认 `info`。流水线各步骤的
+执行日志（DNS-01 下发、传播等待、部署写入等）会原样落到运行历史里，前端
+「运行历史详情」页可按步骤查看；把控制台日志调到 `debug` 能额外看到 HTTP
+请求与调度器的细节，排查签发失败时首选。
 
-### 1）登录
-
-用 15.2 设置的口令（用户名默认 `admin`）登录。令牌存入浏览器 `localStorage`，
-刷新可恢复。
-
-### 2）创建 ACME 账号凭据
-
-进入「凭据管理」页 → 新建：
-
-| 字段 | 填写 |
-| --- | --- |
-| 名称 | `le-staging`（自选） |
-| 类型 | `acme.account`（下拉显示为「ACME 账号」） |
-| `ca` | `letsencrypt-staging`（调试首选） |
-
-保存后记下凭据 **id**（例如 1）。字段语义见 [05-credentials.md](05-credentials.md) 5.2。
-
-### 3）创建 DNS 提供商凭据
-
-同页再新建一条，类型选 `cloudflare`（下拉显示为「Cloudflare（DNS）」）或 `aliyun`（「阿里云（DNS）」），填入对应 Token/AccessKey。
-记下其凭据 id（例如 2）。字段见 [05-credentials.md](05-credentials.md) 5.3。
-
-### 4）新建流水线
-
-进入「流水线」页 → 新建，添加三个步骤：
-
-**步骤 1：`cert.apply`**
-
-| 字段 | 取值 |
-| --- | --- |
-| `domains` | `["你的域名"]`（通配符形如 `["*.example.com", "example.com"]`） |
-| `challenge` | `dns-01` |
-| `account_credential_id` | 选 2）里那条 ACME 账号凭据（下拉） |
-| `dns_provider` | 选 `cloudflare` / `aliyun`（下拉） |
-| `dns_credential_id` | 选 3）里那条 DNS 凭据（下拉） |
-| `contacts` | `["mailto:你的邮箱"]` |
-| `wait_propagation` | 内网 DNS 查不到记录时设为 `false`；否则保持默认 |
-
-**步骤 2：`cert.store`**
-
-| 字段 | 取值 |
-| --- | --- |
-| `acme_account_credential_id` | 选 2）里那条 ACME 账号凭据 |
-
-**步骤 3：`cert.deploy`（本地部署，可选）**
-
-| 字段 | 取值 |
-| --- | --- |
-| `target` | `local` |
-| `config` → `cert_path` | 绝对路径，如 `/tmp/acmecast/你的域名.crt` |
-| `config` → `key_path` | 绝对路径，如 `/tmp/acmecast/你的域名.key` |
-| `config` → `reload_command` | 可留空（本地开发无需重载） |
-| `force` | `false` |
-
-> `cert.deploy` 的 `config` 结构随 `target` 变化，前端按 JSON 文本编辑。
-> 完整字段见 [07-dns-and-deploy.md](07-dns-and-deploy.md) 7.2。
-
-保存流水线。
-
-### 5）立即运行
-
-在流水线列表页点击该行的「**立即运行**」按钮，前端会跳转到运行历史详情页，
-每 5 秒自动轮询状态与日志。`running` → `success` 即签发成功。
-
-也可以用命令行触发与查看：
+**调试场景推荐配置**（另开终端或直接在启动命令前导出）：
 
 ```bash
-TOKEN=...   # 登录拿到的令牌
-curl -sS -X POST -H "Authorization: Bearer $TOKEN" \
-  http://127.0.0.1:8080/api/pipelines/1/run
-curl -sS -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/api/histories/1/logs
+# 本项目模块 debug，其余（hyper、sqlx 等依赖）保持 info，避免噪音
+export RUST_LOG=acmecast_server=debug,acmecast_pipeline=debug,acmecast_dns=debug,acmecast_deploy=debug,info
+cargo run -p acmecast-server
 ```
 
-### 6）验证证书
+- 想更细（如 SQL 语句）：把 `sqlx=debug` 追加进过滤器；想安静些：`RUST_LOG=warn`；
+- 只调某一次运行：`RUST_LOG=debug cargo run -p acmecast-server` 全开，排完即撤；
+- 流水线运行历史是落库的（`GET /api/histories/{id}/logs`），调完重启不影响回看。
 
-- 控制台「证书」页能看到新签发的证书；staging 端点签发的证书不被浏览器/系统信任（ issuer 含 `(STAGING)` 字样），这是正常现象，切到生产端点后即受信任；
-- 数据目录下 `data/certs/<fingerprint>/cert.pem` 与 `key.pem` 已落盘；
-- 若配了 `cert.deploy`，对应路径的文件也已写入。
+> 生产 / 长驻测试环境建议保持默认 `info`：`debug` 日志量大且含请求细节，
+> 只在排查时临时打开。
 
-## 15.6 切换到生产端点
+## 15.5 下一步：在控制台走通一次签发
 
-staging 跑通后，把 ACME 账号凭据的 `ca` 改为 `letsencrypt`（或新建一条生产
-凭据），重新运行流水线即可拿到受信任的证书。
+前后端都起来后，按 [11-frontend.md](11-frontend.md) 11.10 的控制台操作流程图
+完成「登录 → 建 ACME 账号凭据 → 建 DNS 凭据 → 建流水线 → 立即运行 → 验证证书」。
+本地开发场景的典型取值（staging 端点、Cloudflare DNS、本地部署）与逐字段说明见
+[02-getting-started.md](02-getting-started.md) 2.4 的命令行版本，前端操作与其一一对应。
+
+跑通 staging 后切生产端点：把 ACME 账号凭据的 `ca` 改为 `letsencrypt`
+（或新建一条生产凭据），重新运行流水线即可。
 
 > 生产端点有速率限制，同一域名集一周内只签几次；调试务必先在 staging 走通。
 
-## 15.7 常见问题
+## 15.6 常见问题
 
 - **登录返回 500 `configuration_error`**：`ACMECAST_ADMIN_PASSWORD_HASH` 未设置或非法；
   按 15.2 重新生成并确认已导出到**运行后端的 shell**。
