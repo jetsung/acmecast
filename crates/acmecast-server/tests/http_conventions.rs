@@ -2,6 +2,13 @@
 //!
 //! 三个任务的共同点是「约定」而非「业务」：文档要与路由同步，超限要
 //! 明确拒绝，下载要带齐响应头，日志要能按请求串起来。
+//!
+//! 本文件的用例全部标了 `#[serial]`，包括不使用订阅器的那几个。原因在 10.9：
+//! 那两个用例用线程本地的 `subscriber::set_default` 捕获日志，而同时并发的其他
+//! 用例会命中同一批 callsite，tracing 的全局 callsite 兴趣缓存与最大级别会短暂
+//! 不一致，日志行偶发丢失——实测 CPU 竞争下约 12% 概率只剩 1 行，断言 `>= 2` 就挂。
+//! 只串行那两个用例没用（实测仍 4/40），必须整个文件串行（30 次压测 0 失败）。
+//! 代价可忽略：本文件全部用例加起来只跑约 0.3 秒。
 
 mod support;
 
@@ -12,6 +19,7 @@ use axum::{
     body::Body,
     http::{Request, StatusCode, header},
 };
+use serial_test::serial;
 use support::*;
 use utoipa::OpenApi;
 
@@ -46,6 +54,7 @@ const KNOWN_API_PATHS: [&str; 20] = [
 ];
 
 #[test]
+#[serial]
 fn openapi_document_covers_every_api_endpoint() {
     let doc = ApiDoc::openapi();
     let paths = doc.paths.paths.keys().cloned().collect::<Vec<_>>();
@@ -64,6 +73,7 @@ fn openapi_document_covers_every_api_endpoint() {
 }
 
 #[test]
+#[serial]
 fn openapi_document_declares_bearer_auth() {
     let doc = ApiDoc::openapi();
     let components = doc.components.as_ref().expect("文档应声明 components");
@@ -82,6 +92,7 @@ fn openapi_document_declares_bearer_auth() {
 }
 
 #[test]
+#[serial]
 fn openapi_document_marks_protected_endpoints() {
     let doc = ApiDoc::openapi();
 
@@ -112,6 +123,7 @@ fn openapi_document_marks_protected_endpoints() {
 // ---- 10.8 请求体体积限制 ----
 
 #[tokio::test]
+#[serial]
 async fn oversized_request_bodies_are_rejected_with_413() {
     let config = acmecast_server::config::ServerConfig {
         body_limit_bytes: 64,
@@ -173,6 +185,7 @@ async fn app_with_downloadable_certificate() -> (axum::Router, TempDir) {
 }
 
 #[tokio::test]
+#[serial]
 async fn pem_download_carries_filename_and_content_type() {
     let (app, _data_dir) = app_with_downloadable_certificate().await;
 
@@ -207,6 +220,7 @@ async fn pem_download_carries_filename_and_content_type() {
 }
 
 #[tokio::test]
+#[serial]
 async fn pfx_download_is_binary_with_keystore_content_type() {
     let (app, _data_dir) = app_with_downloadable_certificate().await;
 
@@ -279,6 +293,7 @@ impl<'writer> tracing_subscriber::fmt::MakeWriter<'writer> for LogCapture {
 }
 
 #[tokio::test]
+#[serial]
 async fn all_log_lines_of_a_request_share_the_request_id() {
     let capture = LogCapture::default();
     let subscriber = tracing_subscriber::fmt()
@@ -321,6 +336,7 @@ async fn all_log_lines_of_a_request_share_the_request_id() {
 }
 
 #[tokio::test]
+#[serial]
 async fn requests_without_a_client_id_get_a_generated_one() {
     let capture = LogCapture::default();
     let subscriber = tracing_subscriber::fmt()

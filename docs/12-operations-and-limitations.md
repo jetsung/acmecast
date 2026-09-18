@@ -30,12 +30,8 @@ tar czf acmecast-data-$(date +%F).tgz -C /path/to data
 3. 启动时会自动执行数据库迁移；迁移失败会报出失败版本并中止启动
    （不要强行跳过，先回滚到旧版本并检查）。
 
-容器升级：
-
-```bash
-docker rm -f acmecast
-docker run -d --name acmecast ... acmecast:<新版本>
-```
+容器方式的升级操作（`docker rm` / `docker run` 与 `compose up`）见
+[13-docker-deployment.md](13-docker-deployment.md) 13.6。
 
 ## 12.3 排障
 
@@ -50,7 +46,9 @@ docker run -d --name acmecast ... acmecast:<新版本>
 
 ### 无法登录
 
-- 返回 500 `configuration_error`：未配置 `ACMECAST_ADMIN_PASSWORD_HASH`；
+- 返回 500 `configuration_error`：未配置 `ACMECAST_ADMIN_PASSWORD_HASH`（或其文件变量 `ACMECAST_ADMIN_PASSWORD_HASH_FILE`）；
+- 设置了 `ACMECAST_ADMIN_PASSWORD_HASH_FILE` 却仍无人能登录：文件不存在或内容为空时会静默回退到
+  `ACMECAST_ADMIN_PASSWORD_HASH`；文件存在但读不了（权限不足、指向目录）则启动即失败，日志有明确报错；
 - 返回 429：连续失败 5 次，等待 900 秒或重启进程清空限流计数；
 - 返回 400 `auth_disabled`：服务以 `ACMECAST_AUTH_DISABLED=1` 启动，无需登录；
 - 令牌被拒（401）：令牌过期或 JWT 密钥变更，重新登录。

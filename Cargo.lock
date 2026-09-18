@@ -182,6 +182,7 @@ dependencies = [
  "sea-orm",
  "serde",
  "serde_json",
+ "serial_test",
  "tokio",
  "tower",
  "tower-http",

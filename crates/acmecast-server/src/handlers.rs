@@ -132,7 +132,8 @@ async fn login(
         return Err(ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             "configuration_error",
-            "未配置管理员口令哈希（ACMECAST_ADMIN_PASSWORD_HASH），无法登录",
+            "未配置管理员口令哈希（ACMECAST_ADMIN_PASSWORD_HASH 或 \
+             ACMECAST_ADMIN_PASSWORD_HASH_FILE），无法登录",
         ));
     }
     if !auth.verify_credentials(&request.username, &request.password) {

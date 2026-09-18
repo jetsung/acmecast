@@ -82,8 +82,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         AuthMode::Enforced(auth) if !auth.config.login_available() => {
             tracing::error!(
-                "未配置 ACMECAST_ADMIN_PASSWORD_HASH：受保护端点将拒绝所有请求，\
-                 登录不可用。请生成口令哈希后重启。"
+                "未配置 ACMECAST_ADMIN_PASSWORD_HASH（或 ACMECAST_ADMIN_PASSWORD_HASH_FILE）：\
+                 受保护端点将拒绝所有请求，登录不可用。请生成口令哈希后重启。"
             );
         }
         AuthMode::Enforced(_) => {}

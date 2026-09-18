@@ -10,29 +10,29 @@
 #   dev  push → 镜像 :dev   ；构建文档（不部署，避免 dev 内容覆盖线上文档）
 #   其他分支   → 仅 $ 兜底：提供云原生开发环境
 
-$:
-  vscode:
-    # 小规格：4 核 / 8G
-    - name: dev-small
-      if: $SIZE == "small"
-      runner:
-        cpus: 4
-      docker:
-        image: cnbcool/default-dev-env:latest
-      services:
-        - vscode
-        - docker
+# $:
+#   vscode:
+#     # 小规格：4 核 / 8G
+#     - name: dev-small
+#       if: $SIZE == "small"
+#       runner:
+#         cpus: 4
+#       docker:
+#         image: cnbcool/default-dev-env:latest
+#       services:
+#         - vscode
+#         - docker
 
-    # 大规格：8 核 / 16G（默认镜像，仅调大 CPU）
-    - name: dev-large
-      if: $SIZE == "large"
-      runner:
-        cpus: 8
-      docker:
-        image: cnbcool/default-dev-env:latest
-      services:
-        - vscode
-        - docker
+#     # 大规格：8 核 / 16G（默认镜像，仅调大 CPU）
+#     - name: dev-large
+#       if: $SIZE == "large"
+#       runner:
+#         cpus: 8
+#       docker:
+#         image: cnbcool/default-dev-env:latest
+#       services:
+#         - vscode
+#         - docker
 
 main:
   push:

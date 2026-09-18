@@ -39,6 +39,17 @@ TOKEN=...
 curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/api/pipelines
 ```
 
+也可以走 Docker Compose：第 1、2 步的变量照旧，数据同样落在 `./data`，容器名同为
+`acmecast`。
+
+```bash
+docker compose -f docker/compose.yaml up -d      # 首次会按需构建 acmecast:dev
+docker compose -f docker/compose.yaml logs -f
+```
+
+完整 Docker 部署文档（密钥、口令哈希文件方式、升级、排障）见
+[docs/13-docker-deployment.md](docs/13-docker-deployment.md)。
+
 交互式 API 文档在 `http://127.0.0.1:8080/swagger-ui`（JSON：`/api/openapi.json`）。
 
 ## 从源码构建
@@ -50,7 +61,8 @@ docker build -t acmecast:dev .
 ```
 
 中国网络环境下构建镜像默认走阿里云 apt 源与 rsproxy 镜像；上线构建请传
-`--build-arg USE_CN_MIRROR=false`，产物不含任何镜像源配置。
+`--build-arg USE_CN_MIRROR=false`，产物不含任何镜像源配置。镜像分层与
+`.dockerignore` 细节见 [docs/14-docker-image.md](docs/14-docker-image.md)。
 
 ## 配置
 
@@ -73,6 +85,7 @@ docker build -t acmecast:dev .
 | `ACMECAST_JWT_SECRET` | **必须配置**。访问令牌的 HS256 签名密钥（`openssl rand -base64 32`） |
 | `ACMECAST_CREDENTIAL_KEY` | **必须配置**。凭据静态加密密钥 AES-256-GCM（`openssl rand -base64 32`）；**更换后已存凭据无法解密** |
 | `ACMECAST_ADMIN_PASSWORD_HASH` | 管理员口令的 Argon2 PHC 哈希；未配置时服务可启动但无人能登录（启动日志告警） |
+| `ACMECAST_ADMIN_PASSWORD_HASH_FILE` | 存放管理员口令哈希的**文件路径**；设置后优先读文件，文件不存在或内容为空白时回退到 `ACMECAST_ADMIN_PASSWORD_HASH` |
 | `ACMECAST_ADMIN_USERNAME` | 管理员用户名，默认 `admin` |
 | `ACMECAST_TOKEN_TTL_HOURS` | 访问令牌有效期（小时），默认 12 |
 | `ACMECAST_AUTH_DISABLED` | `1`/`true`/`yes` 关闭鉴权——**仅限本地单机**，默认强制鉴权 |

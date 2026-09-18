@@ -23,12 +23,16 @@
 | `ACMECAST_CREDENTIAL_KEY` | 是（写凭据需要） | 凭据静态加密密钥，AES-256-GCM，base64 编码 32 字节。`openssl rand -base64 32`。**更换后已存凭据无法解密** |
 | `ACMECAST_ADMIN_USERNAME` | 否 | 管理员用户名，默认 `admin` |
 | `ACMECAST_ADMIN_PASSWORD_HASH` | 否 | 管理员口令的 Argon2 PHC 哈希。未配置时服务可启动但**无人能登录**（启动日志会告警） |
+| `ACMECAST_ADMIN_PASSWORD_HASH_FILE` | 否 | 存放上述哈希的**文件路径**；设置后优先读文件，文件不存在或内容为空白时回退到 `ACMECAST_ADMIN_PASSWORD_HASH`；文件存在但读不了则**拒绝启动** |
 | `ACMECAST_TOKEN_TTL_HOURS` | 否 | 访问令牌有效期（小时），默认 `12` |
 | `ACMECAST_AUTH_DISABLED` | 否 | `1`/`true`/`yes` 关闭鉴权——**仅限本地单机**，默认强制鉴权 |
 | `ACMECAST_INSECURE_SKIP_VERIFY` | 否 | `1` 跳过 ACME CA 的 TLS 证书校验，仅为自建测试 CA（pebble 等）准备 |
 
 `ACMECAST_CREDENTIAL_KEY` 还有一个等价的双下划线写法
 `ACMECAST__SECURITY__CREDENTIAL_KEY`（两种都读，后者优先）。
+
+以挂载文件 / Secret 形式提供口令哈希的容器做法（uid 65532 可读、compose 仍需
+`ACMECAST_ADMIN_PASSWORD_HASH`）见 [13-docker-deployment.md](13-docker-deployment.md) 13.3。
 
 ### 日志
 
@@ -100,13 +104,8 @@ export ACMECAST_DATABASE_URL='mysql://user:pass@db.example.com:3306/acmecast'
 
 ## 3.6 口令哈希子命令
 
-```bash
-acmecast-server hash-password '<口令>'          # 二进制内
-docker run --rm acmecast:dev hash-password '<口令>'  # 容器内
-cargo run -p acmecast-server --example hash-password -- '<口令>'  # 开发环境
-```
-
-输出为 Argon2 PHC 字符串，直接赋给 `ACMECAST_ADMIN_PASSWORD_HASH`。
+口令哈希的生成（`hash-password` 子命令的四种运行方式，含容器内与文件方式）见
+[13-docker-deployment.md](13-docker-deployment.md) 13.3。
 
 ## 3.7 关于 YAML 配置文件（当前未接入运行路径）
 

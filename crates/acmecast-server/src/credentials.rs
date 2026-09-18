@@ -33,9 +33,10 @@ impl CredentialType for CloudflareCredentialType {
     }
 
     fn validate(&self, fields: &serde_json::Value) -> acmecast_core::Result<()> {
-        let parsed: CloudflareCredentials = serde_json::from_value(fields.clone()).map_err(
-            |error| acmecast_core::Error::validation("api_token", format!("字段不合法: {error}")),
-        )?;
+        let parsed: CloudflareCredentials =
+            serde_json::from_value(fields.clone()).map_err(|error| {
+                acmecast_core::Error::validation("api_token", format!("字段不合法: {error}"))
+            })?;
         if parsed.api_token.trim().is_empty() {
             return Err(acmecast_core::Error::validation(
                 "api_token",
@@ -66,9 +67,10 @@ impl CredentialType for AliyunCredentialType {
     }
 
     fn validate(&self, fields: &serde_json::Value) -> acmecast_core::Result<()> {
-        let parsed: AliyunCredentials = serde_json::from_value(fields.clone()).map_err(|error| {
-            acmecast_core::Error::validation("access_key_id", format!("字段不合法: {error}"))
-        })?;
+        let parsed: AliyunCredentials =
+            serde_json::from_value(fields.clone()).map_err(|error| {
+                acmecast_core::Error::validation("access_key_id", format!("字段不合法: {error}"))
+            })?;
         if parsed.access_key_id.trim().is_empty() {
             return Err(acmecast_core::Error::validation(
                 "access_key_id",
@@ -120,7 +122,9 @@ mod tests {
             .validate(&serde_json::json!({ "access_key_id": "id", "access_key_secret": " " }))
             .expect_err("空白 secret 应被拒绝");
         match err {
-            acmecast_core::Error::Validation { field, .. } => assert_eq!(field, "access_key_secret"),
+            acmecast_core::Error::Validation { field, .. } => {
+                assert_eq!(field, "access_key_secret")
+            }
             other => panic!("期望 Validation，实际 {other:?}"),
         }
 

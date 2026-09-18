@@ -105,11 +105,15 @@ impl AuthConfig {
         })?;
         let admin_username = env_string("ACMECAST_ADMIN_USERNAME")
             .unwrap_or_else(|| DEFAULT_ADMIN_USERNAME.to_owned());
-        let admin_password_hash = env_string("ACMECAST_ADMIN_PASSWORD_HASH");
+        let admin_password_hash = resolve_admin_password_hash(
+            env_string("ACMECAST_ADMIN_PASSWORD_HASH_FILE"),
+            env_string("ACMECAST_ADMIN_PASSWORD_HASH"),
+        )?;
         if let Some(hash) = &admin_password_hash {
             PasswordHash::new(hash).map_err(|error| {
                 acmecast_core::Error::Config(format!(
-                    "ACMECAST_ADMIN_PASSWORD_HASH 不是合法的 Argon2 PHC 字符串: {error}"
+                    "管理员口令哈希（来自 ACMECAST_ADMIN_PASSWORD_HASH 或 \
+                     ACMECAST_ADMIN_PASSWORD_HASH_FILE）不是合法的 Argon2 PHC 字符串: {error}"
                 ))
             })?;
         }
@@ -491,6 +495,41 @@ fn env_flag(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// 读取以文件路径形式提供的秘密值。
+///
+/// 文件不存在、或内容去掉首尾空白后为空时返回 `Ok(None)`，回退策略交给调用方；
+/// 其余失败（权限不足、路径是目录、非 UTF-8 等）按配置错误上报——
+/// 文件存在却读不了时静默回退会掩盖真实的配置问题。
+fn read_secret_file(path: &str) -> acmecast_core::Result<Option<String>> {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(acmecast_core::Error::Config(format!(
+                "读取 ACMECAST_ADMIN_PASSWORD_HASH_FILE 指定的文件失败（{path}）：{error}；\
+                 不会回退到 ACMECAST_ADMIN_PASSWORD_HASH"
+            )));
+        }
+    };
+    let trimmed = contents.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(trimmed.to_owned()))
+}
+
+/// 解析管理员口令哈希：`ACMECAST_ADMIN_PASSWORD_HASH_FILE` 指向的文件优先，
+/// 文件缺失或内容为空白时回退到 `ACMECAST_ADMIN_PASSWORD_HASH`。
+fn resolve_admin_password_hash(
+    file_path: Option<String>,
+    env_value: Option<String>,
+) -> acmecast_core::Result<Option<String>> {
+    match file_path {
+        Some(path) => read_secret_file(&path).map(|value| value.or(env_value)),
+        None => Ok(env_value),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -507,6 +546,14 @@ mod tests {
             "test-secret",
             Duration::from_secs(3600),
         )
+    }
+
+    /// 建一个一次性临时目录；调用方用后自行 `remove_dir_all`。
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("acmecast-auth-{tag}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).expect("应能建临时目录");
+        dir
     }
 
     #[test]
@@ -605,5 +652,150 @@ mod tests {
         assert!(text.contains(acmecast_core::REDACTED), "应带脱敏占位符");
         assert!(!text.contains("test-secret"), "不应泄露 JWT 密钥");
         assert!(!text.contains("$argon2"), "不应泄露口令哈希");
+    }
+
+    #[test]
+    fn read_secret_file_reads_and_trims_contents() {
+        let dir = temp_dir("trim");
+        let file = dir.join("hash");
+        std::fs::write(&file, "  $argon2id$v=19$abc  \n").expect("应能写文件");
+
+        let value = read_secret_file(file.to_str().expect("路径应为 UTF-8")).expect("读取应成功");
+
+        assert_eq!(value.as_deref(), Some("$argon2id$v=19$abc"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_secret_file_treats_a_missing_file_as_absent() {
+        let dir = temp_dir("missing");
+        let file = dir.join("does-not-exist");
+
+        let value =
+            read_secret_file(file.to_str().expect("路径应为 UTF-8")).expect("缺文件不算错误");
+
+        assert_eq!(value, None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_secret_file_treats_blank_contents_as_absent() {
+        let dir = temp_dir("blank");
+        let file = dir.join("hash");
+        std::fs::write(&file, "  \n\t \n").expect("应能写文件");
+
+        let value =
+            read_secret_file(file.to_str().expect("路径应为 UTF-8")).expect("空内容不算错误");
+
+        assert_eq!(value, None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_secret_file_reports_an_unreadable_path() {
+        // 路径指向目录：文件「存在」但读不了，应报错而不是静默回退。
+        let dir = temp_dir("directory");
+
+        let error =
+            read_secret_file(dir.to_str().expect("路径应为 UTF-8")).expect_err("读目录应报错");
+
+        let text = error.to_string();
+        assert!(
+            text.contains("ACMECAST_ADMIN_PASSWORD_HASH_FILE"),
+            "报错应点名文件变量：{text}"
+        );
+        assert!(text.contains("不会回退"), "报错应说明不回退：{text}");
+        assert!(matches!(error, acmecast_core::Error::Config(_)));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn resolve_admin_password_hash_prefers_the_file() {
+        let dir = temp_dir("prefer");
+        let file = dir.join("hash");
+        std::fs::write(&file, "file-hash").expect("应能写文件");
+
+        let value = resolve_admin_password_hash(
+            Some(file.to_str().expect("路径应为 UTF-8").to_owned()),
+            Some("env-hash".to_owned()),
+        )
+        .expect("解析应成功");
+
+        assert_eq!(value.as_deref(), Some("file-hash"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn resolve_admin_password_hash_falls_back_when_the_file_is_missing() {
+        let dir = temp_dir("fallback-missing");
+        let file = dir.join("does-not-exist");
+
+        let value = resolve_admin_password_hash(
+            Some(file.to_str().expect("路径应为 UTF-8").to_owned()),
+            Some("env-hash".to_owned()),
+        )
+        .expect("解析应成功");
+
+        assert_eq!(value.as_deref(), Some("env-hash"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn resolve_admin_password_hash_falls_back_when_the_file_is_blank() {
+        let dir = temp_dir("fallback-blank");
+        let file = dir.join("hash");
+        std::fs::write(&file, " \n").expect("应能写文件");
+
+        let value = resolve_admin_password_hash(
+            Some(file.to_str().expect("路径应为 UTF-8").to_owned()),
+            Some("env-hash".to_owned()),
+        )
+        .expect("解析应成功");
+
+        assert_eq!(value.as_deref(), Some("env-hash"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn resolve_admin_password_hash_uses_the_environment_when_no_file_is_configured() {
+        let value =
+            resolve_admin_password_hash(None, Some("env-hash".to_owned())).expect("解析应成功");
+
+        assert_eq!(value.as_deref(), Some("env-hash"));
+    }
+
+    #[test]
+    fn resolve_admin_password_hash_is_none_without_any_source() {
+        // 两种来源都没有不算配置错误：服务照常启动，只是无人能登录。
+        let value = resolve_admin_password_hash(None, None).expect("缺哈希不应报错");
+
+        assert_eq!(value, None);
+    }
+
+    #[test]
+    fn file_sourced_hash_is_still_validated_as_phc() {
+        use argon2::PasswordHasher;
+        let hash = Argon2::default()
+            .hash_password(b"pw")
+            .expect("应能生成口令哈希")
+            .to_string();
+        let dir = temp_dir("phc");
+        let file = dir.join("hash");
+        // 模拟 `hash-password > file`：内容末尾带换行。
+        std::fs::write(&file, format!("{hash}\n")).expect("应能写文件");
+
+        let resolved = resolve_admin_password_hash(
+            Some(file.to_str().expect("路径应为 UTF-8").to_owned()),
+            None,
+        )
+        .expect("解析应成功")
+        .expect("文件应给出哈希");
+
+        assert_eq!(resolved, hash);
+        assert!(
+            PasswordHash::new(&resolved).is_ok(),
+            "文件来源的哈希同样要过 PHC 校验"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

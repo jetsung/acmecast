@@ -33,7 +33,7 @@ curl -sS -X POST http://127.0.0.1:8080/api/login \
 | --- | --- | --- |
 | 用户名或密码错误 | 401 | `invalid_credentials`（统一为「用户名或密码错误」，不泄露用户名是否存在） |
 | 连续失败达到 5 次后的来源 | 429 | `too_many_attempts` |
-| 未配置 `ACMECAST_ADMIN_PASSWORD_HASH` | 500 | `configuration_error`（无法登录） |
+| 未配置管理员口令哈希（`ACMECAST_ADMIN_PASSWORD_HASH` 与 `ACMECAST_ADMIN_PASSWORD_HASH_FILE` 均未提供） | 500 | `configuration_error`（无法登录） |
 | 鉴权被显式关闭时调用登录 | 400 | `auth_disabled` |
 
 限流为**进程内计数**，按来源 IP 记录，连续失败 5 次锁定 900 秒；多副本部署时
@@ -52,7 +52,7 @@ export ACMECAST_AUTH_DISABLED=1
 
 | 秘密 | 形态 | 存放 | 生成 |
 | --- | --- | --- | --- |
-| 管理员口令 | Argon2 PHC 哈希 | 环境变量 `ACMECAST_ADMIN_PASSWORD_HASH` | `hash-password` 子命令 |
+| 管理员口令 | Argon2 PHC 哈希 | 环境变量 `ACMECAST_ADMIN_PASSWORD_HASH`，或文件 + `ACMECAST_ADMIN_PASSWORD_HASH_FILE` | `hash-password` 子命令（见 [13-docker-deployment.md](13-docker-deployment.md) 13.3） |
 | JWT 签名密钥 | 任意字符串 | 环境变量 `ACMECAST_JWT_SECRET` | `openssl rand -base64 32` |
 | 凭据加密密钥 | base64 的 32 字节 | 环境变量 `ACMECAST_CREDENTIAL_KEY` | `openssl rand -base64 32` |
 | 凭据字段 | AES-256-GCM 密文 | 数据库 `credential.encrypted_fields` | 由加密密钥派生 |

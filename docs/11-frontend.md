@@ -5,6 +5,9 @@
 
 ## 11.1 页面
 
+> 一次完整的操作链路（登录 → 建凭据 → 建流水线 → 运行 → 验证）见图示
+> [16-console-operation-flow.md](16-console-operation-flow.md)。
+
 | 路由 | 页面 | 能力 |
 | --- | --- | --- |
 | `/login` | 登录 | 输入用户名/口令，成功后保存令牌并跳回原地址 |
@@ -113,8 +116,8 @@ CI 的 `frontend` job（`.github/workflows/ci.yml`）按
 
 ## 11.8 生产托管
 
-镜像已把 `frontend/dist` 复制到 `/static` 并设置 `ACMECAST_STATIC_DIR=/static`，
-因此容器启动后直接访问根路径即可。源码部署时把 `ACMECAST_STATIC_DIR` 指向
+镜像已把 `frontend/dist` 复制到 `/static` 并设置 `ACMECAST_STATIC_DIR=/static`
+（镜像构建见 [14-docker-image.md](14-docker-image.md)），因此容器启动后直接访问根路径即可。源码部署时把 `ACMECAST_STATIC_DIR` 指向
 `frontend/dist` 的绝对路径。
 
 ## 11.9 构建产物与拆包

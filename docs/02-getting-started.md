@@ -1,10 +1,19 @@
 # 2. 快速开始
 
+两条部署路径：**Docker 部署**见 [13-docker-deployment.md](13-docker-deployment.md)；
+**源码部署**从下文 2.2 开始（开发环境、构建与首个可用流水线），生产姿态
+（systemd 常驻 + nginx 反代合并前后端）见
+[17-backend-hosting-frontend.md](17-backend-hosting-frontend.md)。
+
+> 只想最快在本机跑通「前端 + 后端 + 拿到一张证书」？见
+> [15-local-development.md](15-local-development.md)，它不依赖 Docker、也不需要
+> swagger-ui，是本文的精简实战版。
+
 ## 2.1 前置条件
 
-- Docker 部署：Docker 20+；
+- Docker 部署：Docker 20+（见 [13-docker-deployment.md](13-docker-deployment.md)）；
 - 源码构建：Rust 1.98+（workspace edition 2024）；前端另需 Node 24 + pnpm。
-  这些工具链可由仓库自带的 Nix 环境一键提供，见 2.3；不用 Nix 时需自行准备同版本；
+  这些工具链可由仓库自带的 Nix 环境一键提供，见 2.2；不用 Nix 时需自行准备同版本；
 - 一个可用的 ACME CA（默认 Let's Encrypt 生产环境）；
 - 一个 DNS 服务商账号（DNS-01 挑战需要，见 [07-dns-and-deploy.md](07-dns-and-deploy.md)）；
 - 部署目标（本机目录或一台可 SSH 登录的主机）。
@@ -12,68 +21,7 @@
 > 生产请使用 Let's Encrypt 生产端点；调试建议先用 `letsencrypt-staging`，
 > 避免触发生产环境的速率限制。
 
-## 2.2 用 Docker 启动
-
-### 1）生成必需密钥
-
-```bash
-export ACMECAST_JWT_SECRET="$(openssl rand -base64 32)"
-export ACMECAST_CREDENTIAL_KEY="$(openssl rand -base64 32)"
-```
-
-| 密钥 | 用途 | 丢失/更换后果 |
-| --- | --- | --- |
-| `ACMECAST_JWT_SECRET` | 访问令牌的 HS256 签名密钥 | 已签发的令牌全部失效（重新登录即可） |
-| `ACMECAST_CREDENTIAL_KEY` | 凭据静态加密密钥（AES-256-GCM） | **已存凭据无法解密**，必须重新录入 |
-
-两者都请与数据目录**分开保管**。
-
-### 2）生成管理员口令哈希
-
-口令以 Argon2 PHC 字符串配置，明文口令不出现在配置、日志或响应中。
-用镜像内的 `hash-password` 子命令生成（运行环境无需 Rust 工具链）：
-
-```bash
-export ACMECAST_ADMIN_PASSWORD_HASH="$(docker run --rm acmecast:dev hash-password '你的口令')"
-```
-
-### 3）构建镜像（若尚未构建）
-
-```bash
-docker build -t acmecast:dev .
-# 上线构建时关闭国内镜像源配置：
-# docker build --build-arg USE_CN_MIRROR=false -t acmecast:dev .
-```
-
-镜像内已包含前端构建产物，并以非 root（uid 65532）运行。
-
-### 4）启动容器
-
-```bash
-mkdir -p ./data && chmod 0777 ./data    # 容器以 uid 65532 运行，目录需可写
-
-docker run -d --name acmecast \
-  -p 8080:8080 \
-  -v "$(pwd)/data:/data" \
-  -e ACMECAST_JWT_SECRET \
-  -e ACMECAST_CREDENTIAL_KEY \
-  -e ACMECAST_ADMIN_PASSWORD_HASH \
-  acmecast:dev
-```
-
-容器默认环境变量为 `ACMECAST_LISTEN=0.0.0.0:8080`、`ACMECAST_DATA_DIR=/data`、
-`ACMECAST_STATIC_DIR=/static`。
-
-### 5）验证
-
-```bash
-curl http://127.0.0.1:8080/healthz            # -> ok
-docker logs -f acmecast                        # 观察启动日志（数据库就绪 / 开始服务）
-```
-
-浏览器打开 `http://127.0.0.1:8080/` 进入控制台，或 `/swagger-ui` 查看接口文档。
-
-## 2.3 源码开发环境（Nix + direnv）
+## 2.2 源码开发环境（Nix + direnv）
 
 仓库用 `flake.nix` + `flake.lock` 声明开发环境，用 `.envrc` 交给 direnv 自动加载。
 工具链版本固定，各机器一致；每台机器只需一次性准备 Nix 与 direnv，之后进入目录即自动就绪。
@@ -86,6 +34,12 @@ docker logs -f acmecast                        # 观察启动日志（数据库�
 sh <(curl -L https://nixos.org/nix/install) --daemon --yes   # 安装 Nix
 ```
 
+国内网络可改用清华镜像，避免拉取官方源超时：
+
+```bash
+sh <(curl -L https://mirrors.tuna.tsinghua.edu.cn/nix/latest/install) --daemon
+```
+
 容器 / WSL 没有 systemd，走单用户安装；下面两步前置动作不能省，否则安装器会失败：
 
 ```bash
@@ -93,6 +47,12 @@ sudo mkdir -m 0755 /nix                                       # 安装器建 /ni
 sudo mkdir -p /etc/nix
 printf 'build-users-group =\n' | sudo tee -a /etc/nix/nix.conf # 单用户没有 nixbld 组，不置空则最后一步报错
 sh <(curl -L https://nixos.org/nix/install) --no-daemon --yes --no-channel-add
+```
+
+国内网络同样可换清华镜像：
+
+```bash
+sh <(curl -L https://mirrors.tuna.tsinghua.edu.cn/nix/latest/install) --no-daemon
 ```
 
 两种安装方式都还要再开一次实验特性 —— 官方安装器默认关闭新 CLI 与 flakes，
@@ -112,25 +72,21 @@ echo 'eval "$(direnv hook zsh)"' >> ~/.zshrc                   # 让 direnv 接�
 > （Linux `sudo systemctl restart nix-daemon`；macOS
 > `sudo launchctl kickstart -k system/org.nixos.nix-daemon`）。
 
-国内网络另加一行（`.envrc` 通过环境变量判断，写进机器级配置才生效）：
+国内网络的镜像加速不写机器级配置，而是仓库根目录的 `.env`：`.envrc` 的
+`dotenv_if_exists` 会加载它，并在 `use flake` 之前把变量导出。模板是仓库里的
+`.env.example`，复制步骤见下面的 2）克隆后。
 
-```bash
-mkdir -p ~/.config/direnv
-echo 'export IS_CHINA=1' >> ~/.config/direnv/direnvrc
-```
+模板内容：腾讯云的 rustup/npm/pnpm 镜像、清华的 Nix 二进制缓存；另有 `IS_CHINA=1`，
+devShell 的 cargo 包装按它在运行时给会访问 registry 的子命令注入 crates.io 镜像。
+海外网络不必创建 `.env`，留空即走官方源。
 
-`IS_CHINA=1` 会同时启用腾讯云的 rustup/npm/pnpm 镜像、清华的 Nix 二进制缓存，
-并把 nixpkgs 输入换成清华的 channel tarball。最后一项有取舍：channel 的内容是
-Hydra 测过的 revision，未必等于 `flake.lock` 记录的 commit，因此国内与外网/CI 侧的
-pnpm、prek 等次要工具版本可能有小差异；要严格对齐 lock 的 rev，按 `.envrc` 里的
-注释换成 atomgit 镜像（需保留 `shallow=1`，否则会全量克隆 nixpkgs）。
-
-### 2）克隆后（每个 clone 两次操作）
+### 2）克隆后（每个 clone 都要做）
 
 ```bash
 git clone <repo> && cd acmecast
-direnv allow      # 授权 .envrc（按内容哈希）；改过 .envrc 后需重新执行
-prek install      # 写入 .git/hooks/；钩子不随仓库分发，每个 clone 都要装
+cp .env.example .env   # 国内网络启用镜像加速；海外可跳过
+direnv allow           # 授权 .envrc（按内容哈希）；改过 .envrc 后需重新执行
+prek install           # 写入 .git/hooks/；钩子不随仓库分发，每个 clone 都要装
 ```
 
 ### 3）环境提供什么
@@ -143,7 +99,8 @@ prek install      # 写入 .git/hooks/；钩子不随仓库分发，每个 clone
 | 排查工具 | jq、tree、curl、git、sqlite、cacert |
 | Git 钩子 | prek，配置见 `prek.toml`：提交前跑格式与文件卫生检查，推送前跑 clippy |
 
-生效范围：`flake.nix` 决定工具链；镜像环境变量来自 `.envrc`（仅 direnv 目录内）；
+生效范围：`flake.nix` 决定工具链；镜像环境变量来自 `.env`（由 `.envrc` 的
+`dotenv_if_exists` 加载，仅 direnv 目录内）；
 crates.io 镜像由 devShell 提供的 cargo 包装在运行时按 `IS_CHINA` 注入 `--config`，
 且只对会访问 registry 的子命令（`fetch`/`build`/`clippy`/`test`/`install` 等）生效，
 `--version`、`fmt`、`new`、`clean` 之类原样直通（cargo 的源替换不认环境变量，这样做
@@ -155,7 +112,7 @@ crates.io 镜像由 devShell 提供的 cargo 包装在运行时按 `IS_CHINA` �
 
 ```bash
 direnv allow                        # 授权 .envrc（按内容哈希）
-direnv reload                       # 改过 .envrc 后重新求值
+direnv reload                       # 改过 .envrc 或 .env 后重新求值
 nix develop                         # 不用 direnv 时的等价入口（需按 1）开启 flakes）
                                     # 旧命令 nix-shell 无效：仓库只有 flake.nix，没有 shell.nix / default.nix
 nix develop -c cargo test           # 一次性执行某条命令
@@ -171,15 +128,16 @@ nix flake update nixpkgs            # 升级 nixpkgs（会改写 flake.lock，�
 （`flake.lock` 钉住的 nixpkgs 已移除 `x86_64-darwin`），Windows 请用 WSL。
 另外 `rust-overlay` 输入仍取自 GitHub，国内首次拉取会走 GitHub，之后进本地缓存。
 
-## 2.4 从源码构建
+## 2.3 从源码构建
 
-以下命令都应在 2.3 的环境内执行（`direnv` 已加载或 `nix develop`）：
+以下命令都应在 2.2 的环境内执行（`direnv` 已加载或 `nix develop`）：
 
 ```bash
 # 后端
 cargo build --release -p acmecast-server
 # 生成管理员口令哈希（开发环境）
 cargo run -p acmecast-server --example hash-password -- '你的口令'
+# 也可以在容器内生成，见 [13-docker-deployment.md](13-docker-deployment.md) 13.3
 
 # 前端（可选，产物由后端静态托管）
 cd frontend && pnpm install && pnpm build     # 产物在 frontend/dist
@@ -198,7 +156,7 @@ cargo run -p acmecast-server
 托管前端静态资源时额外设置 `ACMECAST_STATIC_DIR=/path/to/frontend/dist`；
 未设置时服务只提供 API（`/swagger-ui` 仍可用）。
 
-## 2.5 首个可用流程（按当前实现）
+## 2.4 首个可用流程（按当前实现）
 
 > 当前 dev 分支已能创建 `acme.account` 与 DNS 提供商（`cloudflare` / `aliyun`）凭据，
 > 但**还没有创建 SSH 凭据的接口**。下面先走通「能走通的部分」，完整的 DNS-01
@@ -318,7 +276,7 @@ curl -sS -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/api/histories/1
 
 也可以在前端「运行历史」页查看按步骤分组的日志。
 
-## 2.6 调试建议
+## 2.5 调试建议
 
 - 想尽快验证链路：直接 `POST /api/pipelines/{id}/run` 立即触发，或把 `cron` 设为
   `* * * * *`（下一分钟触发）；

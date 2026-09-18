@@ -14,6 +14,9 @@ repo_name = "jetsung/acmecast"
 copyright = "Copyright &copy; acmecast contributors · Apache-2.0"
 language = "zh"
 
+# 自定义 CSS：拓宽正文列（默认 .md-grid 限 61rem，见 docs/stylesheets/extra.css）。
+extra_css = ["stylesheets/extra.css"]
+
 # 章节顺序即左侧导航顺序，与 docs/ 下的序号一致。
 nav = [
   { "首页" = "index.md" },
@@ -23,6 +26,8 @@ nav = [
   { "证书" = ["09-certificates.md"] },
   { "接口与前端" = ["10-rest-api.md", "11-frontend.md"] },
   { "运维" = ["12-operations-and-limitations.md"] },
+  { "容器化" = ["13-docker-deployment.md", "14-docker-image.md"] },
+  { "本地开发" = ["15-local-development.md", "16-console-operation-flow.md"] },
 ]
 
 [project.theme]

@@ -46,6 +46,9 @@ uuid.workspace = true
 reqwest.workspace = true
 # 下载端点的测试需要真实证书；现场生成，避免把固定样本写进仓库。
 rcgen = { workspace = true }
+# http_conventions 里装 tracing 订阅器的用例必须互斥：订阅器是线程本地的，
+# 并发跑时 tracing 的全局 callsite 状态会串（见该文件里的说明）。
+serial_test = "3"
 tokio = { workspace = true, features = ["time", "macros", "rt-multi-thread"] }
 tower = { workspace = true, features = ["util"] }
 

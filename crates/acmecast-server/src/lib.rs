@@ -214,6 +214,7 @@ pub fn assemble_router_with_runtime(state: AppState, runtime: RuntimeState) -> R
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(make_span)
+                .on_request(on_request)
                 .on_response(on_response),
         )
         .layer(PropagateRequestIdLayer::new(HeaderName::from_static(
@@ -276,6 +277,15 @@ fn make_span(request: &Request) -> tracing::Span {
         method = %request.method(),
         path = %request.uri().path(),
     )
+}
+
+/// 请求进入时记录一行带标识的日志。
+///
+/// 显式覆盖 tower-http 的默认 `on_request`（那是 `tower_http::trace` 的一条 DEBUG 日志）：
+/// 「同一次请求的日志共享同一标识」这件事应当由应用自己保证，测试里才不必依赖
+/// 中间件的内部日志——否则 tower-http 哪天不再默认打这行，断言就会静默失去覆盖。
+fn on_request(_request: &Request, span: &tracing::Span) {
+    tracing::info!(parent: span, "请求开始");
 }
 
 /// 请求完成时记录一行带标识与耗时的日志。

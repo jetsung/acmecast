@@ -10,8 +10,8 @@
 # 与 devShell 中 nixpkgs 提供的 prek 版本对齐，避免各人行为不一致。
 minimum_prek_version = "0.5.0"
 
-# 安装两个 hook：提交前只跑快检查，重的静态检查放到推送前。
-# 想改成每次提交都跑 clippy，把下面 cargo-clippy 的 stages 改掉即可。
+# 安装两个 hook：提交前只跑快检查，重的静态检查与测试放到推送前。
+# 想改成每次提交都跑 clippy / test，把对应钩子的 stages 改掉即可。
 default_install_hook_types = ["pre-commit", "pre-push"]
 
 # 生成物与依赖目录不参与检查（.gitignore 命中的文件 prek 会跳过，这里显式兜底）。
@@ -62,6 +62,22 @@ name = "cargo clippy -D warnings"
 language = "system"
 entry = "cargo clippy"
 args = ["--workspace", "--all-targets", "--", "-D", "warnings"]
+files = "\\.rs$"
+pass_filenames = false
+stages = ["pre-push"]
+
+# 测试同样放到推送前：跑一轮是分钟级，且**需要 Docker**——pipeline_e2e 会自起
+# pebble 容器，dialect_equivalence 会自起 mysql / postgres 容器（起不来则跳过并说明）。
+# 范围只到 acmecast-server，没有与 CI 的 `cargo test --workspace` 逐字对齐：
+# acmecast-cert 的 JKS 用例要求真实的 keytool，缺了直接失败而不是跳过，而 devShell
+# 里没有 JDK（CI 是单独装了 JDK 21 才跑全量）。要本地跑全量，先自行提供 keytool
+# （设 ACMECAST_KEYTOOL 或把 JDK 加进 flake.nix），再把下面的参数换成 --workspace。
+[[repos.hooks]]
+id = "cargo-test"
+name = "cargo test（acmecast-server）"
+language = "system"
+entry = "cargo test"
+args = ["-p", "acmecast-server"]
 files = "\\.rs$"
 pass_filenames = false
 stages = ["pre-push"]

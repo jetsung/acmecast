@@ -143,6 +143,36 @@ impl Drop for Pebble {
     }
 }
 
+/// 挑一个宿主机端口给 pebble 的 `-p` 用。
+///
+/// 不能让内核随便给（`bind("127.0.0.1:0")`）：那样拿到的端口落在
+/// `ip_local_port_range`（Linux 默认 32768–60999）里，而 rootless Docker 把容器端口
+/// 发布到该区间会失败——实测 25000 可连、35000 / 45000 拒连。端口连不上时 `/dir`
+/// 探测会空转到超时，用例静默跳过，看起来还是绿的。这里只在临时端口区间之下试探。
+///
+/// 起点取随机值，避免并行跑的多个用例都从同一个端口开始扫、互相抢同一个。
+fn pick_host_port() -> Result<u16, String> {
+    // 与容器内的 14000 错开，便于在 `docker ps` 里一眼认出来；
+    // 32000 低于 Linux 的 32768 与 macOS 的 49152，两边都不会被内核临时占用。
+    const START: u16 = 14001;
+    const END: u16 = 32000;
+    const SPAN: u16 = END - START;
+
+    let seed = uuid::Uuid::new_v4().into_bytes();
+    let offset = u16::from_be_bytes([seed[0], seed[1]]) % SPAN;
+    (0..SPAN)
+        .find_map(|step| {
+            let port = START + (offset + step) % SPAN;
+            // 绑 0.0.0.0 是因为 docker 的 `-p {port}:14000` 也发布在 0.0.0.0：
+            // 只探 127.0.0.1 会漏掉「loopback 空闲但通播地址已被占」的端口。
+            // 探完即释放，交给 docker 去绑（与原来一样存在这点竞态）。
+            std::net::TcpListener::bind(("0.0.0.0", port))
+                .ok()
+                .map(|_| port)
+        })
+        .ok_or_else(|| format!("{START}–{END} 内找不到空闲端口"))
+}
+
 fn start_pebble() -> Result<Pebble, String> {
     if let Ok(directory_url) = std::env::var("ACMECAST_PEBBLE_DIR") {
         return Ok(Pebble {
@@ -151,10 +181,7 @@ fn start_pebble() -> Result<Pebble, String> {
         });
     }
 
-    // 用空闲端口避免并行测试互抢 14000。
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
-    let host_port = listener.local_addr().map_err(|e| e.to_string())?.port();
-    drop(listener);
+    let host_port = pick_host_port()?;
 
     let output = Command::new("docker")
         .args([
@@ -177,16 +204,19 @@ fn start_pebble() -> Result<Pebble, String> {
     }
     let container_id = String::from_utf8_lossy(&output.stdout).trim().to_owned();
 
+    // 先接住守卫再等就绪。下面超时返回 Err 时守卫会随局部变量一起析构，
+    // 容器不会被留在后台——否则每次都漏一个容器，而且测试还报 ok。
+    let pebble = Pebble {
+        container_id,
+        directory_url: format!("https://127.0.0.1:{host_port}/dir"),
+    };
+
     // 等目录端点就绪：手写一个最小 HTTP GET，避免为此启用 reqwest 的
     // blocking feature——tokio 运行时里起阻塞线程反而绕。
-    let directory_url = format!("https://127.0.0.1:{host_port}/dir");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while std::time::Instant::now() < deadline {
-        if directory_ready(&directory_url) {
-            return Ok(Pebble {
-                container_id,
-                directory_url,
-            });
+        if directory_ready(&pebble.directory_url) {
+            return Ok(pebble);
         }
         std::thread::sleep(std::time::Duration::from_millis(300));
     }
