@@ -13,7 +13,7 @@
 
 - Docker 部署：Docker 20+（见 [13-docker-deployment.md](13-docker-deployment.md)）；
 - 源码构建：Rust 1.98+（workspace edition 2024）；前端另需 Node 24 + pnpm。
-  这些工具链可由仓库自带的 Nix 环境一键提供，见 2.2；不用 Nix 时需自行准备同版本；
+  这些工具链可由仓库自带的 mise 配置一键提供，见 2.2；不用 mise 时需自行准备同版本；
 - 一个可用的 ACME CA（默认 Let's Encrypt 生产环境）；
 - 一个 DNS 服务商账号（DNS-01 挑战需要，见 [07-dns-and-deploy.md](07-dns-and-deploy.md)）；
 - 部署目标（本机目录或一台可 SSH 登录的主机）。
@@ -21,106 +21,69 @@
 > 生产请使用 Let's Encrypt 生产端点；调试建议先用 `letsencrypt-staging`，
 > 避免触发生产环境的速率限制。
 
-## 2.2 源码开发环境（Nix + direnv）
+## 2.2 源码开发环境（mise）
 
-仓库用 `flake.nix` + `flake.lock` 声明开发环境，用 `.envrc` 交给 direnv 自动加载。
-工具链版本固定，各机器一致；每台机器只需一次性准备 Nix 与 direnv，之后进入目录即自动就绪。
+仓库用 `mise.toml` 声明开发环境，工具链版本固定，各机器一致。
+每台机器只需一次性安装 mise 并激活 shell hook，之后进入目录即自动就绪。
 
 ### 1）准备机器（每台一次）
 
-按机器类型二选一：
-
-**A. 常规 Linux（有 systemd，非 root 日常账户）与 Apple Silicon macOS —— 多用户安装：**
+**安装 mise**（一行命令，跨平台）：
 
 ```bash
-sh <(curl -L https://nixos.org/nix/install) --daemon --yes   # 安装 Nix
+curl https://mise.run | sh
 ```
 
-国内网络可改用清华镜像，避免拉取官方源超时：
+国内网络可换清华镜像：
 
 ```bash
-sh <(curl -L https://mirrors.tuna.tsinghua.edu.cn/nix/latest/install) --daemon
+curl https://mirrors.tuna.tsinghua.edu.cn/mise/run | sh
 ```
 
-**B. root VPS / 容器 / WSL（无 systemd 或整个就是 root 账户）—— 单用户安装：**
-
-多用户安装器会创建 `nixbld` 构建用户组并写 systemd 服务，这两样在纯 root 的
-VPS 和容器里要么用不上要么不存在，所以走单用户安装。前置动作不能省，
-否则安装器会失败：
+**激活 mise**（让 shell 进入仓库目录时自动加载工具链与环境变量）：
 
 ```bash
-apt install -y sudo      # 镜像里常被裁掉；root 下装 sudo 只是给安装脚本用，不需要配置
-mkdir -m 0755 /nix       # 安装器要求 /nix 已存在；容器里常没有
-mkdir -p /etc/nix
-printf 'build-users-group =\n' | tee -a /etc/nix/nix.conf  # 单用户没有 nixbld 组，不置空则最后一步报错
+echo 'eval "$(mise activate zsh)"' >> ~/.zshrc   # bash 换 ~/.bashrc，fish 换 ~/.config/fish/config.fish
+source ~/.zshrc                                     # 让当前 shell 立刻生效
 ```
 
-非 root 账户的 WSL 则照旧加 `sudo` 前缀执行上面三条（`sudo mkdir …` 等）。
+> 原来用 direnv 的项目应移除 direnv hook：mise 官方明确 `use mise`（direnv 集成）
+> 已废弃且不受支持，mise 的 `[env]` 配置（含 `_.file`、`_.path`）能完全覆盖
+> direnv 的能力。
+
+**安装系统工具**（mise 只管理语言运行时，以下工具由 OS 包管理器提供）：
+
+Linux（Debian/Ubuntu）：
 
 ```bash
-sh <(curl -L https://nixos.org/nix/install) --no-daemon --yes --no-channel-add
+sudo apt install -y build-essential pkg-config jq tree curl git tmux ca-certificates sqlite3
 ```
 
-国内网络同样可换清华镜像：
+macOS（Xcode Command Line Tools 已含 clang/make/perl）：
 
 ```bash
-sh <(curl -L https://mirrors.tuna.tsinghua.edu.cn/nix/latest/install) --no-daemon
+xcode-select --install                    # 如未安装
+brew install jq tree tmux pkg-config      # curl/git/sqlite3 系统自带
 ```
 
-**两种安装通用**：单用户安装不写 `/etc/profile.d`，安装器只把 source 行追加到
-`~/.bashrc` / `~/.zshrc`（zsh 还会写 `~/.zshenv`），**新开 shell 自动生效，无需手动
-执行 `source ~/.nix-profile/etc/profile.d/nix.sh`**——只有当前已开着的旧 shell 需要
-手动 source 一次，或日后遇到 `command not found: nix` 时作为救急手段。
+> 构建依赖说明：项目全程 rustls（无 OpenSSL），但 ring / aws-lc-sys 等 crate
+> 的构建脚本需要 C 编译器（Linux 用 gcc，macOS 用系统 clang）、pkg-config、
+> make 和 perl。这些由系统包管理器提供，不在 mise 管理范围内。
 
-两种安装方式都还要再开一次实验特性 —— 官方安装器默认关闭新 CLI 与 flakes，
-不开启的话 `nix develop`、`nix profile install`、`nix flake update` 都会报
-`experimental Nix feature 'nix-command' is disabled`。写进
-`~/.config/nix/nix.conf`（单用户安装读这里；多用户安装也读，等效于全局）：
-
-```bash
-mkdir -p ~/.config/nix
-printf 'experimental-features = nix-command flakes\n' >> ~/.config/nix/nix.conf
-```
-
-**安装 direnv**（本仓库用 direnv 自动加载开发环境，进入目录即生效）。可用一键脚本
-（装二进制并把 hook 写入你的 shell 启动文件）：
-
-```bash
-curl -fsSL fx4.cn/direnv | bash
-```
-
-或走 Nix 安装后手动配 hook：
-
-```bash
-nix profile install nixpkgs#direnv                             # 装完立刻可用，无需重启
-echo 'eval "$(direnv hook zsh)"' >> ~/.zshrc                   # 让 direnv 接管 shell（bash 换 ~/.bashrc）
-```
-
-启用（让当前 shell 立刻加载 direnv hook，新开的 shell 会自动生效）：
-```bash
-source ~/.zshrc
-```
-
-> direnv 的 `use flake` 自带 `--extra-experimental-features` 参数，所以只有手敲 nix
-> 命令才需要上面那行。若 `--daemon` 安装后仍报同样错误，说明 nix-daemon 读的是自己的
-> 配置：把该行追加到 `/etc/nix/nix.conf` 并重启守护进程
-> （Linux `sudo systemctl restart nix-daemon`；macOS
-> `sudo launchctl kickstart -k system/org.nixos.nix-daemon`）。
-
-国内网络的镜像加速不写机器级配置，而是仓库根目录的 `.env`：`.envrc` 的
-`dotenv_if_exists` 会加载它，并在 `use flake` 之前把变量导出。模板是仓库里的
+国内网络的镜像加速不写机器级配置，而是仓库根目录的 `.env`：mise.toml 的
+`[env] _.file = ".env"` 会加载它，并在工具安装前把变量导出。模板是仓库里的
 `.env.example`，复制步骤见下面的 2）克隆后。
 
-模板内容：腾讯云的 rustup/npm/pnpm 镜像、清华的 Nix 二进制缓存；另有 `IS_CHINA=1`，
-devShell 的 cargo 包装按它在运行时给会访问 registry 的子命令注入 crates.io 镜像。
-海外网络不必创建 `.env`，留空即走官方源。
+模板内容：腾讯云的 rustup/npm/pnpm 镜像；另有 `IS_CHINA=1` 标记。
+crates.io 镜像由仓库根的 `.cargo/config.toml` 无条件指向腾讯云（cargo 的源
+替换不认环境变量，只能用配置文件）。海外网络不必创建 `.env`，留空即走官方源。
 
 ### 2）克隆后（每个 clone 都要做）
 
 ```bash
 git clone <repo> && cd acmecast
 cp .env.example .env   # 国内网络启用镜像加速；海外可跳过
-direnv allow           # 授权 .envrc（按内容哈希）；改过 .envrc 后需重新执行
+mise install           # 按 mise.toml 安装 Rust/Node/pnpm/prek
 prek install           # 写入 .git/hooks/；钩子不随仓库分发，每个 clone 都要装
 ```
 
@@ -128,46 +91,48 @@ prek install           # 写入 .git/hooks/；钩子不随仓库分发，每个 
 
 | 类别 | 内容 |
 | --- | --- |
-| Rust | rustc / cargo 1.98.0、clippy、rustfmt、rust-analyzer |
-| 前端 | Node 24、pnpm（对应 `frontend/package.json` 的 `packageManager`） |
-| 构建依赖 | gcc、pkg-config、gnumake、perl（Linux；darwin 走系统 clang） |
-| 排查工具 | jq、tree、curl、git、sqlite、cacert |
-| Git 钩子 | prek，配置见 `prek.toml`：提交前跑格式与文件卫生检查，推送前跑 clippy |
+| Rust | rustc / cargo 1.98.0、clippy、rustfmt、rust-analyzer（mise 经 rustup 安装） |
+| 前端 | Node 24、pnpm 11.20.0（对应 `frontend/package.json` 的 `packageManager`） |
+| Git 钩子 | prek（mise 经 aqua 后端安装），配置见 `prek.toml`：提交前跑格式与文件卫生检查，推送前跑 clippy |
+| 环境变量 | `SWAGGER_UI_DOWNLOAD_URL` 指向仓库内随附的 swagger-ui 压缩包（构建不依赖外网） |
 
-生效范围：`flake.nix` 决定工具链；镜像环境变量来自 `.env`（由 `.envrc` 的
-`dotenv_if_exists` 加载，仅 direnv 目录内）；
-crates.io 镜像由 devShell 提供的 cargo 包装在运行时按 `IS_CHINA` 注入 `--config`，
-且只对会访问 registry 的子命令（`fetch`/`build`/`clippy`/`test`/`install` 等）生效，
-`--version`、`fmt`、`new`、`clean` 之类原样直通（cargo 的源替换不认环境变量，这样做
-就不必在仓库或 `$CARGO_HOME` 里放 `config.toml`；包装排在 PATH 最前，
-`nix develop -c cargo …` 与 prek 钩子同样覆盖）。
-系统包不需要额外安装，链接器与 make/perl 都由环境提供。
-devShell 提供的是**固定版本的 rustc / cargo 本体**，不含 `rustup`——rustup 是工具链
-版本管理器，与 Nix 钉版本的方式冲突，故意不装；直接用 `rustc` / `cargo` 即可。
+生效范围：`mise.toml` 的 `[tools]` 决定工具链版本；`[env]` 的 `_.file = ".env"`
+加载国内镜像变量（rustup/npm/pnpm），海外开发者不创建 `.env` 即走官方源；
+`SWAGGER_UI_DOWNLOAD_URL` 由 `[env]` 直接设置，使用 `{{config_root}}` 模板
+指向仓库根的 `docker/swagger-ui-v5.17.14.zip`。
+
+crates.io 镜像由 `.cargo/config.toml` 无条件指向腾讯云（公开可访问，海外也
+能用，仅略慢）。不想走镜像的海外开发者可删除该文件。cargo 的源替换不认
+环境变量，只能用配置文件或 `--config`，因此放在 `.cargo/config.toml` 而非
+`.env`。该文件已被 `.dockerignore` 排除，不影响 Docker 构建（Dockerfile 有
+自己的镜像处理）。
+
+mise 管理的是 **rustc/cargo 本体**（经 rustup），不在 PATH 暴露 `rustup` 命令
+行工具（mise 内部调用 rustup）。直接用 `rustc` / `cargo` 即可。
+
+系统包（gcc、pkg-config、make、perl、jq 等）需要自行安装，见第 1）步。
 
 ### 4）日常命令
 
 ```bash
-direnv allow                        # 授权 .envrc（按内容哈希）
-direnv reload                       # 改过 .envrc 或 .env 后重新求值
-nix develop                         # 不用 direnv 时的等价入口（需按 1）开启 flakes）
-                                    # 旧命令 nix-shell 无效：仓库只有 flake.nix，没有 shell.nix / default.nix
-nix develop -c cargo test           # 一次性执行某条命令
-prek run --all-files                # 手动全量跑 Git 钩子
+mise install                         # 安装/更新 mise.toml 声明的工具
+mise exec -- cargo test              # 在 mise 环境内执行单条命令
+mise upgrade rust                     # 升级 Rust（会改 mise.lock，需提交）
+prek run --all-files                 # 手动全量跑 Git 钩子
 prek run cargo-clippy --all-files --stage pre-push
-nix flake update nixpkgs            # 升级 nixpkgs（会改写 flake.lock，需一并提交）
+mise lock                            # 生成/更新 mise.lock（钉住精确版本）
 ```
 
-> 钩子里的 cargo 取的是 PATH 上的版本，因此**提交要在环境内进行**（direnv 目录内或
-> `nix develop` 里）；IDE、GUI Git 客户端等不经 shell 的场合不会加载该环境。
+> 钩子里的 cargo 取的是 PATH 上的版本（由 mise 提供），因此**提交要在 mise
+> 激活的 shell 内进行**（进入仓库目录即生效）。IDE、GUI Git 客户端等不经
+> shell 的场合不会加载该环境——配置 IDE 使用 mise shim 或 `mise exec`。
 
-支持平台为 Linux（x86_64 / aarch64）与 Apple Silicon macOS；Intel Mac 不受支持
-（`flake.lock` 钉住的 nixpkgs 已移除 `x86_64-darwin`），Windows 请用 WSL。
-另外 `rust-overlay` 输入仍取自 GitHub，国内首次拉取会走 GitHub，之后进本地缓存。
+支持平台为 Linux（x86_64 / aarch64）与 Apple Silicon macOS；Intel Mac 与
+Windows 不受支持（mise 能装工具链，但项目未在这些平台验证），Windows 请用 WSL。
 
 ## 2.3 从源码构建
 
-以下命令都应在 2.2 的环境内执行（`direnv` 已加载或 `nix develop`）：
+以下命令都应在 2.2 的环境内执行（mise 已激活，即进入仓库目录后的 shell）：
 
 ```bash
 # 后端

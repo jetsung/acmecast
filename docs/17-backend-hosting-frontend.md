@@ -26,7 +26,7 @@ nginx 托管，`/api` 反向代理到后端——对外只有一个端口，前�
 
 - 一台 Linux 服务器与 systemd（或其他进程管理器）；
 - Rust 1.98+（构建后端，构建完可卸载）、Node 24 + pnpm（构建前端）；
-  工具链可由仓库自带的 Nix 环境提供，见
+  工具链可由仓库自带的 mise 配置提供，见
   [02-getting-started.md](02-getting-started.md) 2.2；
 - nginx；
 - 一个可用的 ACME CA 与 DNS 服务商账号（DNS-01 需要，见

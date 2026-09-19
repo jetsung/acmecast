@@ -104,7 +104,7 @@ docker compose -f docker/compose.yaml logs -f
 #   docker compose -f docker/compose.yaml down
 #
 # 变量插值取自本文件所在目录的 docker/.env（Compose 按项目目录查找，不会去读仓库根的
-# .env —— 那个文件是 direnv 的镜像开关），也可以直接在当前 shell 里 export。
+# .env —— 那个文件由 mise 的 _.file 加载，是本地开发用的），也可以直接在当前 shell 里 export。
 # 需要的三个变量（生成方式见 docs/13-docker-deployment.md 13.3）：
 #   ACMECAST_JWT_SECRET  ACMECAST_CREDENTIAL_KEY  ACMECAST_ADMIN_PASSWORD_HASH
 # 三者用 ${VAR:?} 声明：任何一个没设置，**任何** compose 子命令（含 logs/build/down）都会
@@ -138,14 +138,14 @@ services:
 要点（与文件头注释一致）：
 
 - 变量插值取自 `docker/.env`（compose 按项目目录查找，不会去读仓库根的 `.env`——
-  那是 direnv 的镜像开关），也可以直接在当前 shell 里 `export`；
+  那个由 mise 的 _.file 加载，是本地开发用的），也可以直接在当前 shell 里 `export`；
 - 三个密钥变量任何一个没设置，**任何** compose 子命令（含 `logs`、`down`）都会直接
   报错退出，不会带着空密钥把服务拉起来；
 - 数据落在仓库根的 `data/`，与方式 A 的 `docker run` 一致。
 
 两种方式等价：容器名同为 `acmecast`，数据同样落在 `./data`，下面 13.5 的验证命令通用。
 差别只在变量来源——compose 取本文件所在目录的 `docker/.env` 或当前 shell 环境
-（仓库根的 `.env` 是 direnv 的镜像开关，compose 不会读它）。compose 定义里这三个变量用
+（仓库根的 `.env` 由 mise 的 _.file 加载，是本地开发用的，compose 不会读它）。compose 定义里这三个变量用
 `${VAR:?}` 声明，任何一个没设置都会让**任何** compose 子命令（含 `logs`）直接报错退出，
 不会带着空密钥把服务拉起来——所以上面 13.2、13.3 的 `export` 必须先执行。
 

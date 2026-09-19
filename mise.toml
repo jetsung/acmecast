@@ -1,0 +1,28 @@
+# acmecast 开发环境配置（mise）。
+# 安装 mise 并在 shell 中激活后，进入仓库目录自动加载本文件。
+# 详见 docs/02-getting-started.md 2.2。
+
+[tools]
+# Rust 1.98.0（与 rustfmt.toml/clippy.toml 的 msrv、Dockerfile 的 rust:1.98 对齐）。
+# clippy / rustfmt / rust-analyzer 随工具链一起安装。
+# rustup 安装时会读取 .env 的 RUSTUP_DIST_SERVER（由 _.file 加载，在工具安装前生效），
+# 国内开发者复制 .env.example 为 .env 后自动走腾讯云镜像。
+rust = { version = "1.98.0", components = ["clippy", "rustfmt", "rust-analyzer"] }
+
+# 前端：Node 24 + pnpm 11.20.0（对应 frontend/package.json 的 packageManager）。
+node = "24"
+pnpm = "11.20.0"
+
+# Git 钩子管理器（prek.toml 要求 minimum_prek_version = "0.5.0"）。
+# 通过 aqua 后端安装（aqua-registry: j178/prek），mise 内置 aqua，无需额外依赖。
+"aqua:j178/prek" = "latest"
+
+[env]
+# utoipa-swagger-ui 的 build.rs 默认从 GitHub 下载压缩包；
+# 指向仓库内随附副本，构建不依赖外网（同 Dockerfile）。
+SWAGGER_UI_DOWNLOAD_URL = "file://{{config_root}}/docker/swagger-ui-v5.17.14.zip"
+
+# 国内网络加速配置：复制 .env.example 为 .env 后由 _.file 加载。
+# 包含 rustup / npm / pnpm 镜像变量；海外网络不需要创建 .env，留空即走官方源。
+# .env 也可放本地开发密钥（ACMECAST_JWT_SECRET 等，已在 .gitignore 中忽略）。
+_.file = ".env"

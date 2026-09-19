@@ -6,17 +6,15 @@
 取值细节与 [02-getting-started.md](02-getting-started.md) 2.4 一致）。
 
 > 本文是 [02-getting-started.md](02-getting-started.md) 的精简实战版：
-> 02 文档讲完整的 Nix + direnv 工具链、镜像加速与全部命令行用法，本文只关心
+> 02 文档讲完整的 mise 工具链、镜像加速与全部命令行用法，本文只关心
 > 「把前端和后端在本机跑起来」。Docker 部署见
 > [13-docker-deployment.md](13-docker-deployment.md)。
 
 ## 15.1 前置条件
 
-- Rust 1.98+、Node 24 + pnpm（仓库自带 Nix 环境一键提供，见 02 文档 2.2）；
-  root VPS / 容器 / WSL 走单用户安装、其余机器走多用户安装，两条路径与
-  「是否需要手动 source nix.sh」「是否需要装 sudo」的说明见 02 文档 2.2 第 1）步；
-- direnv（用来自动加载 Nix 开发环境，进入仓库目录即生效）：
-  `curl -fsSL fx4.cn/direnv | bash`，详见 02 文档 2.2 第 1）步；
+- Rust 1.98+、Node 24 + pnpm（仓库自带 mise 配置一键提供，见 02 文档 2.2）；
+  安装 mise、激活 shell hook 与系统工具的说明见 02 文档 2.2 第 1）步；
+- mise 已激活后进入仓库目录即自动加载工具链，无需额外操作；
 - 一个 ACME CA —— **调试请用 `letsencrypt-staging`**，避免触发生产速率限制；
 - 一个 DNS 服务商账号（Cloudflare 或阿里云，DNS-01 挑战需要）；
 - 一个你拥有 DNS 控制权的域名（可指向 staging 就能验证）。

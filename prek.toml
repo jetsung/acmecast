@@ -1,13 +1,13 @@
 # 提交前预处理（prek：Rust 重写的 pre-commit，原生 TOML 配置，也兼容 .pre-commit-config.yaml）。
 #
-# 用法（prek 由 flake.nix 的 devShell 提供，不需要 pip/pipx 安装）：
+# 用法（prek 由 mise.toml 的 [tools] 通过 aqua 后端安装，不需要 pip/pipx 安装）：
 #   prek install                      # 按 default_install_hook_types 写入 .git/hooks/
 #   prek run --all-files              # 全量跑一遍（默认只跑 pre-commit 阶段的钩子）
 #   prek run cargo-clippy --all-files --stage pre-push   # 单独跑某个（含其他阶段的）钩子
 #   prek uninstall                    # 移除钩子
 #:schema https://www.schemastore.org/prek.json
 
-# 与 devShell 中 nixpkgs 提供的 prek 版本对齐，避免各人行为不一致。
+# 与 mise.toml 中 aqua:j178/prek 提供的版本对齐，避免各人行为不一致。
 minimum_prek_version = "0.5.0"
 
 # 安装两个 hook：提交前只跑快检查，重的静态检查与测试放到推送前。
@@ -20,7 +20,6 @@ exclude = { glob = [
     "frontend/node_modules/**",
     "frontend/dist/**",
     "site/**",
-    ".direnv/**",
 ] }
 
 # 1) 文件卫生：prek 的 Rust 内置实现，离线可用、不需要额外环境。
@@ -71,7 +70,7 @@ stages = ["pre-push"]
 # 范围只到 acmecast-server，没有与 CI 的 `cargo test --workspace` 逐字对齐：
 # acmecast-cert 的 JKS 用例要求真实的 keytool，缺了直接失败而不是跳过，而 devShell
 # 里没有 JDK（CI 是单独装了 JDK 21 才跑全量）。要本地跑全量，先自行提供 keytool
-# （设 ACMECAST_KEYTOOL 或把 JDK 加进 flake.nix），再把下面的参数换成 --workspace。
+# （设 ACMECAST_KEYTOOL 或自行安装 JDK），再把下面的参数换成 --workspace。
 [[repos.hooks]]
 id = "cargo-test"
 name = "cargo test（acmecast-server）"

@@ -18,3 +18,8 @@ frontend/dist
 # 文档站点构建产物与缓存（zensical 生成，不影响构建）
 site/
 .cache/
+
+# mise 开发环境配置不进 Docker 构建：Dockerfile 有自己的镜像处理
+.cargo/
+mise.toml
+mise.lock

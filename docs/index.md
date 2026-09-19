@@ -11,7 +11,7 @@ acmecast 是一个**证书自动签发与部署系统**：以 ACME 协议向 Let
 | 文档 | 内容 |
 | --- | --- |
 | [01-architecture.md](01-architecture.md) | 系统架构、crate 划分与核心概念 |
-| [02-getting-started.md](02-getting-started.md) | 源码部署（Nix + direnv 开发环境）与首个可用的签发流水线；Docker 部署见 [13-docker-deployment.md](13-docker-deployment.md) |
+| [02-getting-started.md](02-getting-started.md) | 源码部署（mise 开发环境）与首个可用的签发流水线；Docker 部署见 [13-docker-deployment.md](13-docker-deployment.md) |
 | [03-configuration.md](03-configuration.md) | 环境变量、数据目录、数据库与日志 |
 | [04-authentication-security.md](04-authentication-security.md) | 鉴权、令牌、密钥管理与安全注意事项 |
 | [05-credentials.md](05-credentials.md) | 凭据管理与各类型字段定义 |

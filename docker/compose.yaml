@@ -5,7 +5,7 @@
 #   docker compose -f docker/compose.yaml down
 #
 # 变量插值取自本文件所在目录的 docker/.env（Compose 按项目目录查找，不会去读仓库根的
-# .env —— 那个文件是 direnv 的镜像开关），也可以直接在当前 shell 里 export。
+# .env —— 那个文件由 mise 的 _.file 加载，是本地开发用的），也可以直接在当前 shell 里 export。
 # 需要的三个变量（生成方式见 docs/13-docker-deployment.md 13.3）：
 #   ACMECAST_JWT_SECRET  ACMECAST_CREDENTIAL_KEY  ACMECAST_ADMIN_PASSWORD_HASH
 # 三者用 ${VAR:?} 声明：任何一个没设置，**任何** compose 子命令（含 logs/build/down）都会
