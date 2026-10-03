@@ -282,6 +282,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/schedules/trigger-logs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 触发审计分页查询的文档占位函数。 */
+        get: operations["list_trigger_logs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/tasks": {
         parameters: {
             query?: never;
@@ -696,6 +713,49 @@ export interface components {
                      * @description 更新时间。
                      */
                     updated_at: string;
+                }[];
+                /**
+                 * Format: int64
+                 * @description 当前页码。
+                 */
+                page: number;
+                /**
+                 * Format: int64
+                 * @description 每页条数。
+                 */
+                page_size: number;
+                /**
+                 * Format: int64
+                 * @description 符合条件的总条数。
+                 */
+                total: number;
+            };
+        };
+        /** @description 统一成功响应。 */
+        ApiResponse_PageResponse_TriggerLogResponse: {
+            /** @description 通用分页响应。 */
+            data: {
+                /** @description 当前页数据。 */
+                items: {
+                    /** @description 触发说明（如命中的证书域名、失败原因）。 */
+                    detail?: string | null;
+                    /**
+                     * Format: int64
+                     * @description 主键。
+                     */
+                    id: number;
+                    /**
+                     * Format: int64
+                     * @description 被触发的流水线。
+                     */
+                    pipeline_id: number;
+                    /** @description 触发来源：`cron` / `renewal`。 */
+                    source: string;
+                    /**
+                     * Format: date-time
+                     * @description 触发时间。
+                     */
+                    triggered_at: string;
                 }[];
                 /**
                  * Format: int64
@@ -1277,6 +1337,46 @@ export interface components {
              */
             total: number;
         };
+        /** @description 通用分页响应。 */
+        PageResponse_TriggerLogResponse: {
+            /** @description 当前页数据。 */
+            items: {
+                /** @description 触发说明（如命中的证书域名、失败原因）。 */
+                detail?: string | null;
+                /**
+                 * Format: int64
+                 * @description 主键。
+                 */
+                id: number;
+                /**
+                 * Format: int64
+                 * @description 被触发的流水线。
+                 */
+                pipeline_id: number;
+                /** @description 触发来源：`cron` / `renewal`。 */
+                source: string;
+                /**
+                 * Format: date-time
+                 * @description 触发时间。
+                 */
+                triggered_at: string;
+            }[];
+            /**
+             * Format: int64
+             * @description 当前页码。
+             */
+            page: number;
+            /**
+             * Format: int64
+             * @description 每页条数。
+             */
+            page_size: number;
+            /**
+             * Format: int64
+             * @description 符合条件的总条数。
+             */
+            total: number;
+        };
         /** @description 流水线创建/更新 DTO。 */
         PipelineRequest: {
             /** @description 可选描述。 */
@@ -1451,6 +1551,46 @@ export interface components {
             schema?: unknown;
             /** @description 类型标识。 */
             type_id: string;
+        };
+        /** @description 触发记录查询参数。 */
+        TriggerLogQueryParams: {
+            /**
+             * Format: int64
+             * @description 页码。
+             */
+            page?: number | null;
+            /**
+             * Format: int64
+             * @description 每页条数。
+             */
+            page_size?: number | null;
+            /**
+             * Format: int64
+             * @description 按流水线过滤。
+             */
+            pipeline_id?: number | null;
+        };
+        /** @description 触发记录响应。 */
+        TriggerLogResponse: {
+            /** @description 触发说明（如命中的证书域名、失败原因）。 */
+            detail?: string | null;
+            /**
+             * Format: int64
+             * @description 主键。
+             */
+            id: number;
+            /**
+             * Format: int64
+             * @description 被触发的流水线。
+             */
+            pipeline_id: number;
+            /** @description 触发来源：`cron` / `renewal`。 */
+            source: string;
+            /**
+             * Format: date-time
+             * @description 触发时间。
+             */
+            triggered_at: string;
         };
     };
     responses: never;
@@ -2260,6 +2400,33 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    list_trigger_logs: {
+        parameters: {
+            query?: {
+                /** @description 按流水线过滤 */
+                pipeline_id?: number;
+                /** @description 页码 */
+                page?: number;
+                /** @description 每页条数 */
+                page_size?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 触发审计分页列表 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_PageResponse_TriggerLogResponse"];
                 };
             };
         };

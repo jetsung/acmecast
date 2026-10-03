@@ -190,6 +190,30 @@ export function CredentialListPage() {
   );
 }
 
+/**
+ * SSH 主机凭据的字段渲染顺序：权限位成对在前，连接信息成对随后，认证材料
+ * 最后（私钥是多行文本域，独占一行收尾）。仅声明顺序，不改字段集。
+ */
+const SSH_HOST_FIELD_ORDER = [
+  "cert_mode",
+  "key_mode",
+  "host",
+  "port",
+  "user",
+  "password",
+  "private_key",
+];
+
+/**
+ * 按凭据类型给字段 schema 注入渲染顺序：SSH 主机类型的 schema 键序由后端
+ * 结构体决定，与录入时的阅读顺序不一致，这里显式声明。
+ */
+function withTypeFieldOrder(type: CredentialTypeRow): unknown {
+  const schema = type.schema as Record<string, unknown> | undefined;
+  if (!schema || type.type_id !== "ssh") return type.schema;
+  return { ...schema, "x-field-order": SSH_HOST_FIELD_ORDER };
+}
+
 function CredentialEditorModal({
   open,
   editingId,
@@ -221,9 +245,12 @@ function CredentialEditorModal({
       const result = await client.GET(`/api/credentials/${editingId}`, {
         params: { path: { id: editingId } },
       });
-      return unwrapData<{ name: string; type_id: string; fields: Record<string, unknown> }>(
+      // schema 重新生成后 fields 变成 unknown（字段结构由 type_id 决定），
+      // 这里只消费「名字/类型 + 一组待回填的键值」，以 unknown 中转。
+      const detail = (await unwrapData<{ name: string; type_id: string; fields: unknown }>(
         result,
-      );
+      )) as { name: string; type_id: string; fields: Record<string, unknown> };
+      return detail;
     },
     enabled: open && editingId !== null,
   });
@@ -324,7 +351,11 @@ function CredentialEditorModal({
             >
               {() => (
                 <Card size="small" style={{ marginTop: 8 }}>
-                  <SchemaForm schema={currentType.schema} form={form} namePrefix={["fields"]} />
+                  <SchemaForm
+                    schema={withTypeFieldOrder(currentType)}
+                    form={form}
+                    namePrefix={["fields"]}
+                  />
                 </Card>
               )}
             </Form.Item>

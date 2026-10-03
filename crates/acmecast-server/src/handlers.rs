@@ -11,8 +11,8 @@ use acmecast_access::{
 use acmecast_acme::AcmeService;
 use acmecast_pipeline::{HistoryQuery, HistoryRepository, StepRegistry};
 use acmecast_store::{
-    CertInput, CertQuery, CertRepository, CertSort, DEFAULT_PAGE_SIZE, FileStore, MAX_PAGE_SIZE,
-    PipelineInput, PipelineRepository, PipelineStepInput,
+    CertFilePaths, CertInput, CertQuery, CertRepository, CertSort, DEFAULT_PAGE_SIZE, FileStore,
+    MAX_PAGE_SIZE, PipelineInput, PipelineRepository, PipelineStepInput,
 };
 use axum::{
     Router,
@@ -30,7 +30,7 @@ use utoipa::ToSchema;
 use crate::{
     HttpState,
     auth::{AuthMode, ClientIp, issue_token},
-    credentials::{AliyunCredentialType, CloudflareCredentialType},
+    credentials::{AliyunCredentialType, CloudflareCredentialType, SshHostCredentialType},
     response::{ApiError, ApiJson, ApiQuery, ApiResponse},
 };
 
@@ -76,6 +76,7 @@ pub(crate) fn routes() -> Router<HttpState> {
         .route("/api/credentials/{id}/test", post(test_credential))
         .route("/api/credential-types", get(list_credential_types))
         .route("/api/schedules", get(list_schedules).post(create_schedule))
+        .route("/api/schedules/trigger-logs", get(list_trigger_logs))
         .route("/api/tasks", get(list_tasks))
         .route("/api/tasks/{type_id}/schema", get(task_schema))
         .route("/api/histories", get(list_histories))
@@ -399,11 +400,66 @@ async fn revoke_certificate(
         .await
         .map_err(ApiError::from)?;
 
+    archive_revoked_material(&store, &repository, &cert, cert_id).await;
+
     Ok(ApiResponse::new(RevokeResponse {
         cert_id,
         revoked_now,
         revoked_at,
     }))
+}
+
+/// 吊销成功后把证书材料归档进吊销目录，并同步库中的路径。
+///
+/// CA 侧吊销已不可逆，归档环节的失败一律**不回滚吊销**：文件留在原位、
+/// 库路径保持不变，只记日志——下载能力不因此受损，代价只是吊销目录
+/// 里暂时少一份（或库里暂时还指着旧位置）。库路径更新失败时会把文件
+/// 尽力移回原位，保住「库路径 ↔ 文件位置」的一致。
+async fn archive_revoked_material(
+    store: &FileStore,
+    repository: &CertRepository<'_>,
+    cert: &acmecast_store::entity::cert::Model,
+    cert_id: i64,
+) {
+    let paths = match store
+        .move_certificate(&cert.cert_pem_path, &cert.key_pem_path, &cert.fingerprint)
+        .await
+    {
+        Ok(Some(paths)) => paths,
+        Ok(None) => {
+            tracing::warn!(
+                cert_id,
+                fingerprint = %cert.fingerprint,
+                "证书材料缺失，跳过吊销归档，库中路径保持不变"
+            );
+            return;
+        }
+        Err(error) => {
+            tracing::error!(
+                cert_id,
+                fingerprint = %cert.fingerprint,
+                %error,
+                "吊销证书归档失败，文件保留在原位"
+            );
+            return;
+        }
+    };
+
+    if let Err(error) = repository.update_paths(cert_id, &paths).await {
+        tracing::error!(cert_id, %error, "吊销归档后更新证书路径失败，尝试把文件移回原位");
+        let original = CertFilePaths {
+            cert_pem: cert.cert_pem_path.clone(),
+            key_pem: cert.key_pem_path.clone(),
+        };
+        if let Err(move_back) = store.restore_certificate(&paths, &original).await {
+            tracing::error!(
+                cert_id,
+                target = %cert.cert_pem_path,
+                %move_back,
+                "移回失败，请人工核对证书文件位置"
+            );
+        }
+    }
 }
 
 /// 把域名收敛为安全的文件名：只保留字母数字与 `.`、`-`、`_`。
@@ -1434,6 +1490,66 @@ async fn create_schedule(
     Ok(ApiResponse::new(schedule_response(config)))
 }
 
+/// 触发记录查询参数。
+#[derive(Debug, Clone, Deserialize, Default, ToSchema)]
+pub(crate) struct TriggerLogQueryParams {
+    /// 按流水线过滤。
+    pub pipeline_id: Option<i64>,
+    /// 页码。
+    pub page: Option<u64>,
+    /// 每页条数。
+    pub page_size: Option<u64>,
+}
+
+/// 触发记录响应。
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub(crate) struct TriggerLogResponse {
+    /// 主键。
+    pub id: i64,
+    /// 被触发的流水线。
+    pub pipeline_id: i64,
+    /// 触发来源：`cron` / `renewal`。
+    pub source: String,
+    /// 触发说明（如命中的证书域名、失败原因）。
+    pub detail: Option<String>,
+    /// 触发时间。
+    pub triggered_at: DateTime<Utc>,
+}
+
+/// 触发审计分页查询（9.7）：按触发时间倒序，可按流水线过滤。
+///
+/// 调度「到底有没有触发过、失败原因是什么」的排障入口——此前只能直查数据库。
+async fn list_trigger_logs(
+    State(state): State<HttpState>,
+    ApiQuery(query): ApiQuery<TriggerLogQueryParams>,
+) -> Result<ApiResponse<PageResponse<TriggerLogResponse>>, ApiError> {
+    let page = query.page.unwrap_or(1).max(1);
+    let page_size = query
+        .page_size
+        .unwrap_or(DEFAULT_PAGE_SIZE)
+        .clamp(1, MAX_PAGE_SIZE);
+    let result = acmecast_store::repository::TriggerLogRepository::new(&state.app.db)
+        .list(query.pipeline_id, page, page_size)
+        .await
+        .map_err(ApiError::from)?;
+    Ok(ApiResponse::new(PageResponse {
+        items: result
+            .items
+            .into_iter()
+            .map(|item| TriggerLogResponse {
+                id: item.id,
+                pipeline_id: item.pipeline_id,
+                source: item.source.as_str().to_owned(),
+                detail: item.detail,
+                triggered_at: item.triggered_at,
+            })
+            .collect(),
+        total: result.total,
+        page: result.page,
+        page_size: result.page_size,
+    }))
+}
+
 async fn list_credential_types(
     State(state): State<HttpState>,
 ) -> Result<ApiResponse<Vec<CredentialTypeResponse>>, ApiError> {
@@ -1718,6 +1834,11 @@ pub(crate) fn default_credential_registry() -> Arc<CredentialRegistry> {
     registry
         .register(AliyunCredentialType)
         .expect("内置阿里云凭据类型不应重复注册");
+    // SSH 主机档案：cert.deploy 的 SSH 配置引用它，注册后凭据页才能
+    // 创建/测试档案，部署配置也才能从「每次手抄」变成「选一份档案」。
+    registry
+        .register(SshHostCredentialType)
+        .expect("内置 SSH 主机凭据类型不应重复注册");
     Arc::new(registry)
 }
 

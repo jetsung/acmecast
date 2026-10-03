@@ -52,6 +52,24 @@ const ACME_TYPE = {
   schema: ACME_ACCOUNT_SCHEMA,
 };
 
+/** SSH 主机类型:schema 键序故意打乱,渲染顺序应来自前端注入的 x-field-order。 */
+const SSH_HOST_TYPE = {
+  type_id: "ssh",
+  display_name: "SSH 主机（部署）",
+  schema: {
+    type: "object",
+    properties: {
+      private_key: { type: ["string", "null"], "x-multiline": true, description: "私钥 PEM。" },
+      password: { type: ["string", "null"], description: "口令。" },
+      user: { type: "string", description: "登录用户。" },
+      port: { type: ["integer", "null"], description: "端口。" },
+      host: { type: "string", description: "主机。" },
+      key_mode: { type: ["string", "null"], description: "私钥权限。" },
+      cert_mode: { type: ["string", "null"], description: "证书权限。" },
+    },
+  },
+};
+
 vi.mock("@/api/client", () => ({
   ApiError: class ApiError extends Error {},
   client: {
@@ -86,7 +104,7 @@ vi.mock("@/api/client", () => ({
       }
       if (path === "/api/credential-types") {
         return {
-          data: { data: [CLOUDFLARE_TYPE, ACME_TYPE] },
+          data: { data: [CLOUDFLARE_TYPE, ACME_TYPE, SSH_HOST_TYPE] },
           response: new Response(),
         };
       }
@@ -211,5 +229,45 @@ describe("凭据编辑弹窗", () => {
         document.querySelector("#fields_directory_url[aria-required='true']"),
       ).toBeNull();
     });
+  });
+
+  it("SSH 主机类型:字段按前端声明的顺序渲染,成对字段相邻", async () => {
+    renderPage();
+    // 编辑模式下类型选择器被禁用,走「新建凭据」流程选类型。
+    fireEvent.click(await screen.findByRole("button", { name: /新\s*建/ }));
+
+    // 选择类型为 SSH 主机(mock 的 schema 键序是故意打乱的)。
+    const typeSelect = await waitFor(() => {
+      const el = document.querySelector("#type_id");
+      expect(el).toBeTruthy();
+      return el as HTMLElement;
+    });
+    fireEvent.mouseDown(typeSelect);
+    const typeDropdown = await waitFor(() => {
+      const el = document.querySelector(
+        ".ant-select-dropdown:not(.ant-select-dropdown-hidden)",
+      );
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    fireEvent.click(
+      typeDropdown.querySelector('.ant-select-item-option[title="SSH 主机（部署）"]')!,
+    );
+
+    // 打开类型下拉→选中 SSH 主机后,字段卡按 SSH_HOST_FIELD_ORDER 渲染:
+    // cert_mode/key_mode、host/port、user/password 相邻,private_key 最后。
+    await waitFor(() => {
+      expect(document.querySelector("#fields_host")).toBeTruthy();
+    });
+    const items = Array.from(document.querySelectorAll<HTMLElement>(".ant-modal .ant-form-item"));
+    const labels = items
+      .map((item) => item.querySelector("label")?.textContent)
+      .filter((text): text is string => text !== null);
+    const adjacent = (a: string, b: string) =>
+      labels.indexOf(b) === labels.indexOf(a) + 1;
+    expect(adjacent("cert_mode", "key_mode")).toBe(true);
+    expect(adjacent("host", "port")).toBe(true);
+    expect(adjacent("user", "password")).toBe(true);
+    expect(labels[labels.length - 1]).toBe("private_key");
   });
 });

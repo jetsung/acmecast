@@ -90,8 +90,15 @@ impl PipelineStep for CertStoreStep {
         let store = FileStore::open(&self.data_dir)
             .await
             .map_err(|e| domain_error("打开数据目录", e))?;
+        // 文件名前缀取申请时的域名顺序——第一个；证书 SAN 兜底（手动构造的
+        // 流水线里两者理论上一致，但证书是事实来源，输入是用户意图）。
+        let primary_domain = domains
+            .first()
+            .map(String::as_str)
+            .or_else(|| leaf.primary_domain())
+            .unwrap_or("certificate");
         let paths = store
-            .write_certificate(&fingerprint, &cert_pem, &key_pem)
+            .write_certificate(&fingerprint, primary_domain, &cert_pem, &key_pem)
             .await
             .map_err(|e| domain_error("写入证书文件", e))?;
         ctx.log_info(format!(

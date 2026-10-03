@@ -123,6 +123,14 @@ impl<'db> ScheduleRepository<'db> {
             .as_ref()
             .map(|domains| serde_json::to_string(domains).expect("域名数组的序列化不会失败"));
 
+        // 启用的调度没有任何触发途径就是一条永不自动触发的死配置——
+        // 「配了却不触发」的困惑多半源于此，宁可保存时硬拒绝。
+        if input.enabled && cron.is_none() && renewal_domains.is_none() {
+            return Err(Error::Validation(
+                "启用的调度必须至少配置 cron 或续期域名集合之一".to_owned(),
+            ));
+        }
+
         let now = Utc::now();
         let next_trigger_at = cron
             .as_deref()

@@ -18,6 +18,8 @@ acmecast-scheduler.workspace = true
 acmecast-store.workspace = true
 # 管理员口令校验（Argon2 PHC）。
 argon2.workspace = true
+# 子命令（init / hash-password）与全局 --config 解析。
+clap.workspace = true
 async-trait.workspace = true
 axum.workspace = true
 chrono.workspace = true
@@ -28,6 +30,8 @@ rcgen.workspace = true
 sea-orm.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# 统一 config.toml 的解析与生成。
+toml.workspace = true
 # 步骤输入的 JSON Schema 推导。
 schemars.workspace = true
 tokio.workspace = true

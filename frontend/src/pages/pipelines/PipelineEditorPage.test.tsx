@@ -45,8 +45,9 @@ vi.mock("@/api/client", () => ({
                 { id: 7, name: "le-prod", type_id: "acme.account" },
                 { id: 8, name: "some-dns", type_id: "cloudflare" },
                 { id: 9, name: "ali-dns", type_id: "aliyun" },
+                { id: 10, name: "web-01", type_id: "ssh" },
               ],
-              total: 3,
+              total: 4,
               page: 1,
               page_size: 100,
             },
@@ -59,23 +60,147 @@ vi.mock("@/api/client", () => ({
         const typeId = init?.params?.path?.type_id;
         const fields =
           typeId === "test.b"
-            ? { vb: { type: "string" } }
+            ? // 按 dump 出的真实 cert.apply schema 形态构造:default null/[]、
+              // allOf+$ref 枚举、数组字段,用于复现编辑回填丢失。
+              {
+                domains: {
+                  description: "要申请的域名集合。",
+                  type: "array",
+                  items: { type: "string" },
+                },
+                challenge: {
+                  description: "挑战类型。",
+                  allOf: [{ $ref: "#/definitions/ChallengeKind" }],
+                },
+                account_credential_id: {
+                  description: "ACME 账号凭据标识。",
+                  type: "integer",
+                  format: "int64",
+                },
+                dns_provider: {
+                  description: "DNS 提供商标识。",
+                  default: null,
+                  type: ["string", "null"],
+                },
+                dns_credential_id: {
+                  description: "DNS 提供商凭据标识。",
+                  default: null,
+                  type: ["integer", "null"],
+                  format: "int64",
+                },
+                dns_zone: { description: "DNS zone。", default: null, type: ["string", "null"] },
+                wait_propagation: { description: "等待传播。", default: true, type: "boolean" },
+                contacts: {
+                  description: "账号联系人。",
+                  default: [],
+                  type: "array",
+                  items: { type: "string" },
+                },
+                insecure_skip_verify: { description: "跳过校验。", default: false, type: "boolean" },
+              }
             : typeId === "test.c"
               ? { rules: { type: "array", items: { type: "object" } } }
               : typeId === "test.d"
-                ? { account_credential_id: { type: "integer" } }
+                ? // 真实 cert.store 形态:可空整型 + default null,走凭据下拉。
+                  {
+                    acme_account_credential_id: {
+                      description: "ACME 账号凭据标识。",
+                      default: null,
+                      type: ["integer", "null"],
+                      format: "int64",
+                    },
+                  }
                 : typeId === "test.e"
                   ? { dns_credential_id: { type: "integer" } }
                 : typeId === "test.f"
                   ? {
                       dns_provider: { type: "string" },
                       target: { type: "string" },
+                      force: { type: "boolean", description: "强制重写已部署的证书。" },
                       acme_account_credential_id: { type: "integer" },
-                      config: { description: "结构与所选目标一致。" },
+                      // 模拟后端 cert.deploy 的注入产物：config 按 target 给变体 schema。
+                      config: {
+                        description: "结构与所选目标一致。",
+                        "x-target-schemas": {
+                          local: {
+                            display_name: "本地文件系统",
+                            example: {},
+                            schema: {
+                              type: "object",
+                              required: ["cert_path"],
+                              properties: { cert_path: { type: "string" } },
+                            },
+                          },
+                          ssh: {
+                            display_name: "SSH 远程主机",
+                            example: {},
+                            schema: {
+                              type: "object",
+                              // 键序故意与逻辑顺序不一致:渲染顺序应来自前端注入的
+                              // x-field-order,而不是后端 schema 键序。
+                              properties: {
+                                key_mode: { type: ["string", "null"] },
+                                cert_mode: { type: ["string", "null"] },
+                                key_path: { type: ["string", "null"] },
+                                cert_path: { type: ["string", "null"] },
+                                port: { type: ["integer", "null"] },
+                                host: { type: ["string", "null"] },
+                                reload_command: {
+                                  type: ["string", "null"],
+                                  description: "写入成功后在远程执行的重载命令。",
+                                },
+                                credential_id: {
+                                  type: ["integer", "null"],
+                                  description: "SSH 主机档案凭据的标识。",
+                                },
+                                auth: {
+                                  description: "登录远程主机的方式。",
+                                  oneOf: [
+                                    {
+                                      type: "object",
+                                      properties: {
+                                        kind: { type: "string", enum: ["private_key"] },
+                                        credential_id: {
+                                          type: "integer",
+                                          description: "私钥凭据的标识。",
+                                        },
+                                      },
+                                    },
+                                    {
+                                      type: "object",
+                                      properties: {
+                                        kind: { type: "string", enum: ["password"] },
+                                        credential_id: {
+                                          type: "integer",
+                                          description: "口令凭据的标识。",
+                                        },
+                                      },
+                                    },
+                                  ],
+                                },
+                              },
+                            },
+                          },
+                        },
+                      },
                     }
                   : { va: { type: "string" } };
         return {
-          data: { data: { type: "object", properties: fields } },
+          data: {
+            data: {
+              type: "object",
+              definitions: {
+                ChallengeKind: {
+                  description: "挑战类型。",
+                  oneOf: [
+                    { type: "string", enum: ["dns-01"] },
+                    { type: "string", enum: ["http-01"] },
+                  ],
+                },
+              },
+              properties: fields,
+            },
+          },
           response: new Response(),
         };
       }
@@ -86,7 +211,39 @@ vi.mock("@/api/client", () => ({
               name: "existing",
               description: null,
               enabled: true,
-              steps: [{ type_id: "test.a", input: { va: "kept" }, enabled: true }],
+              steps: [
+                { type_id: "test.a", input: { va: "kept" }, enabled: true },
+                {
+                  type_id: "test.b",
+                  input: {
+                    domains: ["abc.zzzzy.com"],
+                    challenge: "dns-01",
+                    account_credential_id: 1,
+                    dns_provider: "cloudflare",
+                    dns_credential_id: 4,
+                    dns_zone: null,
+                    wait_propagation: true,
+                    contacts: ["i@jetsung.com"],
+                    insecure_skip_verify: false,
+                  },
+                  enabled: true,
+                },
+                {
+                  type_id: "test.d",
+                  input: { acme_account_credential_id: 1 },
+                  enabled: true,
+                },
+                {
+                  type_id: "test.f",
+                  input: {
+                    dns_provider: "aliyun",
+                    target: "ssh",
+                    acme_account_credential_id: 7,
+                    config: { credential_id: 10, cert_path: "/srv/ssl/site.crt" },
+                  },
+                  enabled: true,
+                },
+              ],
             },
           },
           response: new Response(),
@@ -167,6 +324,24 @@ describe("PipelineEditorPage", () => {
 
     const body = await save();
     expect(body.steps[0].input).toEqual({ va: "kept" });
+    expect(body.steps[1].input).toEqual({
+      domains: ["abc.zzzzy.com"],
+      challenge: "dns-01",
+      account_credential_id: 1,
+      dns_provider: "cloudflare",
+      dns_credential_id: 4,
+      dns_zone: null,
+      wait_propagation: true,
+      contacts: ["i@jetsung.com"],
+      insecure_skip_verify: false,
+    });
+    expect(body.steps[2].input).toEqual({ acme_account_credential_id: 1 });
+    expect(body.steps[3].input).toEqual({
+      dns_provider: "aliyun",
+      target: "ssh",
+      acme_account_credential_id: 7,
+      config: { credential_id: 10, cert_path: "/srv/ssl/site.crt" },
+    });
   });
 
   it("切换任务类型会清空该步骤的输入", async () => {
@@ -195,16 +370,16 @@ describe("PipelineEditorPage", () => {
 
     await addStep();
     fireEvent.change(await screen.findByLabelText("va"), { target: { value: "A" } });
-    await addStep("任务 B");
-    fireEvent.change(await screen.findByLabelText("vb"), { target: { value: "B" } });
+    await addStep("任务 C");
+    fireEvent.change(await screen.findByLabelText("rules"), { target: { value: '[{"key":"C"}]' } });
 
     // 删掉第 1 步：若输入按步骤下标挂，剩下的第 2 步会错读到 A。
     fireEvent.click(screen.getAllByRole("button", { name: /移\s*除/ })[0]);
 
     const body = await save();
     expect(body.steps).toHaveLength(1);
-    expect(body.steps[0].type_id).toBe("test.b");
-    expect(body.steps[0].input).toEqual({ vb: "B" });
+    expect(body.steps[0].type_id).toBe("test.c");
+    expect(body.steps[0].input).toEqual({ rules: [{ key: "C" }] });
   });
 
   it("上移/下移后输入跟随各自的步骤", async () => {
@@ -214,14 +389,14 @@ describe("PipelineEditorPage", () => {
 
     await addStep();
     fireEvent.change(await screen.findByLabelText("va"), { target: { value: "A" } });
-    await addStep("任务 B");
-    fireEvent.change(await screen.findByLabelText("vb"), { target: { value: "B" } });
+    await addStep("任务 C");
+    fireEvent.change(await screen.findByLabelText("rules"), { target: { value: '[{"key":"C"}]' } });
 
     fireEvent.click(screen.getAllByRole("button", { name: /下\s*移/ })[0]);
 
     const body = await save();
     expect(body.steps.map((step) => [step.type_id, step.input])).toEqual([
-      ["test.b", { vb: "B" }],
+      ["test.c", { rules: [{ key: "C" }] }],
       ["test.a", { va: "A" }],
     ]);
   });
@@ -238,7 +413,7 @@ describe("PipelineEditorPage", () => {
     expect(body.steps[0].input).toEqual({ rules: [{ key: "v" }] });
   });
 
-  it("account_credential_id 渲染成按名称选择的下拉，只列 acme.account 凭据", async () => {
+  it("acme_account_credential_id 渲染成按名称选择的下拉，只列 acme.account 凭据", async () => {
     posted.length = 0;
     const queryClient = renderPage();
     await waitForTasks(queryClient);
@@ -248,7 +423,7 @@ describe("PipelineEditorPage", () => {
 
     await addStep("任务 D");
 
-    const field = await screen.findByLabelText("account_credential_id");
+    const field = await screen.findByLabelText("acme_account_credential_id");
     expect(field.getAttribute("role")).toBe("combobox");
     fireEvent.mouseDown(field);
     // 只应出现 acme.account 的凭据（some-dns 是 cloudflare 类型，不该出现）。
@@ -257,7 +432,7 @@ describe("PipelineEditorPage", () => {
 
     const body = await save();
     // 值保持数字 ID。
-    expect(body.steps[0].input).toEqual({ account_credential_id: 7 });
+    expect(body.steps[0].input).toEqual({ acme_account_credential_id: 7 });
   });
 
   it("dns_credential_id 渲染成下拉，只列 DNS 提供商凭据", async () => {
@@ -308,17 +483,54 @@ describe("PipelineEditorPage", () => {
     fireEvent.mouseDown(credential);
     fireEvent.click(await screen.findByTitle("le-prod（id=7）"));
 
-    // 无类型字段：按 JSON 文本编辑并解析后提交。
-    const config = screen.getByLabelText("config");
-    expect(config.tagName).toBe("TEXTAREA");
-    fireEvent.change(config, { target: { value: '{"cert_path":"/etc/a.crt"}' } });
+    // config 按所选 target 渲染成结构化子表单；SSH 变体已收紧：
+    // 连接与认证信息全部来自所选的主机档案凭据，表单不提供直填入口。
+    const hostCredential = await screen.findByLabelText("SSH 主机档案");
+    expect(hostCredential.getAttribute("role")).toBe("combobox");
+    fireEvent.mouseDown(hostCredential);
+    // 类型过滤本身由 fromCredentials 断言（见 dns_credential_id 用例）；
+    // 这里 antd 关闭的下拉仍留隐藏 option 在 DOM，不能全局断言「不出现」。
+    fireEvent.click(await screen.findByTitle("web-01（id=10）"));
+
+    // 直填字段（可从档案获得或由缺省兜底）不再渲染，只留部署输入。
+    for (const banned of ["host", "port", "user", "auth", "cert_mode", "key_mode"]) {
+      expect(screen.queryByLabelText(banned)).toBeNull();
+    }
+    expect(screen.getByLabelText("cert_path")).toBeTruthy();
+    expect(screen.getByLabelText("key_path")).toBeTruthy();
+    expect(screen.getByLabelText("reload_command")).toBeTruthy();
+
+    // 根级顺序:force/target 两个决策字段排最前,config(SSH 主机档案)跟后。
+    const allItems = Array.from(document.querySelectorAll<HTMLElement>(".ant-form-item"));
+    const rootOrder = allItems
+      .map((item) => item.querySelector("label")?.textContent)
+      .filter((text): text is string => text !== null);
+    expect(rootOrder.indexOf("target")).toBeLessThan(rootOrder.indexOf("force"));
+    expect(rootOrder.indexOf("force")).toBeLessThan(rootOrder.indexOf("SSH 主机档案"));
+
+    // 布局:SSH 主机档案与 reload_command 各独占一行(右侧空列占位),
+    // cert_path/key_path 成对同行(半宽)。
+    const colOf = (label: string) =>
+      allItems.find((item) => item.querySelector("label")?.textContent === label)
+        ?.closest(".ant-col");
+    expect(colOf("SSH 主机档案")?.className).toContain("ant-col-12");
+    expect(colOf("cert_path")?.className).toContain("ant-col-12");
+    expect(colOf("key_path")?.className).toContain("ant-col-12");
+    expect(colOf("reload_command")?.className).toContain("ant-col-12");
+    // 空列占位:档案与重载命令所在行的行尾各有一个无 label 的空列。
+    const emptyCols = document.querySelectorAll<HTMLElement>(".ant-col[aria-hidden]");
+    expect(emptyCols.length).toBe(2);
+
+    fireEvent.change(screen.getByLabelText("cert_path"), { target: { value: "/srv/ssl/site.crt" } });
+    fireEvent.change(screen.getByLabelText("key_path"), { target: { value: "/srv/ssl/site.key" } });
 
     const body = await save();
     expect(body.steps[0].input).toEqual({
       dns_provider: "aliyun",
       target: "ssh",
       acme_account_credential_id: 7,
-      config: { cert_path: "/etc/a.crt" },
+      // 提交只含档案引用与部署输入,连接/权限字段由档案在执行时提供。
+      config: { credential_id: 10, cert_path: "/srv/ssl/site.crt", key_path: "/srv/ssl/site.key" },
     });
   });
 });

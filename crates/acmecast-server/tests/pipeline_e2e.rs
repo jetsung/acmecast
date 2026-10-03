@@ -26,7 +26,9 @@ use acmecast_store::migrate;
 use acmecast_store::repository::{CertInput, CertQuery, CertRepository};
 use async_trait::async_trait;
 use axum::http::StatusCode;
-use sea_orm::{ActiveModelTrait, Database, DatabaseConnection, EntityTrait, Set};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, Database, DatabaseConnection, EntityTrait, QueryFilter, Set,
+};
 use support::*;
 
 // ---- 内存 DNS 提供商：记录写入与清理，供链路断言 ----
@@ -756,7 +758,8 @@ async fn revocation_updates_ca_and_local_state() {
                             "dns_provider": "memory",
                             "dns_credential_id": dns_credential_id,
                             "wait_propagation": false,
-                            "insecure_skip_verify": true
+                            "insecure_skip_verify": true,
+                            "contacts": ["ops@acmecast.test"]
                         }),
                         enabled: true,
                     },
@@ -786,7 +789,28 @@ async fn revocation_updates_ca_and_local_state() {
         .await
         .expect("首次签发应成功");
 
+    // 账号注册用了 contacts：执行时已把裸邮箱补全为 mailto: 发给 CA（否则
+    // pebble 会拒收），而库里保存的仍是用户输入的裸邮箱原样。
+    let apply_step = acmecast_store::entity::pipeline_step::Entity::find()
+        .filter(acmecast_store::entity::pipeline_step::Column::PipelineId.eq(pipeline_id))
+        .filter(acmecast_store::entity::pipeline_step::Column::TypeId.eq("cert.apply"))
+        .one(&db)
+        .await
+        .expect("应能查询流水线步骤")
+        .expect("cert.apply 步骤应存在");
+    assert_eq!(
+        apply_step.input.get("contacts"),
+        Some(&serde_json::json!(["ops@acmecast.test"])),
+        "contacts 应按用户输入原样入库：{:?}",
+        apply_step.input.get("contacts")
+    );
+
     // HTTP 层复用同一个库：吊销端点读到的就是首签入库的记录。
+    // 注册表带上 cert.apply，任务 schema 端点才有它的输入定义可查。
+    let mut router_steps = StepRegistry::new();
+    router_steps
+        .register(CertApplyStep::new(Arc::clone(&dns_registry)))
+        .expect("cert.apply 不应重复");
     let app = router_with_db(
         db.clone(),
         acmecast_server::config::ServerConfig {
@@ -797,7 +821,7 @@ async fn revocation_updates_ca_and_local_state() {
         acmecast_server::auth::AuthMode::Disabled,
         Some(Arc::clone(&cipher)),
         Arc::clone(&credential_registry),
-        Arc::new(StepRegistry::new()),
+        Arc::new(router_steps),
     )
     .await;
 
@@ -809,6 +833,26 @@ async fn revocation_updates_ca_and_local_state() {
         .await
         .expect("应能查询证书");
     let cert_id = certificate.items[0].id;
+
+    // cert.apply 的输入 schema 应向用户放宽 contacts 描述（前端 tooltip 的来源）。
+    let schema = send(
+        &app,
+        json_request(
+            "GET",
+            "/api/tasks/cert.apply/schema",
+            &serde_json::json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(schema.status(), StatusCode::OK, "schema 端点应可查");
+    let schema_body = json(schema).await;
+    let contacts_description = schema_body["data"]["properties"]["contacts"]["description"]
+        .as_str()
+        .expect("contacts 应有描述");
+    assert!(
+        contacts_description.contains("mailto:") && contacts_description.contains("自动补全"),
+        "contacts 描述应说明前缀可省略并由服务端补全：{contacts_description}"
+    );
 
     // 吊销：CA 侧接受，本地状态更新。
     let response = send(
@@ -830,6 +874,69 @@ async fn revocation_updates_ca_and_local_state() {
         .expect("应能读取证书")
         .expect("证书应存在");
     assert!(stored.revoked_at.is_some(), "本地吊销状态应已更新");
+
+    // 吊销归档：材料移进吊销目录，库中路径同步更新，下载仍可用。
+    // 归档只换目录不改名：签发时的域名文件名原样进入吊销目录。
+    assert_eq!(
+        stored.cert_pem_path,
+        format!(
+            "certs/revoked/{}/revoke.acmecast.test.cert.pem",
+            stored.fingerprint
+        ),
+        "库中证书链路径应指向吊销目录，实际 {}",
+        stored.cert_pem_path
+    );
+    assert_eq!(
+        stored.key_pem_path,
+        format!(
+            "certs/revoked/{}/revoke.acmecast.test.key.pem",
+            stored.fingerprint
+        ),
+        "库中私钥路径应指向吊销目录"
+    );
+    assert!(
+        !data_dir
+            .path()
+            .join(format!(
+                "certs/{}/revoke.acmecast.test.cert.pem",
+                stored.fingerprint
+            ))
+            .exists(),
+        "原位置的证书链不应保留"
+    );
+    assert!(
+        !data_dir
+            .path()
+            .join(format!("certs/{}", stored.fingerprint))
+            .exists(),
+        "搬空的源目录不应留下空壳"
+    );
+    assert!(
+        data_dir.path().join(&stored.cert_pem_path).is_file(),
+        "吊销目录里应有证书链"
+    );
+    assert!(
+        data_dir.path().join(&stored.key_pem_path).is_file(),
+        "吊销目录里应有私钥"
+    );
+
+    let download = send(
+        &app,
+        axum::http::Request::builder()
+            .method("GET")
+            .uri(format!("/api/certificates/{cert_id}/download"))
+            .body(axum::body::Body::empty())
+            .expect("应能构造下载请求"),
+    )
+    .await;
+    assert_eq!(download.status(), StatusCode::OK, "吊销后下载仍应可用");
+    let bytes = axum::body::to_bytes(download.into_body(), 1024 * 1024)
+        .await
+        .expect("应能读取下载内容");
+    assert!(
+        String::from_utf8_lossy(&bytes).contains("BEGIN CERTIFICATE"),
+        "吊销后下载的应是证书链"
+    );
 
     // 已吊销的证书不再进入续期窗口。
     let due = CertRepository::new(&db)

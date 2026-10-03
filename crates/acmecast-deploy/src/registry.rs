@@ -120,6 +120,10 @@ mod tests {
             schema_for!(FakeInput)
         }
 
+        fn example_input(&self) -> serde_json::Value {
+            json!({ "cert_path": "/tmp/fake.crt" })
+        }
+
         async fn deploy(
             &self,
             input: &serde_json::Value,
@@ -150,6 +154,10 @@ mod tests {
 
         fn input_schema(&self) -> RootSchema {
             schema_for!(FakeInput)
+        }
+
+        fn example_input(&self) -> serde_json::Value {
+            json!({ "cert_path": "/tmp/another.crt" })
         }
 
         async fn deploy(

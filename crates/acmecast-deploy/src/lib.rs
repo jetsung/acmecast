@@ -6,6 +6,7 @@
 pub mod deployer;
 pub mod error;
 pub mod registry;
+pub mod ssh_host;
 pub mod state;
 pub mod target;
 pub mod targets;
@@ -13,12 +14,13 @@ pub mod targets;
 pub use deployer::Deployer;
 pub use error::{Error, Result};
 pub use registry::DeploymentRegistry;
+pub use ssh_host::{SshHostFields, SSH_HOST_TYPE_ID, ssh_host_fields_schema};
 pub use state::{
     DatabaseDeploymentState, DeploymentEntry, DeploymentPage, DeploymentQuery,
     DeploymentStateStore, InMemoryDeploymentState, target_key_for, target_ref_of,
 };
 pub use target::{CertMaterials, DeployMode, DeployOutcome, DeploymentTarget, parse_input};
 pub use targets::{
-    LocalInput, LocalTarget, RusshConnector, SshAuth, SshConnector, SshInput, SshTarget,
-    SshTransport,
+    LocalInput, LocalTarget, ResolvedSshConfig, RusshConnector, SshAuth, SshAuthSource,
+    SshConnector, SshInput, SshTarget, SshTransport, probe_host,
 };

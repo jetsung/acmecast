@@ -1,5 +1,4 @@
-/* 拓宽正文：默认 .md-grid 限 61rem（约 976px），表格与长命令行容易被压窄。
-   统一放宽到 80rem（约 1280px），接近全屏可用宽度；超出后仍居中、不拉伸。 */
+/* 拓宽正文列：zensical/Material 默认 .md-grid 限 61rem，表格类页面过窄。 */
 .md-grid {
-  max-width: 80rem;
+  max-width: 75rem;
 }

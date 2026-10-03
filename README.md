@@ -16,7 +16,9 @@ export ACMECAST_JWT_SECRET="$(openssl rand -base64 32)"
 export ACMECAST_CREDENTIAL_KEY="$(openssl rand -base64 32)"
 
 # 2. 生成管理员口令哈希（镜像内子命令，运行环境无需 Rust 工具链）
-export ACMECAST_ADMIN_PASSWORD_HASH="$(docker run --rm acmecast:dev hash-password '你的口令')"
+#    输出第一行为哈希值（末尾另有提示行，不可捕获），复制第一行后设置：
+docker run --rm acmecast:dev hash-password --password '你的口令'
+export ACMECAST_ADMIN_PASSWORD_HASH='$argon2id$...<粘贴输出的第一行>'
 
 # 3. 启动（数据目录挂载到宿主机；容器以 uid 65532 运行，目录需可写）
 mkdir -p ./data && chmod 0777 ./data

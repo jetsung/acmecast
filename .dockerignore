@@ -23,3 +23,9 @@ site/
 .cargo/
 mise.toml
 mise.lock
+
+# 含真实 DNS 厂商凭据的本地笔记，绝不进镜像与构建上下文
+DNSTOKEN.md
+
+# OpenSpec 规划工件不进运行时镜像
+openspec/

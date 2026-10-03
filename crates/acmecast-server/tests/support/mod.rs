@@ -231,7 +231,12 @@ pub async fn certificate_fixture() -> (TempDir, String, String, String) {
         .await
         .expect("应能打开文件仓库");
     let paths = store
-        .write_certificate("download-example-com", &chain_pem, &key_pem)
+        .write_certificate(
+            "download-example-com",
+            "download.example.com",
+            &chain_pem,
+            &key_pem,
+        )
         .await
         .expect("应能写入证书");
     (dir, paths.cert_pem, paths.key_pem, chain_pem)

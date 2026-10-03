@@ -45,7 +45,8 @@ pub struct AcmeApplyInput {
     /// 使用内网 DNS（解析器查不到）时应关闭——否则会白等到超时。
     #[serde(default = "default_true")]
     pub wait_propagation: bool,
-    /// 账号联系人（`mailto:` 开头）；仅首次注册账号时使用。
+    /// 账号联系人；裸邮箱或 `mailto:` URI 均可（前缀由服务端注册账号时自动补全）。
+    /// 仅首次注册账号时使用。
     #[serde(default)]
     pub contacts: Vec<String>,
     /// 跳过 CA 的 TLS 证书校验。仅用于自签测试 CA（如 pebble）；
@@ -121,6 +122,12 @@ impl PipelineStep for CertApplyStep {
         let leaf =
             acmecast_cert::parse_pem_leaf(&cert_pem).map_err(|e| domain_error("解析证书", e))?;
         let fingerprint = leaf.fingerprint_sha256.clone();
+        ctx.log_info(format!(
+            "证书已签发：{}（有效期至 {}，SHA-256 指纹 {}）",
+            leaf.domains.join(", "),
+            leaf.not_after.format("%Y-%m-%d"),
+            fingerprint
+        ));
 
         Ok(StepOutput::empty()
             .with_artifact("cert_pem", serde_json::json!(cert_pem))
@@ -164,7 +171,7 @@ impl CertApplyStep {
         let established = EstablishAccountInput {
             directory_url: &directory_url,
             mode: AccountMode::Create {
-                contacts: input.contacts.clone(),
+                contacts: normalize_contacts(&input.contacts),
             },
             external_account: None,
         };
@@ -339,19 +346,13 @@ fn transport_options(input: &AcmeApplyInput) -> acmecast_acme::ProxyConfig {
 fn generate_key_and_csr(domains: &[String]) -> Result<(String, Vec<u8>)> {
     let key = rcgen::KeyPair::generate().map_err(|e| domain_error("生成密钥", e))?;
     let mut params = rcgen::CertificateParams::default();
-    // 必须换掉 rcgen 的默认 CN（「rcgen self signed cert」）：CA 会把 subject
-    // 也当作申请标识符校验，带空格的假名直接吃 rejectedIdentifier。
-    // CN 不放通配符（LE 拒绝 `*.` 开头的标识符），取第一个非通配域名。
-    let mut dn = rcgen::DistinguishedName::new();
-    if let Some(cn) = domains
-        .iter()
-        .map(String::as_str)
-        .find(|d| !d.starts_with("*."))
-        .or_else(|| domains.first().map(|d| d.trim_start_matches("*.")))
-    {
-        dn.push(rcgen::DnType::CommonName, cn.to_owned());
-    }
-    params.distinguished_name = dn;
+    // 必须清掉 rcgen 的默认 CN（「rcgen self signed cert」），且不放任何 CN：
+    // LE 会把 CSR 的 CN 也并入标识符集合，与订单标识符做规范化后的完全相等
+    // 比较（Boulder identifier.FromCSR）。CN 与 SAN 不一致——比如通配 SAN
+    // 配上 base domain 的 CN——会多出一个订单没有的标识符，finalize 被以
+    // 「CSR does not specify same identifiers as Order」拒绝。ACME 只以 SAN
+    // 表达申请标识符，subject 留空（certbot 同款）最稳妥。
+    params.distinguished_name = rcgen::DistinguishedName::new();
     params.subject_alt_names = domains
         .iter()
         .map(|domain| {
@@ -374,4 +375,96 @@ fn zone_of(domain: &str) -> Option<String> {
         .trim_start_matches("*.")
         .split_once('.')
         .map(|(_, rest)| rest.to_owned())
+}
+
+/// 把联系人统一补全为 `mailto:` URI 形式。
+///
+/// CA 只认 URI 形式的联系方式；输入放宽为裸邮箱即可，前缀在这里统一补上。
+/// 已带 `mailto:` 前缀的项原样保留（大小写不敏感，`MAILTO:` 也是合法写法），
+/// 空白项视为没填，直接丢弃。
+#[must_use]
+fn normalize_contacts(contacts: &[String]) -> Vec<String> {
+    contacts
+        .iter()
+        .map(|contact| contact.trim())
+        .filter(|contact| !contact.is_empty())
+        .map(|contact| {
+            if contact.to_ascii_lowercase().starts_with("mailto:") {
+                contact.to_owned()
+            } else {
+                format!("mailto:{contact}")
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{generate_key_and_csr, normalize_contacts};
+
+    #[test]
+    fn wildcard_csr_has_no_cn_and_keeps_wildcard_san() {
+        // LE 把 CSR 的 CN 也并入标识符集合，与订单标识符做完全相等比较：
+        // CN 会把 base domain 带进集合，通配订单的 finalize 会被判
+        // 「CSR does not specify same identifiers as Order」。
+        // 这里直接检查 DER 字节：subject 不得含 CN OID（2.5.4.3），SAN 原样保留 `*.`。
+        let (_key_pem, csr_der) =
+            generate_key_and_csr(&["example.com".to_owned(), "*.example.com".to_owned()])
+                .expect("生成 CSR 应成功");
+
+        let cn_oid: &[u8] = &[0x06, 0x03, 0x55, 0x04, 0x03];
+        assert!(
+            !csr_der.windows(cn_oid.len()).any(|w| w == cn_oid),
+            "CSR 的 subject 不应包含 CN"
+        );
+        assert!(
+            csr_der
+                .windows(b"*.example.com".len())
+                .any(|w| w == b"*.example.com".as_slice()),
+            "SAN 应原样保留通配符"
+        );
+    }
+
+    #[test]
+    fn bare_addresses_get_the_mailto_prefix() {
+        assert_eq!(
+            normalize_contacts(&["ops@example.com".to_owned()]),
+            vec!["mailto:ops@example.com"]
+        );
+    }
+
+    #[test]
+    fn prefixed_addresses_are_kept_as_is() {
+        assert_eq!(
+            normalize_contacts(&["mailto:ops@example.com".to_owned()]),
+            vec!["mailto:ops@example.com"]
+        );
+        // 前缀大小写不敏感，且不重复补全。
+        assert_eq!(
+            normalize_contacts(&["MAILTO:ops@example.com".to_owned()]),
+            vec!["MAILTO:ops@example.com"]
+        );
+    }
+
+    #[test]
+    fn blank_entries_are_dropped() {
+        assert!(normalize_contacts(&["".to_owned(), "  ".to_owned()]).is_empty());
+    }
+
+    #[test]
+    fn mixed_entries_are_normalized_individually() {
+        assert_eq!(
+            normalize_contacts(&[
+                "ops@example.com".to_owned(),
+                "mailto:ca@example.com".to_owned(),
+                "".to_owned(),
+                " security@example.com ".to_owned(),
+            ]),
+            vec![
+                "mailto:ops@example.com",
+                "mailto:ca@example.com",
+                "mailto:security@example.com",
+            ]
+        );
+    }
 }

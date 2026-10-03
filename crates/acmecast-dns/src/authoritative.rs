@@ -42,8 +42,7 @@ pub trait Authority: Send + Sync + std::fmt::Debug {
     /// CNAME 必须和 TXT 一样走权威直查：公共解析器会按 TTL 缓存旧答案，
     /// 删除委派后的一段时间里仍「看得见」过期 CNAME，把检查器引去目标侧
     /// 取值、对真实写入的 TXT 报「不可见」。
-    async fn records_at(&self, ns: IpAddr, name: &str)
-    -> Result<(Vec<String>, Option<String>)>;
+    async fn records_at(&self, ns: IpAddr, name: &str) -> Result<(Vec<String>, Option<String>)>;
 }
 
 /// 用 [`TokioResolver`] 实现的权威查询。
@@ -69,10 +68,7 @@ impl AuthoritativeResolver {
 
     /// 注入自定义的权威查询实现（测试用）。
     #[must_use]
-    pub fn with_authority(
-        zone: impl Into<String>,
-        authority: Arc<dyn Authority>,
-    ) -> Self {
+    pub fn with_authority(zone: impl Into<String>, authority: Arc<dyn Authority>) -> Self {
         let zone = zone.into();
         let name = format!("权威 NS（{zone}）");
         Self {
@@ -229,10 +225,7 @@ impl std::fmt::Debug for HickoryAuthority {
 impl HickoryAuthority {
     fn bootstrap(&self) -> Result<&TokioResolver> {
         if self.bootstrap.get().is_none() {
-            // 不跟随系统 resolv.conf：容器内网 DNS 可能对公共域名返回
-            // NOERROR/空答案（而不是转发失败），毒化 NS 委派与地址查询，
-            // 让权威 NS 集合缺一半、可见性判定形同虚设。固定用可信公共 DNS。
-            let servers = ["223.5.5.5", "1.1.1.1", "8.8.8.8"]
+            let servers = crate::builtin::BOOTSTRAP_SERVERS
                 .iter()
                 .filter_map(|ip| ip.parse::<IpAddr>().ok())
                 .map(NameServerConfig::udp)
@@ -241,9 +234,7 @@ impl HickoryAuthority {
             let resolver =
                 TokioResolver::builder_with_config(config, TokioRuntimeProvider::default())
                     .build()
-                    .map_err(|error| {
-                        Error::provider(format!("引导解析器构建失败: {error}"))
-                    })?;
+                    .map_err(|error| Error::provider(format!("引导解析器构建失败: {error}")))?;
             let _ = self.bootstrap.set(resolver);
         }
         self.bootstrap
@@ -257,15 +248,14 @@ const NS_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[async_trait]
 impl Authority for HickoryAuthority {
-    async fn name_server_ips(&self, zone: &str) -> Result<Vec<IpAddr>> {        let resolver = self.bootstrap()?;
+    async fn name_server_ips(&self, zone: &str) -> Result<Vec<IpAddr>> {
+        let resolver = self.bootstrap()?;
         let zone = fqdn(zone);
 
         let lookup = resolver
             .lookup(zone.clone(), RecordType::NS)
             .await
-            .map_err(|error| {
-                Error::provider(format!("查询 zone `{zone}` 的 NS 失败: {error}"))
-            })?;
+            .map_err(|error| Error::provider(format!("查询 zone `{zone}` 的 NS 失败: {error}")))?;
 
         let mut hosts: Vec<String> = Vec::new();
         for record in lookup.answers() {
@@ -301,11 +291,7 @@ impl Authority for HickoryAuthority {
         Ok(ips)
     }
 
-    async fn records_at(
-        &self,
-        ns: IpAddr,
-        name: &str,
-    ) -> Result<(Vec<String>, Option<String>)> {
+    async fn records_at(&self, ns: IpAddr, name: &str) -> Result<(Vec<String>, Option<String>)> {
         let resolver = ns_resolver(ns)?;
         let name = fqdn(name);
         let txt = txt_values(&resolver, &name).await;
@@ -357,10 +343,13 @@ async fn txt_values(resolver: &TokioResolver, name: &str) -> Result<Vec<String>>
 
 async fn cname_value(resolver: &TokioResolver, name: &str) -> Result<Option<String>> {
     match resolver.lookup(name.to_owned(), RecordType::CNAME).await {
-        Ok(lookup) => Ok(lookup.answers().iter().find_map(|record| match &record.data {
-            RData::CNAME(cname) => Some(cname.to_string()),
-            _ => None,
-        })),
+        Ok(lookup) => Ok(lookup
+            .answers()
+            .iter()
+            .find_map(|record| match &record.data {
+                RData::CNAME(cname) => Some(cname.to_string()),
+                _ => None,
+            })),
         // 没有 CNAME 是常态（否定应答），不算查询失败。
         Err(error) if error.is_nx_domain() || error.is_no_records_found() => Ok(None),
         Err(error) => Err(Error::provider(format!("NS 查询失败: {error}"))),
@@ -441,10 +430,10 @@ mod tests {
         }
 
         fn cname_at(&self, ns: &str, name: &str, target: &str) {
-            self.per_ns_cnames.lock().unwrap().insert(
-                (ns.parse().unwrap(), name.to_owned()),
-                target.to_owned(),
-            );
+            self.per_ns_cnames
+                .lock()
+                .unwrap()
+                .insert((ns.parse().unwrap(), name.to_owned()), target.to_owned());
         }
     }
 
@@ -509,7 +498,11 @@ mod tests {
         let resolver =
             AuthoritativeResolver::with_authority("example.com", authority as Arc<dyn Authority>);
         assert!(
-            resolver.lookup_txt("x.example.com").await.unwrap().is_empty(),
+            resolver
+                .lookup_txt("x.example.com")
+                .await
+                .unwrap()
+                .is_empty(),
             "有应答 NS 还没同步到记录，不能报可见"
         );
     }
@@ -524,7 +517,11 @@ mod tests {
         let resolver =
             AuthoritativeResolver::with_authority("example.com", authority as Arc<dyn Authority>);
         assert!(
-            resolver.lookup_txt("x.example.com").await.unwrap().is_empty(),
+            resolver
+                .lookup_txt("x.example.com")
+                .await
+                .unwrap()
+                .is_empty(),
             "各 NS 的 CNAME 不一致，说明还在同步，不能跟随"
         );
     }
@@ -536,7 +533,13 @@ mod tests {
 
         let resolver =
             AuthoritativeResolver::with_authority("example.com", authority as Arc<dyn Authority>);
-        assert!(resolver.lookup_txt("x.example.com").await.unwrap().is_empty());
+        assert!(
+            resolver
+                .lookup_txt("x.example.com")
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -549,7 +552,10 @@ mod tests {
         let resolver =
             AuthoritativeResolver::with_authority("example.com", authority as Arc<dyn Authority>);
         let err = resolver.lookup_txt("x.example.com").await.unwrap_err();
-        assert!(err.to_string().contains("全部权威名字服务器查询失败"), "{err}");
+        assert!(
+            err.to_string().contains("全部权威名字服务器查询失败"),
+            "{err}"
+        );
     }
 
     #[tokio::test]

@@ -60,19 +60,21 @@ fn repeated_calls_are_salted_differently() {
 #[test]
 fn subcommand_prints_a_usable_hash() {
     let output = Command::new(env!("CARGO_BIN_EXE_acmecast-server"))
-        .args(["hash-password", "from-subcommand"])
+        .args(["hash-password", "--password", "from-subcommand"])
         .output()
         .expect("应能启动子命令");
 
     assert!(output.status.success(), "子命令应成功退出");
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // 首行是 PHC 哈希，其后是给终端用户的提示行。
+    let hash = stdout.lines().next().unwrap_or_default().trim().to_owned();
     assert!(
-        stdout.starts_with("$argon2id$"),
-        "子命令应输出 PHC 哈希：{stdout}"
+        hash.starts_with("$argon2id$"),
+        "子命令首行应输出 PHC 哈希：{stdout}"
     );
 
     // 子命令输出必须与库函数产物等效：能通过鉴权端的校验。
-    let config = auth_config_from(&stdout);
+    let config = auth_config_from(&hash);
     assert!(
         config.verify_password("from-subcommand"),
         "子命令生成的哈希应能校验原口令"
@@ -80,17 +82,21 @@ fn subcommand_prints_a_usable_hash() {
 }
 
 #[test]
-fn subcommand_without_a_password_fails_with_usage() {
+fn subcommand_without_a_password_fails_on_non_terminal_stdin() {
+    // 测试进程的 stdin 是管道（非终端），交互式输入不可用，应以非零退出码失败。
     let output = Command::new(env!("CARGO_BIN_EXE_acmecast-server"))
         .args(["hash-password"])
         .output()
         .expect("应能启动子命令");
 
-    assert!(!output.status.success(), "缺少口令应以非零退出码失败");
+    assert!(
+        !output.status.success(),
+        "无口令且 stdin 非终端应以非零退出码失败"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("hash-password"),
-        "错误信息应包含用法提示：{stderr}"
+        stderr.contains("stdin") || stderr.contains("口令"),
+        "错误信息应说明未提供口令且 stdin 非终端：{stderr}"
     );
 }
 

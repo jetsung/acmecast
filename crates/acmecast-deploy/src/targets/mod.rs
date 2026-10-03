@@ -4,4 +4,7 @@ pub mod local;
 pub mod ssh;
 
 pub use local::{LocalInput, LocalTarget};
-pub use ssh::{RusshConnector, SshAuth, SshConnector, SshInput, SshTarget, SshTransport};
+pub use ssh::{
+    ResolvedSshConfig, RusshConnector, SshAuth, SshAuthSource, SshConnector, SshInput, SshTarget,
+    SshTransport, probe_host,
+};

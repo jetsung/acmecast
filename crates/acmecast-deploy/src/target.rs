@@ -109,6 +109,13 @@ pub trait DeploymentTarget: Send + Sync + std::fmt::Debug + 'static {
     /// 本目标的输入字段定义，供前端渲染表单。
     fn input_schema(&self) -> RootSchema;
 
+    /// 本目标输入的示例，供前端在 `config` 输入框的占位提示中展示。
+    ///
+    /// 与 [`DeploymentTarget::input_schema`] 一起构成「结构 + 样例」：
+    /// 字段含义看 schema 的 description，长什么样看这里。示例只含必填
+    /// 项与最常用的可选项，避免占位提示长得读不完。
+    fn example_input(&self) -> Value;
+
     /// 把证书投放到目标。
     ///
     /// `input` 是本目标的配置（目标路径、主机地址、重载命令等）。

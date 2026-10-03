@@ -52,6 +52,7 @@ use crate::response::ApiResponse;
         run_pipeline,
         list_schedules,
         create_schedule,
+        list_trigger_logs,
         history_logs
     ),
     components(
@@ -72,6 +73,8 @@ use crate::response::ApiResponse;
             crate::handlers::RevokeResponse,
             crate::handlers::ScheduleCreateRequest,
             crate::handlers::ScheduleResponse,
+            crate::handlers::TriggerLogResponse,
+            crate::handlers::TriggerLogQueryParams,
             crate::handlers::CredentialRequest,
             crate::handlers::CredentialResponse,
             crate::handlers::CredentialDetailResponse,
@@ -84,6 +87,7 @@ use crate::response::ApiResponse;
             PageResponse<crate::handlers::CertificateResponse>,
             PageResponse<crate::handlers::CredentialResponse>,
             PageResponse<crate::handlers::HistoryResponse>,
+            PageResponse<crate::handlers::TriggerLogResponse>,
         )
     ),
     modifiers(&SecurityAddon)
@@ -181,6 +185,10 @@ fn list_schedules() {}
 /// 新建调度的文档占位函数。
 #[utoipa::path(post, path = "/api/schedules", request_body = crate::handlers::ScheduleCreateRequest, responses((status = 200, body = ApiResponse<crate::handlers::ScheduleResponse>, description = "调度配置"), (status = 400, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
 fn create_schedule() {}
+
+/// 触发审计分页查询的文档占位函数。
+#[utoipa::path(get, path = "/api/schedules/trigger-logs", params(("pipeline_id" = Option<i64>, Query, description = "按流水线过滤"), ("page" = Option<u64>, Query, description = "页码"), ("page_size" = Option<u64>, Query, description = "每页条数")), responses((status = 200, body = ApiResponse<PageResponse<crate::handlers::TriggerLogResponse>>, description = "触发审计分页列表")), security(("bearerAuth" = [])))]
+fn list_trigger_logs() {}
 
 /// 单条运行历史的文档占位函数。
 #[utoipa::path(get, path = "/api/histories/{id}", params(("id" = i64, Path, description = "历史主键")), responses((status = 200, body = ApiResponse<crate::handlers::HistoryResponse>), (status = 404, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]

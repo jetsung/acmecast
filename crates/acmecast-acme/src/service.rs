@@ -209,9 +209,13 @@ impl AcmeService {
             return Err(AcmeError::Order("订单域名列表不能为空".to_owned()));
         }
 
+        // RFC 8555 §7.1.3：通配符以 `*.` 前缀的完整值作为 DNS identifier 下单；
+        // 只有 CA 返回的**授权对象**才剥前缀（identifier 为 base domain + wildcard
+        // 标记）。下单时剥掉前缀会造出一张非通配订单，finalize 时 CSR 的
+        // `*.example.com` SAN 与订单标识符对不上，CA 直接拒绝。
         let identifiers: Vec<Identifier> = domains
             .iter()
-            .map(|d| Identifier::Dns(strip_wildcard_prefix(d)))
+            .map(|d| Identifier::Dns(d.trim().to_owned()))
             .collect();
 
         let order: Order = self
@@ -231,7 +235,7 @@ impl AcmeService {
     ) -> Result<PendingOrder> {
         let identifiers: Vec<Identifier> = domains
             .iter()
-            .map(|d| Identifier::Dns(strip_wildcard_prefix(d)))
+            .map(|d| Identifier::Dns(d.trim().to_owned()))
             .collect();
 
         let order: Order = self
@@ -307,18 +311,6 @@ impl AcmeService {
     pub fn account_id(&self) -> &str {
         self.account.id()
     }
-}
-
-/// 去掉通配符前缀，得到 CA 侧标识符。
-///
-/// `*.example.com` 在 ACME 中仍以 `example.com` 作为 identifier，
-/// 由授权对象的 `wildcard` 标记区分。
-fn strip_wildcard_prefix(domain: &str) -> String {
-    domain
-        .trim()
-        .strip_prefix("*.")
-        .unwrap_or(domain.trim())
-        .to_owned()
 }
 
 fn default_retry_policy() -> RetryPolicy {
@@ -427,12 +419,20 @@ impl HttpClient for ReqwestHttpClient {
 mod tests {
     use super::*;
 
-    #[test]
-    fn wildcard_prefix_is_stripped_for_identifier() {
-        // ACME 的 identifier 不含 `*.`，通配符由授权对象的 wildcard 标记表达。
-        assert_eq!(strip_wildcard_prefix("*.example.com"), "example.com");
-        assert_eq!(strip_wildcard_prefix("example.com"), "example.com");
-        assert_eq!(strip_wildcard_prefix("  example.com  "), "example.com");
+    #[tokio::test]
+    async fn new_order_keeps_wildcard_prefix_in_identifier() {
+        // RFC 8555 §7.1.3：通配符下单时 identifier 必须带 `*.` 前缀，与 CSR 的
+        // SAN 一致；剥掉前缀会让 finalize 被以「CSR does not specify same
+        // identifiers as Order」拒绝。
+        let mock = MockAcme::new();
+        let service = service_on(&mock).await;
+        service.new_order(&domains()).await.unwrap();
+
+        let payload = mock.payload_for("/new-order").expect("应记录到下单请求");
+        assert!(
+            payload.contains("*.example.com"),
+            "下单请求必须保留通配符前缀，实际: {payload}"
+        );
     }
 
     #[test]

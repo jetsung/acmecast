@@ -93,7 +93,11 @@ impl DohResolver {
     /// 任意 DNS-over-JSON 端点（遵循 RFC 8484 之外的 Google JSON 约定，
     /// 腾讯/阿里/Cloudflare/Google 均兼容 `?name=&type=` 与 `Accept: application/dns-json`）。
     #[must_use]
-    pub fn custom(http: Arc<dyn HttpTransport>, name: impl Into<String>, endpoint: impl Into<String>) -> Self {
+    pub fn custom(
+        http: Arc<dyn HttpTransport>,
+        name: impl Into<String>,
+        endpoint: impl Into<String>,
+    ) -> Self {
         Self {
             http,
             name: name.into(),
@@ -185,11 +189,8 @@ pub fn default_resolvers(http: Arc<dyn HttpTransport>) -> Vec<Box<dyn DnsResolve
             if endpoint.is_empty() {
                 return None;
             }
-            let resolver: Box<dyn DnsResolver> = Box::new(DohResolver::custom(
-                Arc::clone(&http),
-                name,
-                endpoint,
-            ));
+            let resolver: Box<dyn DnsResolver> =
+                Box::new(DohResolver::custom(Arc::clone(&http), name, endpoint));
             Some(resolver)
         })
         .collect::<Vec<_>>();
@@ -203,7 +204,7 @@ pub fn default_resolvers(http: Arc<dyn HttpTransport>) -> Vec<Box<dyn DnsResolve
 }
 
 /// 传播等待解析器配置的环境变量名。
-const RESOLVERS_ENV_KEY: &str = "ACMECAST_DOH_RESOLVERS";
+pub(crate) const RESOLVERS_ENV_KEY: &str = "ACMECAST_DOH_RESOLVERS";
 
 /// 某个 zone 应使用哪组解析器来确认「CA 能查到这条记录」。
 ///
@@ -215,13 +216,8 @@ const RESOLVERS_ENV_KEY: &str = "ACMECAST_DOH_RESOLVERS";
 /// 若显式设置了 `ACMECAST_DOH_RESOLVERS`（含 `none`=跳过等待），按配置走，
 /// 保留排障与定制能力。
 #[must_use]
-pub fn resolvers_for_zone(
-    http: Arc<dyn HttpTransport>,
-    zone: &str,
-) -> Vec<Box<dyn DnsResolver>> {
-    if std::env::var(RESOLVERS_ENV_KEY)
-        .is_ok_and(|value| !value.trim().is_empty())
-    {
+pub fn resolvers_for_zone(http: Arc<dyn HttpTransport>, zone: &str) -> Vec<Box<dyn DnsResolver>> {
+    if std::env::var(RESOLVERS_ENV_KEY).is_ok_and(|value| !value.trim().is_empty()) {
         return default_resolvers(http);
     }
     let _ = http;
@@ -241,7 +237,7 @@ fn builtin_resolvers(http: Arc<dyn HttpTransport>) -> Vec<Box<dyn DnsResolver>> 
 }
 
 /// 从端点 URL 里取主机名，作为未显式命名时的解析器名称。
-fn host_of(endpoint: &str) -> &str {
+pub(crate) fn host_of(endpoint: &str) -> &str {
     endpoint
         .trim_start_matches("https://")
         .trim_start_matches("http://")
@@ -321,15 +317,18 @@ pub async fn wait_until_visible(
                 // 这个解析器本身出了问题（端点不可达、被墙），按「不可达」归类，
                 // 不参与判定——任一家看到即可放行，所以失败只会让自己出局，
                 // 不会像旧的「全部可见」语义那样把整个等待拖死。
-                let outcome = match tokio::time::timeout(LOOKUP_TIMEOUT, resolver.lookup_txt(&record.name)).await {
-                    Ok(result) => result,
-                    Err(_elapsed) => Err(Error::provider(format!(
-                        "{} 查询 `{}` 超时（{} 秒）",
-                        resolver.name(),
-                        record.name,
-                        LOOKUP_TIMEOUT.as_secs()
-                    ))),
-                };
+                let outcome =
+                    match tokio::time::timeout(LOOKUP_TIMEOUT, resolver.lookup_txt(&record.name))
+                        .await
+                    {
+                        Ok(result) => result,
+                        Err(_elapsed) => Err(Error::provider(format!(
+                            "{} 查询 `{}` 超时（{} 秒）",
+                            resolver.name(),
+                            record.name,
+                            LOOKUP_TIMEOUT.as_secs()
+                        ))),
+                    };
                 match outcome {
                     Ok(values) => {
                         if values.iter().any(|value| value == &record.value) {
@@ -354,7 +353,13 @@ pub async fn wait_until_visible(
         }
 
         if Instant::now() >= deadline {
-            return Err(timeout_error(published, record, &missing, &unreachable, policy));
+            return Err(timeout_error(
+                published,
+                record,
+                &missing,
+                &unreachable,
+                policy,
+            ));
         }
         sleep(policy.interval).await;
     }
@@ -387,7 +392,10 @@ fn timeout_error(
         parts.push(format!("{} 上不可见", missing.join("、")));
     }
     if !unreachable.is_empty() {
-        parts.push(format!("{} 查询失败（网络不可达？）", unreachable.join("、")));
+        parts.push(format!(
+            "{} 查询失败（网络不可达？）",
+            unreachable.join("、")
+        ));
     }
     if parts.is_empty() {
         parts.push("全部解析器查询均失败".to_owned());
@@ -426,7 +434,9 @@ mod tests {
     ///
     /// `set_var`/`remove_var` 在 edition 2024 下是 unsafe（多线程读环境变量
     /// 理论上有竞争）；测试进程内用 `ENV_LOCK` 串行化，安全性由测试约定保证。
+    #[allow(unsafe_code)]
     struct EnvGuard(&'static str);
+    #[allow(unsafe_code)]
     impl EnvGuard {
         fn set(key: &'static str, value: &str) -> Self {
             // SAFETY: 所有读环境变量的测试都持有 ENV_LOCK，无并发访问。
@@ -434,6 +444,7 @@ mod tests {
             Self(key)
         }
     }
+    #[allow(unsafe_code)]
     impl Drop for EnvGuard {
         fn drop(&mut self) {
             // SAFETY: 同上。
@@ -727,7 +738,7 @@ mod tests {
         }
 
         // default_resolvers 会读环境变量，必须与其它 env 测试串行。
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let resolvers = default_resolvers(Arc::new(Unused));
         let names: Vec<&str> = resolvers.iter().map(|resolver| resolver.name()).collect();
 
@@ -814,7 +825,10 @@ mod tests {
 
         let text = err.to_string();
         assert!(text.contains("Google DNS"), "{text}");
-        assert!(text.contains("查询失败"), "挂起应归类为查不了而不是没看到: {text}");
+        assert!(
+            text.contains("查询失败"),
+            "挂起应归类为查不了而不是没看到: {text}"
+        );
     }
 
     #[tokio::test]
@@ -919,6 +933,101 @@ mod tests {
         // 引号被脱掉，非 TXT 的记录被忽略。
         assert_eq!(values, vec!["value-1".to_owned()]);
         assert_eq!(resolver.name(), "Google DNS");
+    }
+
+    #[test]
+    fn builtin_constants_are_bounded_and_descriptive() {
+        // 规模受控，不直接消费 dnsdata 全量高密度数据
+        assert!(
+            crate::builtin::DNS_SERVERS.len() <= 12,
+            "DNS 内置过多请抽样"
+        );
+        assert!(crate::builtin::DOT_SERVERS.len() <= 8, "DoT 内置过多");
+        assert!(crate::builtin::DOH_SERVERS.len() <= 10, "DoH 内置过多");
+        assert!(crate::builtin::BOOTSTRAP_SERVERS.len() <= 10);
+        // 至少覆盖国内外代表
+        assert!(crate::builtin::DNS_SERVERS.contains(&"223.5.5.5"));
+        assert!(crate::builtin::DOH_SERVERS.contains(&"https://dns.alidns.com/dns-query"));
+    }
+
+    #[test]
+    fn resolvers_for_zone_stays_authoritative_by_default() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let http: Arc<dyn HttpTransport> = Arc::new(crate::http::ReqwestTransport::default());
+        // 未设 env 时走权威直查，不自动混入扩展
+        let v = resolvers_for_zone(Arc::clone(&http), "example.com");
+        assert_eq!(v.len(), 1);
+        assert!(v[0].name().contains("权威"), "{}", v[0].name());
+    }
+
+    #[test]
+    fn extended_resolvers_empty_entries_fallback_to_builtin() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let http: Arc<dyn HttpTransport> = Arc::new(crate::http::ReqwestTransport::default());
+        // 无条目时仅返回内置集合（default_resolvers 在未设 env 时为内置四家）。
+        let v = crate::resolvers::load_extended_resolvers(Arc::clone(&http), &[]);
+        assert_eq!(v.len(), 4, "无条目时仅内置");
+        // 再次确认空切片与缺省等价
+        let v2 = crate::resolvers::load_extended_resolvers(http, &[]);
+        assert_eq!(v2.len(), 4, "空条目时仅内置");
+    }
+
+    #[test]
+    fn extended_resolvers_skips_invalid_and_dedupes() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let http: Arc<dyn HttpTransport> = Arc::new(crate::http::ReqwestTransport::default());
+        use crate::resolvers::ResolverEntry;
+        let entries = [
+            // 非 https，跳过
+            ResolverEntry {
+                kind: "doh".into(),
+                endpoint: "http://bad.example/dns-query".into(),
+                name: None,
+            },
+            // dot 未实现，跳过
+            ResolverEntry {
+                kind: "dot".into(),
+                endpoint: "dns.alidns.com".into(),
+                name: None,
+            },
+            // 非 IP，跳过
+            ResolverEntry {
+                kind: "dns".into(),
+                endpoint: "not-an-ip".into(),
+                name: None,
+            },
+            // 与内置 alidns 重复，去重
+            ResolverEntry {
+                kind: "doh".into(),
+                endpoint: "https://dns.alidns.com/dns-query".into(),
+                name: None,
+            },
+            // 新增
+            ResolverEntry {
+                kind: "doh".into(),
+                endpoint: "https://example.com/dns-query".into(),
+                name: Some("custom".into()),
+            },
+        ];
+        let v = crate::resolvers::load_extended_resolvers(http, &entries);
+        // dot 与 dns 非法/未实现被跳过；与内置重复的 alidns 去重后仅新增 example.com 一条
+        assert!(v.len() >= 5, "至少内置4 + 新增1 =5, got {}", v.len());
+        assert!(v.iter().any(|r| r.name() == "custom"));
+    }
+
+    #[test]
+    fn extended_resolvers_none_short_circuits() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let http: Arc<dyn HttpTransport> = Arc::new(crate::http::ReqwestTransport::default());
+        use crate::resolvers::ResolverEntry;
+        let entries = [ResolverEntry {
+            kind: "doh".into(),
+            endpoint: "https://example.com/dns-query".into(),
+            name: None,
+        }];
+        let _e = EnvGuard::set("ACMECAST_DOH_RESOLVERS", "none");
+        let v = crate::resolvers::load_extended_resolvers(http, &entries);
+        assert!(v.is_empty(), "none 时跳过传播等待");
     }
 
     #[tokio::test]

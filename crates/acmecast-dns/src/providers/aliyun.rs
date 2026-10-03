@@ -152,7 +152,10 @@ impl DnsProvider for AliyunProvider {
             ("RR".to_owned(), record.relative_name()?),
             ("Type".to_owned(), "TXT".to_owned()),
             ("Value".to_owned(), record.value.clone()),
-            ("TTL".to_owned(), record.ttl.clamp(TTL_MIN, TTL_MAX).to_string()),
+            (
+                "TTL".to_owned(),
+                record.ttl.clamp(TTL_MIN, TTL_MAX).to_string(),
+            ),
         ]);
 
         self.call(&credentials, "AddDomainRecord", extra).await?;

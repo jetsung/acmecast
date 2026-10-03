@@ -9,6 +9,8 @@ import { SchemaForm } from "@/components/SchemaForm";
 
 /** `account_credential_id` 一类字段只接受这类凭据。 */
 const ACME_ACCOUNT_TYPE_ID = "acme.account";
+/** SSH 主机档案凭据：cert.deploy 的 SSH 配置按标识引用它。 */
+const SSH_HOST_TYPE_ID = "ssh";
 
 /**
  * 内置 DNS 提供商（与 `steps::default_dns_registry()` 对齐）。
@@ -45,6 +47,8 @@ const FIELD_OPTIONS: Record<
   account_credential_id: { fromCredentials: (typeId) => typeId === ACME_ACCOUNT_TYPE_ID },
   acme_account_credential_id: { fromCredentials: (typeId) => typeId === ACME_ACCOUNT_TYPE_ID },
   dns_credential_id: { fromCredentials: (typeId) => DNS_PROVIDER_TYPE_IDS.has(typeId) },
+  // cert.deploy SSH 配置里的凭据引用：主机档案（顶层）与认证凭据（auth 内）。
+  credential_id: { fromCredentials: (typeId) => typeId === SSH_HOST_TYPE_ID },
   dns_provider: { fixed: DNS_PROVIDERS },
   // 部署目标类型；当前只有 cert.deploy 用它。
   target: { fixed: DEPLOY_TARGETS },
@@ -350,8 +354,71 @@ function TaskSchemaFields({
 }
 
 /**
+ * SSH 变体表单只保留的字段：`credential_id` 引用 SSH 主机档案——连接信息
+ * （host/port/user）与认证材料在执行时从档案取，权限位用档案值或系统缺省；
+ * 其余三个是部署输入，绑定「证书装到哪、怎么重载」，档案不携带。
+ */
+const SSH_FIELDS = ["credential_id", "cert_path", "key_path", "reload_command"] as const;
+
+/**
+ * local 变体的字段渲染顺序：路径与其权限位成对相邻（两字段半宽即同行），
+ * uid/gid 成对在后；重载命令最后。字段全部保留，仅声明顺序。
+ */
+const LOCAL_FIELD_ORDER = [
+  "cert_path",
+  "cert_mode",
+  "key_path",
+  "key_mode",
+  "uid",
+  "gid",
+  "reload_command",
+];
+
+/**
+ * 保留字段的展示标签（`x-label`）：`credential_id` 不显示裸字段名，
+ * 让「从凭据取连接信息」的语义在表单上可读。
+ */
+const SSH_LABELS: Record<string, string> = {
+  credential_id: "SSH 主机档案",
+};
+
+/**
+ * 收紧 SSH 变体 schema：只保留 `SSH_FIELDS` 声明的字段，并注入展示标签与
+ * 行尾标记——「SSH 主机档案」与「重载命令」各独占一行（右侧空列占位），
+ * `cert_path`/`key_path` 成对同行。连接、认证、权限字段从表单剔除——后端
+ * `SshInput` 仍接受它们（兼容旧数据），但界面上不再提供入口。
+ */
+function tightenSshSchema(schema: Record<string, unknown>): Record<string, unknown> {
+  const props = schema.properties as Record<string, Record<string, unknown>> | undefined;
+  if (!props) return schema;
+  const next: Record<string, Record<string, unknown>> = {};
+  for (const field of SSH_FIELDS) {
+    const node = props[field];
+    if (!node) continue;
+    const decorated: Record<string, unknown> = { ...node };
+    if (SSH_LABELS[field]) decorated["x-label"] = SSH_LABELS[field];
+    // 主引用与重载命令独占一行，右侧空列占位，不让路径字段补位上来。
+    if (field === "credential_id" || field === "reload_command") {
+      decorated["x-end-row"] = true;
+    }
+    next[field] = decorated;
+  }
+  return { ...schema, properties: next, "x-field-order": [...SSH_FIELDS] };
+}
+
+/**
+ * cert.deploy 输入的字段渲染顺序：`target`（选哪种部署方式）是首要决策，
+ * 排最前；`force`（要不要强制重写）次之；`config` 子表单跟在决策字段之后。
+ */
+const CERT_DEPLOY_FIELD_ORDER = ["target", "force", "config"];
+
+/**
  * 给「应该选一个」的字段注入 `x-options`（SchemaForm 的客户端扩展），
  * 把裸输入换成下拉；值仍是原来的类型（凭据主键是数字，标识是字符串），后端不用改。
+ *
+ * `x-target-schemas` 的变体子字段（cert.deploy 的 config）同样按字段名注入：
+ * 目标 schema 是后端动态给的，注入必须在这里递归进行。SSH 变体额外注入
+ * `x-field-order`，保证 host/port 等成对字段相邻，不依赖后端 schema 键序。
  */
 function withFieldOptions(schema: unknown, options: FieldOptions): unknown {
   const root = schema as
@@ -367,7 +434,40 @@ function withFieldOptions(schema: unknown, options: FieldOptions): unknown {
     next[field] = { ...next[field], "x-options": fieldOptions };
     changed = true;
   }
-  return changed ? { ...root, properties: next } : schema;
+  // cert.deploy 的输入 schema（以 dns_provider/target/config 为特征）注入根级
+  // 字段顺序：force/target 两个决策字段排最前，config 子表单跟在后面。
+  const isCertDeploy = Boolean(next.target && next.config && (next.config as SchemaOptionsNode)["x-target-schemas"]);
+  const order = isCertDeploy ? CERT_DEPLOY_FIELD_ORDER : undefined;
+  for (const [field, node] of Object.entries(next)) {
+    const variants = (node as SchemaOptionsNode)["x-target-schemas"];
+    if (!variants) continue;
+    const injectedVariants: typeof variants = {};
+    for (const [targetId, variant] of Object.entries(variants)) {
+      const injected = withFieldOptions(variant.schema, options) as Record<string, unknown>;
+      // SSH 变体收紧为档案引用 + 部署输入（连接/认证/权限由档案提供）；
+      // local 变体字段全部保留，仅声明成对相邻的渲染顺序。
+      const tightened =
+        targetId === "ssh"
+          ? tightenSshSchema(injected)
+          : targetId === "local"
+            ? { ...injected, "x-field-order": LOCAL_FIELD_ORDER }
+            : injected;
+      injectedVariants[targetId] = { ...variant, schema: tightened };
+    }
+    next[field] = { ...node, "x-target-schemas": injectedVariants };
+    changed = true;
+  }
+  return changed
+    ? { ...root, properties: next, ...(order ? { "x-field-order": order } : {}) }
+    : schema;
+}
+
+/** `withFieldOptions` 递归时用到的最小节点形状（完整 schema 由变体自身保证）。 */
+interface SchemaOptionsNode {
+  "x-target-schemas"?: Record<
+    string,
+    { display_name: string; example: unknown; schema: unknown }
+  >;
 }
 
 function SchemaFormBridge({

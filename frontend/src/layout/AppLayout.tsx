@@ -6,8 +6,11 @@ import {
   HistoryOutlined,
   KeyOutlined,
   ClockCircleOutlined,
+  LogoutOutlined,
 } from "@ant-design/icons";
+import { Button } from "antd";
 import { Outlet, useLocation, useNavigate } from "react-router";
+import { useAuthStore } from "@/auth/store";
 
 const { Sider, Content } = Layout;
 
@@ -32,21 +35,40 @@ export function AppLayout() {
     selected.push("/");
   }
 
+  const logout = () => {
+    // 与 401 自动登出共用同一 action：清除本地登录态后回登录页。
+    useAuthStore.getState().logout();
+    navigate("/login");
+  };
+
   return (
     <Layout style={{ minHeight: "100vh" }}>
       <Sider>
-        <div style={{ padding: 16 }}>
-          <Typography.Title level={5} style={{ color: "#fff", margin: 0 }}>
-            acmecast
-          </Typography.Title>
+        <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
+          <div style={{ padding: 16 }}>
+            <Typography.Title level={5} style={{ color: "#fff", margin: 0 }}>
+              acmecast
+            </Typography.Title>
+          </div>
+          <Menu
+            theme="dark"
+            mode="inline"
+            selectedKeys={selected}
+            items={items}
+            onClick={(entry) => navigate(entry.key)}
+          />
+          <div style={{ marginTop: "auto", padding: 16 }}>
+            <Button
+              block
+              danger
+              ghost
+              icon={<LogoutOutlined />}
+              onClick={logout}
+            >
+              登出
+            </Button>
+          </div>
         </div>
-        <Menu
-          theme="dark"
-          mode="inline"
-          selectedKeys={selected}
-          items={items}
-          onClick={(entry) => navigate(entry.key)}
-        />
       </Sider>
       <Content style={{ padding: 24 }}>
         <Outlet />

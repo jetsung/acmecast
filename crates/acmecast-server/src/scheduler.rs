@@ -79,7 +79,9 @@ impl PipelineLauncher for PipelineRunLauncher {
                 Error::InvalidConfig(format!("流水线 {} 不存在", request.pipeline_id))
             })?;
         if !pipeline.enabled {
-            tracing::info!(
+            // warn 而非 info：这是「调度已到点但没跑成」的可观测事件，
+            // 排障时第一个要看到的就是它。
+            tracing::warn!(
                 pipeline_id = request.pipeline_id,
                 "流水线已停用，跳过本次触发"
             );

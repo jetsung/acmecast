@@ -58,6 +58,10 @@ impl DeploymentTarget for RecordingTarget {
         schema_for!(TargetInput)
     }
 
+    fn example_input(&self) -> Value {
+        json!({ "cert_path": "/tmp/recording.crt", "key_path": "/tmp/recording.key" })
+    }
+
     async fn deploy(
         &self,
         input: &Value,

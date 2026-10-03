@@ -968,3 +968,58 @@ async fn deleting_the_account_leaves_the_certificate_unresolvable() {
         .expect_err("账号已删除，应取不到");
     assert!(matches!(&err, Error::MissingField(_)), "{err:?}");
 }
+
+// ---- 吊销归档的路径更新 ----
+
+#[tokio::test]
+async fn updating_paths_moves_the_recorded_material_location() {
+    // 吊销归档把文件移进吊销目录后，库中的相对路径必须跟着走，
+    // 否则详情与下载会指向一个已经空了的目录。
+    use acmecast_store::CertFilePaths;
+
+    let (db, account) = setup().await;
+    let repo = CertRepository::new(&db);
+
+    let saved = repo
+        .save(input(&["example.com"], "fp-1", 90, account))
+        .await
+        .unwrap()
+        .model();
+
+    repo.update_paths(
+        saved.id,
+        &CertFilePaths {
+            cert_pem: "certs/revoked/fp-1/cert.pem".to_owned(),
+            key_pem: "certs/revoked/fp-1/key.pem".to_owned(),
+        },
+    )
+    .await
+    .expect("应能更新路径");
+
+    let reloaded = repo.find(saved.id).await.unwrap().unwrap();
+    assert_eq!(reloaded.cert_pem_path, "certs/revoked/fp-1/cert.pem");
+    assert_eq!(reloaded.key_pem_path, "certs/revoked/fp-1/key.pem");
+    assert!(
+        reloaded.updated_at > saved.updated_at,
+        "路径更新应刷新 updated_at"
+    );
+    // 其余字段不应被这次更新波及。
+    assert_eq!(reloaded.fingerprint, "fp-1");
+    assert!(reloaded.revoked_at.is_none(), "路径更新不应改动吊销状态");
+}
+
+#[tokio::test]
+async fn updating_paths_of_a_missing_certificate_reports_not_found() {
+    let (db, _account) = setup().await;
+    let repo = CertRepository::new(&db);
+    let paths = acmecast_store::CertFilePaths {
+        cert_pem: "certs/revoked/fp-x/cert.pem".to_owned(),
+        key_pem: "certs/revoked/fp-x/key.pem".to_owned(),
+    };
+
+    let err = repo
+        .update_paths(404, &paths)
+        .await
+        .expect_err("证书不存在应报错");
+    assert!(matches!(&err, Error::NotFound { .. }), "{err:?}");
+}

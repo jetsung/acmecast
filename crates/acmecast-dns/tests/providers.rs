@@ -244,7 +244,10 @@ async fn aliyun_clamps_ttl_into_the_vendor_range() {
             .expect("应能创建记录");
 
         let url = &transport.requests()[0].url;
-        assert!(url.contains(expected), "TTL={input} 应发出 {expected}: {url}");
+        assert!(
+            url.contains(expected),
+            "TTL={input} 应发出 {expected}: {url}"
+        );
     }
 }
 

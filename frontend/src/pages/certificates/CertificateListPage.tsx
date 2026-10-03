@@ -14,7 +14,7 @@ type CertificateRow = components["schemas"]["CertificateResponse"];
 export function CertificateListPage() {
   const navigate = useNavigate();
   const [domain, setDomain] = useState("");
-  const [sort, setSort] = useState<"ascending" | "descending">("ascending");
+  const [sort, setSort] = useState<"ascending" | "descending">("descending");
   const [page, setPage] = useState(1);
 
   const { data, isFetching } = useQuery({
@@ -43,7 +43,7 @@ export function CertificateListPage() {
     {
       title: "到期时间",
       dataIndex: "not_after",
-      width: 200,
+      width: 260,
       sorter: true,
       render: (value: string, row) => {
         const days = Math.floor(

@@ -286,6 +286,51 @@ async fn nested_references_are_found() {
     assert_eq!(found.len(), 2, "嵌套与数组中的引用都应被找到: {found:?}");
 }
 
+// ---- Scenario: SSH 主机档案被 cert.deploy 引用时删除 ----
+
+#[tokio::test]
+async fn an_ssh_host_profile_referenced_by_a_deploy_step_is_refused() {
+    // cert.deploy 的档案引用长在 `config` 里一层：{"target":"ssh",
+    // "config":{"credential_id":N,…}}。递归扫描必须穿透这层结构，
+    // 否则删掉一份被部署步骤引用的档案，流水线要到执行时才炸。
+    let db = setup().await;
+    let credential_id = insert_credential(&db).await;
+
+    let pipeline_id = insert_pipeline(&db, "证书下发").await;
+    insert_step(
+        &db,
+        pipeline_id,
+        0,
+        serde_json::json!({
+            "target": "ssh",
+            "config": {
+                "credential_id": credential_id,
+                "cert_path": "/srv/ssl/site.crt",
+                "key_path": "/srv/ssl/site.key",
+            },
+        }),
+    )
+    .await;
+
+    let err = store(&db)
+        .delete(credential_id)
+        .await
+        .expect_err("部署步骤引用的档案应拒绝删除");
+
+    match &err {
+        Error::CredentialInUse {
+            credential_id: reported,
+            referenced_by,
+        } => {
+            assert_eq!(*reported, credential_id);
+            assert_eq!(referenced_by.len(), 1);
+            assert_eq!(referenced_by[0].pipeline_name, "证书下发");
+        }
+        other => panic!("期望 CredentialInUse，实际 {other:?}"),
+    }
+    assert!(store(&db).exists(credential_id).await.unwrap());
+}
+
 #[tokio::test]
 async fn lookalike_fields_are_not_treated_as_references() {
     let db = setup().await;

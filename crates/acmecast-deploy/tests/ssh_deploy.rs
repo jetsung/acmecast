@@ -2,7 +2,8 @@
 //!
 //! CI 里起一台 sshd 既不现实也不稳定，因此连接被抽象成可替换的
 //! [`SshConnector`]。这里验证的是**部署逻辑**：两种认证都能拿到凭据、
-//! 文件写到指定远程路径、远程重载的成败如何决定整个步骤的成败。
+//! 主机档案能补齐连接配置、文件写到指定远程路径、远程重载的成败如何
+//! 决定整个步骤的成败。
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -10,15 +11,15 @@ use std::sync::{Arc, Mutex};
 use acmecast_access::{CredentialRegistry, CredentialStore, CredentialType};
 use acmecast_core::CredentialCipher;
 use acmecast_deploy::{
-    CertMaterials, DeployMode, DeploymentRegistry, DeploymentTarget, Error, Result, SshAuth,
-    SshConnector, SshInput, SshTarget, SshTransport,
+    CertMaterials, DeployMode, DeploymentRegistry, DeploymentTarget, Error, Result, ResolvedSshConfig,
+    SshAuth, SshAuthSource, SshConnector, SshTarget, SshTransport, SshHostFields,
+    ssh_host_fields_schema,
 };
 use acmecast_store::entity::credential;
 use acmecast_store::migrate;
 use async_trait::async_trait;
 use chrono::Utc;
 use schemars::schema::RootSchema;
-use schemars::schema_for;
 use sea_orm::{ActiveModelTrait, Database, Set};
 use serde_json::{Value, json};
 
@@ -47,7 +48,7 @@ impl Remote {
 #[derive(Debug)]
 struct FakeTransport {
     remote: Arc<Remote>,
-    input: SshInput,
+    config: ResolvedSshConfig,
 }
 
 #[async_trait]
@@ -72,15 +73,16 @@ impl SshTransport for FakeTransport {
             return Ok((7, "远程重载失败：配置有语法错误".to_owned()));
         }
         // 走一下 user/host，免得字段被判成未使用。
-        Ok((0, format!("{}@{} ok", self.input.user, self.input.host)))
+        Ok((0, format!("{}@{} ok", self.config.user, self.config.host)))
     }
 }
 
-/// 假的连接器：按认证方式取一次凭据，然后给出假传输。
+/// 假的连接器：校验认证来源确实可取到材料，然后给出假传输。
 #[derive(Debug)]
 struct FakeConnector {
     remote: Arc<Remote>,
-    /// 记录每次认证用的凭据标识，用于断言「值确实来自凭据系统」。
+    /// 记录每次**凭据解析**的标识，用于断言「值确实来自凭据系统」；
+    /// 档案自带材料不经过这里。
     used_credentials: Arc<Mutex<Vec<i64>>>,
 }
 
@@ -88,46 +90,56 @@ struct FakeConnector {
 impl SshConnector for FakeConnector {
     async fn connect(
         &self,
-        input: &SshInput,
+        config: &ResolvedSshConfig,
         credentials: &CredentialStore<'_>,
     ) -> Result<Box<dyn SshTransport>> {
-        // 真的去凭据系统取一次——这正是「私钥不在任务输入里」的体现。
-        let credential = credentials
-            .resolve(input.auth.credential_id())
-            .await
-            .map_err(|e| Error::Remote(format!("取凭据失败: {e}")))?;
+        match &config.auth {
+            SshAuthSource::Credential(auth) => {
+                // 真的去凭据系统取一次——这正是「私钥不在任务输入里」的体现。
+                let credential = credentials
+                    .resolve(auth.credential_id())
+                    .await
+                    .map_err(|e| Error::Remote(format!("取凭据失败: {e}")))?;
 
-        // 两种方式各查一个字段，缺哪个就报哪个。
-        match &input.auth {
-            SshAuth::PrivateKey { .. } => {
-                credential
-                    .fields
-                    .get("private_key")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| Error::invalid_input("auth", "凭据里没有 `private_key` 字段"))?;
+                // 两种方式各查一个字段，缺哪个就报哪个。
+                match auth {
+                    SshAuth::PrivateKey { .. } => {
+                        credential
+                            .fields
+                            .get("private_key")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| {
+                                Error::invalid_input("auth", "凭据里没有 `private_key` 字段")
+                            })?;
+                    }
+                    SshAuth::Password { .. } => {
+                        credential
+                            .fields
+                            .get("password")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| {
+                                Error::invalid_input("auth", "凭据里没有 `password` 字段")
+                            })?;
+                    }
+                }
+
+                self.used_credentials
+                    .lock()
+                    .expect("锁不应中毒")
+                    .push(credential.id);
             }
-            SshAuth::Password { .. } => {
-                credential
-                    .fields
-                    .get("password")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| Error::invalid_input("auth", "凭据里没有 `password` 字段"))?;
-            }
+            // 档案自带材料已经过凭据存储的解密与校验，这里只认它可用。
+            SshAuthSource::PrivateKey(_) | SshAuthSource::Password(_) => {}
         }
-
-        self.used_credentials
-            .lock()
-            .expect("锁不应中毒")
-            .push(credential.id);
 
         Ok(Box::new(FakeTransport {
             remote: Arc::clone(&self.remote),
-            input: input.clone(),
+            config: config.clone(),
         }))
     }
 }
 
-/// 一个够用的凭据类型。
+/// 一个够用的认证凭据类型。
 #[derive(Debug)]
 struct SshKeyType;
 
@@ -141,11 +153,35 @@ impl CredentialType for SshKeyType {
     }
 
     fn fields_schema(&self) -> RootSchema {
-        schema_for!(Value)
+        schemars::schema_for!(Value)
     }
 
     fn validate(&self, _fields: &Value) -> acmecast_core::Result<()> {
         Ok(())
+    }
+}
+
+/// 主机档案凭据类型：校验委托给 [`SshHostFields`]，与 server 侧的真实现同构。
+#[derive(Debug)]
+struct SshHostType;
+
+impl CredentialType for SshHostType {
+    fn type_id(&self) -> &'static str {
+        "ssh"
+    }
+
+    fn display_name(&self) -> &'static str {
+        "SSH 主机（部署）"
+    }
+
+    fn fields_schema(&self) -> RootSchema {
+        ssh_host_fields_schema()
+    }
+
+    fn validate(&self, fields: &Value) -> acmecast_core::Result<()> {
+        let parsed: SshHostFields = serde_json::from_value(fields.clone())
+            .map_err(|error| acmecast_core::Error::validation("fields", format!("字段不合法: {error}")))?;
+        parsed.validate()
     }
 }
 
@@ -156,6 +192,8 @@ impl CredentialType for SshKeyType {
 async fn seed_credential(
     db: &sea_orm::DatabaseConnection,
     cipher: &CredentialCipher,
+    type_id: &str,
+    name: &str,
     fields: Value,
 ) -> i64 {
     let sealed = cipher
@@ -164,8 +202,8 @@ async fn seed_credential(
     let now = Utc::now();
 
     credential::ActiveModel {
-        name: Set("SSH 凭据".to_owned()),
-        type_id: Set("ssh.key".to_owned()),
+        name: Set(name.to_owned()),
+        type_id: Set(type_id.to_owned()),
         encrypted_fields: Set(sealed),
         created_at: Set(now),
         updated_at: Set(now),
@@ -199,6 +237,7 @@ async fn setup() -> (
         Arc::new(CredentialCipher::from_base64(&CredentialCipher::generate_key_base64()).unwrap());
     let mut registry = CredentialRegistry::new();
     registry.register(SshKeyType).expect("应能注册");
+    registry.register(SshHostType).expect("应能注册");
     let store = CredentialStore::new(db, Arc::new(registry), Arc::clone(&cipher));
 
     (
@@ -227,7 +266,14 @@ fn target(remote: &Arc<Remote>, used: &Arc<Mutex<Vec<i64>>>) -> SshTarget {
 #[tokio::test]
 async fn a_private_key_credential_writes_to_the_remote_path() {
     let (db, store, cipher, remote, used) = setup().await;
-    let id = seed_credential(db, &cipher, json!({ "private_key": "PRIVATE-KEY-PEM" })).await;
+    let id = seed_credential(
+        db,
+        &cipher,
+        "ssh.key",
+        "SSH 凭据",
+        json!({ "private_key": "PRIVATE-KEY-PEM" }),
+    )
+    .await;
 
     let target = target(&remote, &used);
     let outcome = target
@@ -275,7 +321,14 @@ async fn a_private_key_credential_writes_to_the_remote_path() {
 #[tokio::test]
 async fn a_password_credential_also_writes_to_the_remote_path() {
     let (db, store, cipher, remote, used) = setup().await;
-    let id = seed_credential(db, &cipher, json!({ "password": "s3cret" })).await;
+    let id = seed_credential(
+        db,
+        &cipher,
+        "ssh.key",
+        "SSH 凭据",
+        json!({ "password": "s3cret" }),
+    )
+    .await;
 
     let outcome = target(&remote, &used)
         .deploy(
@@ -303,7 +356,14 @@ async fn a_password_credential_also_writes_to_the_remote_path() {
 async fn a_credential_missing_the_expected_field_is_reported() {
     // 拿口令凭据去走私钥认证：应当指出凭据里缺哪个字段。
     let (db, store, cipher, remote, used) = setup().await;
-    let id = seed_credential(db, &cipher, json!({ "password": "s3cret" })).await;
+    let id = seed_credential(
+        db,
+        &cipher,
+        "ssh.key",
+        "SSH 凭据",
+        json!({ "password": "s3cret" }),
+    )
+    .await;
 
     let err = target(&remote, &used)
         .deploy(
@@ -325,12 +385,160 @@ async fn a_credential_missing_the_expected_field_is_reported() {
     assert!(remote.file("/c.pem").is_none(), "不该写入任何东西");
 }
 
+// ---- Scenario: 引用主机档案 ----
+
+/// 一份完整的档案字段：只含连接、认证与权限缺省值，不含路径与重载命令。
+fn profile_fields() -> Value {
+    json!({
+        "host": "web-1.example.com",
+        "port": 22,
+        "user": "deploy",
+        "private_key": "PROFILE-PRIVATE-KEY",
+        "cert_mode": "0644",
+    })
+}
+
+#[tokio::test]
+async fn a_host_profile_supplies_connection_and_materials() {
+    let (db, store, cipher, remote, used) = setup().await;
+    let id = seed_credential(db, &cipher, "ssh", "生产机", profile_fields()).await;
+
+    let outcome = target(&remote, &used)
+        .deploy(
+            // 输入给档案引用与远端路径：连接、认证与权限来自档案。
+            &json!({
+                "credential_id": id,
+                "cert_path": "/srv/ssl/site.crt",
+                "key_path": "/srv/ssl/site.key",
+            }),
+            &materials(),
+            &store,
+            DeployMode::Write,
+        )
+        .await
+        .expect("档案应补齐连接与认证");
+
+    assert_eq!(
+        outcome.paths,
+        vec![
+            "/srv/ssl/site.crt".to_owned(),
+            "/srv/ssl/site.key".to_owned()
+        ]
+    );
+
+    let (chain, chain_mode) = remote
+        .file("/srv/ssl/site.crt")
+        .expect("应写到输入给出的证书路径");
+    assert_eq!(chain, "CERT-PEM");
+    assert_eq!(chain_mode, "0644", "输入未给权限时回退档案值");
+
+    let (_, key_mode) = remote
+        .file("/srv/ssl/site.key")
+        .expect("应写到输入给出的私钥路径");
+    assert_eq!(key_mode, "0600", "档案未给权限时用系统缺省");
+
+    assert!(
+        remote.commands().is_empty(),
+        "重载命令不属于档案，输入未给时不执行"
+    );
+
+    // 材料来自档案本身：认证凭据解析一条都没发生。
+    assert!(used.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn explicit_input_values_override_the_profile() {
+    let (db, store, cipher, remote, used) = setup().await;
+    let id = seed_credential(db, &cipher, "ssh", "生产机", profile_fields()).await;
+
+    target(&remote, &used)
+        .deploy(
+            &json!({
+                "credential_id": id,
+                "cert_path": "/override/site.crt",
+                "key_path": "/override/site.key",
+                "cert_mode": "0600",
+                "reload_command": "systemctl reload caddy",
+            }),
+            &materials(),
+            &store,
+            DeployMode::Write,
+        )
+        .await
+        .expect("覆盖后仍应部署成功");
+
+    let (_, cert_mode) = remote
+        .file("/override/site.crt")
+        .expect("输入显式路径应生效");
+    assert_eq!(cert_mode, "0600", "输入权限应覆盖档案默认值");
+    assert!(
+        remote.file("/srv/ssl/site.crt").is_none(),
+        "被覆盖的档案默认路径不应再被写入"
+    );
+    assert_eq!(
+        remote.commands(),
+        vec!["systemctl reload caddy".to_owned()],
+        "输入的重载命令应被执行"
+    );
+}
+
+#[tokio::test]
+async fn a_profile_without_auth_material_fails_before_writing() {
+    let (db, store, cipher, remote, used) = setup().await;
+    let mut broken = profile_fields();
+    broken["private_key"] = Value::Null;
+    let id = seed_credential(db, &cipher, "ssh", "坏档案", broken).await;
+
+    let err = target(&remote, &used)
+        .deploy(
+            &json!({ "credential_id": id }),
+            &materials(),
+            &store,
+            DeployMode::Write,
+        )
+        .await
+        .expect_err("档案缺认证材料应部署失败");
+
+    // 取档案时凭据存储就会先跑一遍类型校验，因此失败发生在连接之前，
+    // 报错同时带上档案标识与出错的字段。
+    let text = err.to_string();
+    assert!(text.contains("1"), "应包含被引用的标识: {text}");
+    assert!(text.contains("private_key"), "应指出档案缺认证材料: {text}");
+    assert!(remote.file("/srv/ssl/site.crt").is_none(), "不该写入任何东西");
+}
+
+#[tokio::test]
+async fn a_missing_profile_is_reported_with_its_id() {
+    let (_db, store, _cipher, remote, used) = setup().await;
+
+    let err = target(&remote, &used)
+        .deploy(
+            &json!({ "credential_id": 4242 }),
+            &materials(),
+            &store,
+            DeployMode::Write,
+        )
+        .await
+        .expect_err("引用不存在的档案应报错");
+
+    let text = err.to_string();
+    assert!(text.contains("4242"), "应包含被引用的标识: {text}");
+    assert!(remote.file("/srv/ssl/site.crt").is_none());
+}
+
 // ---- Scenario: 远程写入后重载 ----
 
 #[tokio::test]
 async fn a_successful_remote_reload_keeps_the_deployment_successful() {
     let (db, store, cipher, remote, used) = setup().await;
-    let id = seed_credential(db, &cipher, json!({ "password": "s3cret" })).await;
+    let id = seed_credential(
+        db,
+        &cipher,
+        "ssh.key",
+        "SSH 凭据",
+        json!({ "password": "s3cret" }),
+    )
+    .await;
 
     let outcome = target(&remote, &used)
         .deploy(
@@ -365,7 +573,14 @@ async fn a_successful_remote_reload_keeps_the_deployment_successful() {
 async fn a_nonzero_remote_exit_code_fails_the_whole_deployment() {
     // spec：远程重载退出码非零视为部署失败。
     let (db, store, cipher, remote, used) = setup().await;
-    let id = seed_credential(db, &cipher, json!({ "password": "s3cret" })).await;
+    let id = seed_credential(
+        db,
+        &cipher,
+        "ssh.key",
+        "SSH 凭据",
+        json!({ "password": "s3cret" }),
+    )
+    .await;
     *remote.fail_reload.lock().unwrap() = true;
 
     let err = target(&remote, &used)

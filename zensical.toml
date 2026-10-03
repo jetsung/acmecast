@@ -7,11 +7,10 @@
 site_name = "acmecast"
 site_description = "证书自动签发与部署系统：ACME 申请、流水线编排、自动续期与部署"
 # site_url 待文档站点有正式域名后再填，留空不会影响本地构建与预览。
-repo_url = "https://cnb.cool/jetsung/acmecast"
+repo_url = "https://github.com/jetsung/acmecast"
 repo_name = "jetsung/acmecast"
-# edit_uri 待确认 CNB 的编辑链接格式后再启用（格式不对会得到 404 的「编辑此页」）。
-# edit_uri = "edit/dev/docs/"
-copyright = "Copyright &copy; acmecast contributors · Apache-2.0"
+edit_uri = "edit/main/docs/"
+copyright = "Copyright &copy;  Jetsung Chan · Apache-2.0"
 language = "zh"
 
 # 自定义 CSS：拓宽正文列（默认 .md-grid 限 61rem，见 docs/stylesheets/extra.css）。
@@ -20,14 +19,21 @@ extra_css = ["stylesheets/extra.css"]
 # 章节顺序即左侧导航顺序，与 docs/ 下的序号一致。
 nav = [
   { "首页" = "index.md" },
-  { "入门" = ["01-architecture.md", "02-getting-started.md", "03-configuration.md"] },
-  { "安全与凭据" = ["04-authentication-security.md", "05-credentials.md"] },
-  { "流水线与调度" = ["06-pipelines-and-tasks.md", "07-dns-and-deploy.md", "08-scheduling-renewal.md"] },
-  { "证书" = ["09-certificates.md"] },
-  { "接口与前端" = ["10-rest-api.md", "11-frontend.md"] },
-  { "运维" = ["12-operations-and-limitations.md"] },
-  { "容器化" = ["13-docker-deployment.md", "14-docker-image.md"] },
-  { "本地开发" = ["15-local-development.md", "16-console-operation-flow.md"] },
+  { "架构设计" = "01-architecture.md" },
+  { "快速开始" = "02-getting-started.md" },
+  { "配置参考" = "03-configuration.md" },
+  { "凭据体系" = "04-credentials.md" },
+  { "流水线" = "05-pipelines.md" },
+  { "DNS 提供商与传播检查" = "06-dns-providers.md" },
+  { "部署目标" = "07-deploy-targets.md" },
+  { "定时调度与自动续期" = "08-scheduling.md" },
+  { "REST API" = "09-api.md" },
+  { "证书管理" = "10-certificates.md" },
+  { "数据库与数据目录" = "11-database.md" },
+  { "本地开发" = "12-development.md" },
+  { "Docker 部署" = "13-docker-deployment.md" },
+  { "Docker 镜像" = "14-docker-image.md" },
+  { "排障与已知限制" = "15-troubleshooting.md" },
 ]
 
 [project.theme]

@@ -18,6 +18,7 @@ use sea_orm::{
 
 use crate::entity::{cert, credential};
 use crate::error::{Error, Result};
+use crate::filestore::CertFilePaths;
 
 /// 默认每页条数。
 pub const DEFAULT_PAGE_SIZE: u64 = 20;
@@ -322,6 +323,29 @@ impl<'db> CertRepository<'db> {
         cert::ActiveModel {
             id: Set(row.id),
             revoked_at: Set(Some(revoked_at)),
+            updated_at: Set(Utc::now()),
+            ..Default::default()
+        }
+        .update(self.db)
+        .await?;
+
+        Ok(())
+    }
+
+    /// 更新证书材料的存放路径。
+    ///
+    /// 吊销归档用：文件移进吊销目录后，库中的相对路径必须跟着走，
+    /// 否则详情与下载会指向一个已经空了的目录。
+    pub async fn update_paths(&self, cert_id: i64, paths: &CertFilePaths) -> Result<()> {
+        let row = cert::Entity::find_by_id(cert_id)
+            .one(self.db)
+            .await?
+            .ok_or_else(|| Error::not_found("证书", cert_id.to_string()))?;
+
+        cert::ActiveModel {
+            id: Set(row.id),
+            cert_pem_path: Set(paths.cert_pem.clone()),
+            key_pem_path: Set(paths.key_pem.clone()),
             updated_at: Set(Utc::now()),
             ..Default::default()
         }

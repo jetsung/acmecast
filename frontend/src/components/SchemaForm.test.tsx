@@ -270,6 +270,144 @@ describe("SchemaForm", () => {
     });
   });
 
+  /** 模拟后端注入的 cert.deploy config 扩展：local 必填两个路径；ssh 含可空的 auth 枚举。 */
+  function targetSchemas(): Record<
+    string,
+    { display_name: string; example: unknown; schema: unknown }
+  > {
+    return {
+      local: {
+        display_name: "本地文件系统",
+        example: { cert_path: "/etc/a.crt", key_path: "/etc/a.key" },
+        schema: {
+          type: "object",
+          required: ["cert_path", "key_path"],
+          properties: {
+            cert_path: { type: "string", description: "证书链写入路径。" },
+            key_path: { type: "string", description: "私钥写入路径。" },
+          },
+        },
+      },
+      ssh: {
+        display_name: "SSH 远程主机",
+        example: { host: "10.0.0.1" },
+        schema: {
+          type: "object",
+          properties: {
+            host: { type: ["string", "null"], description: "目标主机。" },
+            auth: {
+              description: "认证方式。",
+              anyOf: [{ $ref: "#/definitions/SshAuth" }, { type: "null" }],
+            },
+          },
+          definitions: {
+            SshAuth: {
+              oneOf: [
+                {
+                  type: "object",
+                  required: ["credential_id", "kind"],
+                  properties: {
+                    credential_id: { type: "integer", description: "私钥凭据的标识。" },
+                    kind: { type: "string", enum: ["private_key"] },
+                  },
+                },
+                {
+                  type: "object",
+                  required: ["credential_id", "kind"],
+                  properties: {
+                    credential_id: { type: "integer", description: "口令凭据的标识。" },
+                    kind: { type: "string", enum: ["password"] },
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    };
+  }
+
+  function deploySchema(): Record<string, unknown> {
+    return objectSchema({
+      target: { type: "string" },
+      config: { description: "目标的输入配置。", "x-target-schemas": targetSchemas() },
+    });
+  }
+
+  it("x-target-schemas：未选 target 时提示先选目标（只读占位）", () => {
+    render(<Harness onFinish={vi.fn()} schema={deploySchema()} />);
+
+    const hint = screen.getByPlaceholderText<HTMLInputElement>(
+      "先选择 target（local：本地文件系统；ssh：SSH 远程主机）",
+    );
+    expect(hint.tagName).toBe("INPUT");
+    expect(hint.disabled).toBe(true);
+  });
+
+  it("x-target-schemas：local 变体渲染成子表单，required 下推，提交结构化 config", async () => {
+    const onFinish = vi.fn();
+    render(<Harness onFinish={onFinish} schema={deploySchema()} />);
+
+    // target 在前、config 占位在后：textbox[0] 是 target 的单行输入。
+    fireEvent.change(screen.getAllByRole("textbox")[0], { target: { value: "local" } });
+    // 先等子表单挂载完（否则提交时校验不到这些字段）。
+    const certPath = await screen.findByLabelText("cert_path");
+
+    // 变体 schema 的 required（cert_path/key_path）下推成表单必填。
+    fireEvent.click(screen.getByRole("button", { name: "确定" }));
+    expect(await screen.findByText("请填写 cert_path")).toBeTruthy();
+
+    fireEvent.change(certPath, { target: { value: "/etc/a.crt" } });
+    fireEvent.change(await screen.findByLabelText("key_path"), {
+      target: { value: "/etc/a.key" },
+    });
+
+    expect(await submitAndGet(onFinish)).toEqual({
+      fields: {
+        target: "local",
+        config: { cert_path: "/etc/a.crt", key_path: "/etc/a.key" },
+      },
+    });
+  });
+
+  it("x-target-schemas：切换 target 清空已填字段，避免残留进新目标", async () => {
+    const onFinish = vi.fn();
+    render(<Harness onFinish={onFinish} schema={deploySchema()} />);
+
+    const targetInput = screen.getAllByRole("textbox")[0];
+    fireEvent.change(targetInput, { target: { value: "local" } });
+    fireEvent.change(await screen.findByLabelText("cert_path"), {
+      target: { value: "/etc/a.crt" },
+    });
+
+    fireEvent.change(targetInput, { target: { value: "ssh" } });
+    await screen.findByLabelText("host");
+
+    fireEvent.change(targetInput, { target: { value: "local" } });
+    const certPath = await screen.findByLabelText<HTMLInputElement>("cert_path");
+    expect(certPath.value).toBe("");
+  });
+
+  it("x-target-schemas：ssh 变体的 auth（可空 tagged enum）合并渲染成 kind 下拉与凭据输入", async () => {
+    const onFinish = vi.fn();
+    render(<Harness onFinish={onFinish} schema={deploySchema()} />);
+
+    fireEvent.change(screen.getAllByRole("textbox")[0], { target: { value: "ssh" } });
+
+    // auth 的 oneOf 每支是对象（internally tagged）：合并后 kind 是双值下拉、
+    // credential_id 是数字输入，提交结构与 serde 的 tag 写法一致。
+    fireEvent.mouseDown(await screen.findByRole("combobox"));
+    fireEvent.click(await screen.findByTitle("private_key"));
+    fireEvent.change(await screen.findByRole("spinbutton"), { target: { value: "7" } });
+
+    expect(await submitAndGet(onFinish)).toEqual({
+      fields: {
+        target: "ssh",
+        config: { auth: { kind: "private_key", credential_id: 7 } },
+      },
+    });
+  });
+
   it("enum：顶层 $ref 的字符串枚举同样扁平化成下拉", async () => {
     const onFinish = vi.fn();
     render(
@@ -412,5 +550,141 @@ describe("SchemaForm", () => {
     fireEvent.change(screen.getByRole("textbox"), { target: { value: raw } });
 
     expect(await submitAndGet(onFinish)).toEqual({ fields: { credentials: raw } });
+  });
+
+  it("x-multiline：string 字段渲染成文本域，PEM 换行原样提交", async () => {
+    // SSH 档案的私钥是多行 PEM：单行 Input 会吞掉换行或让粘贴难用，
+    // 这里钉住「文本域 + 逐字节原样提交」的行为。
+    const onFinish = vi.fn();
+    render(
+      <Harness
+        onFinish={onFinish}
+        schema={objectSchema(
+          { private_key: { type: "string", "x-multiline": true } },
+          ["private_key"],
+        )}
+      />,
+    );
+
+    const area = screen.getByRole<HTMLTextAreaElement>("textbox");
+    expect(area.tagName).toBe("TEXTAREA");
+
+    const pem = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n-----END OPENSSH PRIVATE KEY-----";
+    fireEvent.change(area, { target: { value: pem } });
+
+    expect(await submitAndGet(onFinish)).toEqual({ fields: { private_key: pem } });
+  });
+
+  it("无 x-multiline 的 string 仍是单行输入", () => {
+    render(
+      <Harness
+        onFinish={vi.fn()}
+        schema={objectSchema({ host: { type: "string" } })}
+      />,
+    );
+
+    expect(screen.getByRole("textbox").tagName).toBe("INPUT");
+  });
+
+  it("default：schema 缺省值预填进表单并随提交返回", async () => {
+    // 对应 SSH 主机档案：user=root、cert_mode=0644 由 schema default 预填。
+    const onFinish = vi.fn();
+    render(
+      <Harness
+        onFinish={onFinish}
+        schema={objectSchema({
+          host: { type: "string" },
+          user: { type: "string", default: "root", description: "登录用户。" },
+          cert_mode: {
+            type: ["string", "null"],
+            default: "0644",
+            description: "证书权限。",
+          },
+        })}
+      />,
+    );
+
+    expect(await screen.findByDisplayValue("root")).toBeTruthy();
+    expect(screen.getByDisplayValue("0644")).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("host"), { target: { value: "web-1" } });
+
+    expect(await submitAndGet(onFinish)).toEqual({
+      fields: { host: "web-1", user: "root", cert_mode: "0644" },
+    });
+  });
+
+  it("default：预填值可被用户改写，编辑回填的已有值不被覆盖", async () => {
+    const onFinish = vi.fn();
+    render(
+      <Harness
+        onFinish={onFinish}
+        schema={objectSchema({
+          user: { type: "string", default: "root" },
+        })}
+      />,
+    );
+
+    const input = await screen.findByDisplayValue<HTMLInputElement>("root");
+    fireEvent.change(input, { target: { value: "deploy" } });
+
+    expect(await submitAndGet(onFinish)).toEqual({ fields: { user: "deploy" } });
+  });
+
+  it("ssh 凭据 schema：不渲染部署输入的路径与重载命令字段", () => {
+    // 模拟凭据类型 schema 若被部署输入 schema 污染时的回归哨兵：
+    // 档案只含连接信息与权限，cert_path/key_path/reload_command 属部署输入。
+    render(
+      <Harness
+        onFinish={vi.fn()}
+        schema={objectSchema({
+          host: { type: "string" },
+          user: { type: "string", default: "root" },
+          cert_mode: { type: ["string", "null"], default: "0644" },
+          key_mode: { type: ["string", "null"], default: "0600" },
+        })}
+      />,
+    );
+
+    expect(screen.getByLabelText("host")).toBeTruthy();
+    for (const banned of ["cert_path", "key_path", "reload_command"]) {
+      expect(screen.queryByLabelText(banned)).toBeNull();
+    }
+  });
+
+  it("x-field-order：按声明序渲染，未声明的字段按原序追加在后", async () => {
+    // cert.deploy SSH 变体的诉求：成对字段相邻（host/port、cert_path/cert_mode、
+    // key_path/key_mode），顺序由前端显式声明，不依赖后端 schema 键序。
+    const onFinish = vi.fn();
+    render(
+      <Harness
+        onFinish={onFinish}
+        schema={{
+          type: "object",
+          properties: {
+            reload_command: { type: "string" },
+            key_mode: { type: "string" },
+            cert_mode: { type: "string" },
+            key_path: { type: "string" },
+            cert_path: { type: "string" },
+            port: { type: "integer" },
+            host: { type: "string" },
+          },
+          "x-field-order": ["host", "port", "cert_path", "cert_mode", "key_path", "key_mode"],
+        } as unknown as Parameters<typeof SchemaForm>[0]["schema"]}
+      />,
+    );
+
+    // 声明序渲染：成对字段相邻；未声明的 reload_command 追加在最后。
+    const labels = ["host", "port", "cert_path", "cert_mode", "key_path", "key_mode", "reload_command"];
+    const formItems = Array.from(document.querySelectorAll<HTMLElement>(".ant-form-item"));
+    const order = formItems
+      .map((item) => item.querySelector("label")?.textContent)
+      .filter((text): text is string => text !== null);
+    expect(order).toEqual(labels);
+
+    fireEvent.change(screen.getByLabelText("host"), { target: { value: "web-1" } });
+    // 未填字段不进 store,提交值只有实际填写的字段——排序不改变提交语义。
+    expect(await submitAndGet(onFinish)).toEqual({ fields: { host: "web-1" } });
   });
 });

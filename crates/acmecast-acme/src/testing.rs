@@ -11,6 +11,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use bytes::Bytes;
+use http_body_util::BodyExt;
 use instant_acme::{BodyWrapper, BytesBody, BytesResponse, Error as AcmeLibError, HttpClient, Key};
 
 use crate::account::AccountCredentials;
@@ -27,13 +28,15 @@ pub fn sample_credentials(kid: &str, directory_url: &str) -> AccountCredentials 
     AccountCredentials::from_parts(kid, &pkcs8, directory_url)
 }
 
-/// 一笔请求记录：HTTP 方法与完整 URL。
+/// 一笔请求记录：HTTP 方法、完整 URL 与请求体（JWS 的 Flattened JSON 文本）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RecordedRequest {
     /// HTTP 方法。
     pub method: String,
     /// 完整 URL。
     pub url: String,
+    /// 请求体原文。POST-AS-GET 为空串；其余是 JWS 包裹的 JSON。
+    pub body: String,
 }
 
 impl RecordedRequest {
@@ -157,6 +160,24 @@ impl MockAcme {
             .count()
     }
 
+    /// 最近一次命中指定路径的请求的 JWS payload 明文。
+    ///
+    /// ACME 的请求体是 Flattened JSON JWS，payload 为 base64url（无填充）编码的
+    /// JSON——断言「实际发给 CA 的内容」时需要解开它。没有命中记录或解码失败
+    /// 时返回 `None`，由调用方决定怎么报错。
+    #[must_use]
+    pub fn payload_for(&self, path_suffix: &str) -> Option<String> {
+        let requests = self.requests();
+        let record = requests.iter().rev().find(|r| r.ends_with(path_suffix))?;
+        let jws: serde_json::Value = serde_json::from_str(&record.body).ok()?;
+        let encoded = jws.get("payload")?.as_str()?;
+        use base64::Engine as _;
+        let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(encoded)
+            .ok()?;
+        String::from_utf8(decoded).ok()
+    }
+
     /// finalize 被调用的次数。
     #[must_use]
     pub fn finalize_calls(&self) -> usize {
@@ -224,11 +245,20 @@ impl HttpClient for MockAcme {
         Box::pin(async move {
             let method = req.method().to_string();
             let url = req.uri().to_string();
+            let body = req
+                .into_body()
+                .collect()
+                .await
+                .map(|collected| {
+                    String::from_utf8_lossy(collected.to_bytes().as_ref()).into_owned()
+                })
+                .unwrap_or_default();
 
             let mut state = mock.state.lock().unwrap();
             state.requests.push(RecordedRequest {
                 method: method.clone(),
                 url: url.clone(),
+                body,
             });
             let nonce = Self::next_nonce(&mut state);
 

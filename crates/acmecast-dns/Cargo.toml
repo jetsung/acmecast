@@ -25,6 +25,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+toml = "0.8"
 
 [dev-dependencies]
 # `start_paused`：让「查询挂起」的用例在虚拟时钟下秒级完成。

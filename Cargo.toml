@@ -32,6 +32,7 @@ async-trait = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml = "0.9"
+toml = "0.8"
 schemars = "0.8"
 
 # 错误与日志
@@ -46,6 +47,8 @@ cron = "0.13"
 
 # Web
 axum = { version = "0.8", features = ["macros"] }
+# 命令行参数解析（derive + 环境变量回退）。
+clap = { version = "4.5", features = ["derive", "env"] }
 tower = { version = "0.5", features = ["timeout", "limit"] }
 tower-http = { version = "0.6", features = ["trace", "cors", "fs", "compression-gzip", "request-id"] }
 utoipa = { version = "5", features = ["chrono"] }

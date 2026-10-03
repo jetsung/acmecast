@@ -101,6 +101,14 @@ impl DeploymentTarget for LocalTarget {
         schema_for!(LocalInput)
     }
 
+    fn example_input(&self) -> Value {
+        serde_json::json!({
+            "cert_path": "/etc/nginx/ssl/example.com.crt",
+            "key_path": "/etc/nginx/ssl/example.com.key",
+            "reload_command": "nginx -s reload"
+        })
+    }
+
     async fn deploy(
         &self,
         input: &Value,
