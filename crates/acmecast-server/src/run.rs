@@ -88,6 +88,9 @@ pub(crate) fn failure_message(outcome: &RunOutcome) -> Option<String> {
 /// 流水线**本身**失败（某步骤报错）属于正常业务结果，返回 `Ok(outcome)`；
 /// `Err` 留给执行器或存储层出问题的情况——那时历史会停在 running，由调用方
 /// 决定重试策略（cron 触发靠它保留触发点）。
+///
+/// `events` 是可选的 webhook 订阅端（来自 [`crate::RuntimeState::notifier`]）：
+/// 手动与调度两条触发路径都必须透传，通知才不会因触发方式而缺席。
 pub(crate) async fn execute_run(
     db: &DatabaseConnection,
     steps: &StepRegistry,
@@ -95,9 +98,13 @@ pub(crate) async fn execute_run(
     definition: &PipelineDefinition,
     history_id: i64,
     source: TriggerSource,
+    events: Option<&dyn acmecast_pipeline::EventSink>,
 ) -> acmecast_pipeline::Result<RunOutcome> {
     let state = DatabaseStateStore::new(db);
-    let runner = PipelineRunner::new(steps, credentials, &state).with_trigger(source);
+    let mut runner = PipelineRunner::new(steps, credentials, &state).with_trigger(source);
+    if let Some(sink) = events {
+        runner = runner.with_events(sink);
+    }
     let outcome = runner.run(definition, history_id).await?;
 
     HistoryRepository::new(db)

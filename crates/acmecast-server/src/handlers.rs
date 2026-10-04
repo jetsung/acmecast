@@ -75,6 +75,7 @@ pub(crate) fn routes() -> Router<HttpState> {
         )
         .route("/api/credentials/{id}/test", post(test_credential))
         .route("/api/credential-types", get(list_credential_types))
+        .route("/api/notifications/test", post(test_notifications))
         .route("/api/schedules", get(list_schedules).post(create_schedule))
         .route("/api/schedules/trigger-logs", get(list_trigger_logs))
         .route("/api/tasks", get(list_tasks))
@@ -1007,11 +1008,22 @@ async fn run_pipeline(
     let db = state.app.db.clone();
     let steps = Arc::clone(&state.runtime.step_registry);
     let registry = Arc::clone(&state.runtime.credential_registry);
+    // 通知订阅端随运行旁路投递；未配置渠道时为 None，行为与之前一致。
+    let notifier = state.runtime.notifier.clone();
     tokio::spawn(async move {
         let credentials = CredentialStore::new(&db, registry, cipher);
-        let result =
-            crate::run::execute_run(&db, &steps, &credentials, &definition, history_id, source)
-                .await;
+        let events: Option<&dyn acmecast_pipeline::EventSink> =
+            notifier.as_deref().map(|sink| sink as _);
+        let result = crate::run::execute_run(
+            &db,
+            &steps,
+            &credentials,
+            &definition,
+            history_id,
+            source,
+            events,
+        )
+        .await;
         match result {
             Ok(outcome) => tracing::info!(
                 pipeline_id = id,
@@ -1398,6 +1410,109 @@ async fn test_credential(
         },
     };
     Ok(ApiResponse::new(response))
+}
+
+/// 向通知渠道发送测试消息，逐渠道返回投递结果。
+///
+/// 这是**交互式验证**：同步等待每个渠道的投递完成（与事件旁路的
+/// spawn 投递不同），管理员配置 `[[notifications]]` 后先在这里确认
+/// 连通性，再等真实事件。
+async fn test_notifications(
+    State(state): State<HttpState>,
+    // 请求体可选：`axum::Json` 实现了 `OptionalFromRequest`；body 缺省或
+    // 为空时按「测试全部启用渠道」处理。自定义 `ApiJson` 未实现该 trait，
+    // 这里用不到它的错误包装——无效 JSON 与缺省同义。
+    request: Option<axum::Json<NotificationTestRequest>>,
+) -> Result<ApiResponse<NotificationTestResponse>, ApiError> {
+    let channels = &state.app.config.notifications;
+    let targets: Vec<&acmecast_notify::ChannelConfig> = match request
+        .as_ref()
+        .and_then(|request| request.0.name.as_deref())
+    {
+        // 指定渠道：不做启用过滤——启用前先测通是合理顺序。
+        Some(name) => {
+            let found: Vec<_> = channels.iter().filter(|c| c.name == name).collect();
+            if found.is_empty() {
+                return Err(ApiError::new(
+                    StatusCode::NOT_FOUND,
+                    "not_found",
+                    format!("通知渠道不存在: {name}"),
+                ));
+            }
+            found
+        }
+        // 缺省：全部启用渠道；一个都没有时要明说，而不是返回空成功。
+        None => {
+            let enabled: Vec<_> = channels.iter().filter(|c| c.enabled).collect();
+            if enabled.is_empty() {
+                return Err(ApiError::new(
+                    StatusCode::CONFLICT,
+                    "no_channels",
+                    "没有可测试的通知渠道，请先在 config.toml 配置 [[notifications]] 并重启",
+                ));
+            }
+            enabled
+        }
+    };
+
+    let registry = Arc::new(acmecast_notify::default_registry());
+    let client = acmecast_notify::http_client();
+    let options = acmecast_notify::DeliveryOptions::default();
+    let message = acmecast_notify::NotificationMessage {
+        event: "test".to_owned(),
+        title: "通知渠道测试".to_owned(),
+        pipeline: "acmecast 服务".to_owned(),
+        trigger: "manual".to_owned(),
+        occurred_at: Utc::now(),
+        domains: Vec::new(),
+        target: None,
+    };
+
+    let mut results = Vec::with_capacity(targets.len());
+    for channel in targets {
+        let ok = acmecast_notify::deliver(&client, &registry, channel, &message, &options);
+        let (ok, error) = match ok.await {
+            Ok(()) => (true, None),
+            Err(error) => (false, Some(error.to_string())),
+        };
+        results.push(NotificationTestResult {
+            name: channel.name.clone(),
+            provider: channel.provider.clone(),
+            ok,
+            error,
+        });
+    }
+
+    Ok(ApiResponse::new(NotificationTestResponse { results }))
+}
+
+/// 单个通知渠道的测试投递结果。
+#[derive(Debug, Serialize, ToSchema)]
+pub(crate) struct NotificationTestResult {
+    /// 渠道名。
+    pub name: String,
+    /// 适配器类型。
+    pub provider: String,
+    /// 投递是否成功。
+    pub ok: bool,
+    /// 失败原因。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// 通知渠道测试请求。
+#[derive(Debug, Deserialize, ToSchema)]
+pub(crate) struct NotificationTestRequest {
+    /// 要测试的渠道名；缺省时测试全部启用渠道。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+/// 通知渠道测试响应：逐渠道给出投递结果。
+#[derive(Debug, Serialize, ToSchema)]
+pub(crate) struct NotificationTestResponse {
+    /// 每个被测渠道一条结果，顺序与配置一致。
+    pub results: Vec<NotificationTestResult>,
 }
 
 /// 调度配置响应。

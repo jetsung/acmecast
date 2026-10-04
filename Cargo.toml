@@ -23,6 +23,7 @@ acmecast-deploy = { path = "crates/acmecast-deploy" }
 acmecast-access = { path = "crates/acmecast-access" }
 acmecast-scheduler = { path = "crates/acmecast-scheduler" }
 acmecast-store = { path = "crates/acmecast-store" }
+acmecast-notify = { path = "crates/acmecast-notify" }
 
 # 异步与运行时
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "fs", "process", "sync"] }
@@ -100,6 +101,9 @@ reqwest = { version = "0.12", default-features = false, features = [
     "http2",
 ] }
 rustls-pemfile = "2"
+
+# 测试：进程内 HTTP mock（webhook 渠道适配器的请求断言）。
+wiremock = "0.6"
 
 [workspace.lints.rust]
 missing_docs = "warn"

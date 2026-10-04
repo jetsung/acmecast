@@ -85,3 +85,26 @@ pub fn default_steps(
         .expect("内置步骤不应重复注册");
     steps
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use acmecast_pipeline::PipelineStep;
+
+    /// 通知事件常量必须与步骤 `type_id` 同源：事件订阅过滤靠字符串匹配，
+    /// 常量漂移会导致「配置了订阅却永远不触发」的静默失效。
+    #[test]
+    fn notification_event_constants_match_step_type_ids() {
+        let dns = Arc::new(DnsProviderRegistry::new());
+        let apply = CertApplyStep::new(dns);
+        assert_eq!(apply.type_id(), acmecast_notify::EVENT_CERT_APPLY);
+
+        let deploy = CertDeployStep::new(
+            Arc::new(DeploymentRegistry::new()),
+            Arc::new(DatabaseDeploymentState::new(
+                sea_orm::DatabaseConnection::Disconnected,
+            )),
+        );
+        assert_eq!(deploy.type_id(), acmecast_notify::EVENT_CERT_DEPLOY);
+    }
+}

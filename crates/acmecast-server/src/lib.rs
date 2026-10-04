@@ -83,10 +83,15 @@ pub struct RuntimeState {
     pub cipher: Option<Arc<CredentialCipher>>,
     /// 鉴权模式。
     pub auth: AuthMode,
+    /// webhook 通知订阅端；未配置通知渠道时为 `None`，流水线运行不产生投递。
+    pub notifier: Option<Arc<acmecast_notify::WebhookEventSink>>,
 }
 
 impl RuntimeState {
     /// 用显式依赖构造运行时状态。
+    ///
+    /// 通知订阅端缺省为 `None`；配置了通知渠道的调用方在构造后直接为
+    /// 公开字段 [`RuntimeState::notifier`] 赋值。
     #[must_use]
     pub fn new(
         credential_registry: Arc<CredentialRegistry>,
@@ -99,6 +104,7 @@ impl RuntimeState {
             step_registry,
             cipher,
             auth,
+            notifier: None,
         }
     }
 

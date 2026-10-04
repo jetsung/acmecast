@@ -6,8 +6,8 @@
 mod support;
 
 use acmecast_store::entity::pipeline::TriggerSource;
-use acmecast_store::repository::{TriggerLogInput, TriggerLogRepository};
 use acmecast_store::migrate;
+use acmecast_store::repository::{TriggerLogInput, TriggerLogRepository};
 use axum::{Router, body::Body, http::Request};
 use sea_orm::{Database, DatabaseConnection};
 use support::*;

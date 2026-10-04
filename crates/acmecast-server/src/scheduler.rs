@@ -21,6 +21,8 @@ pub struct PipelineRunLauncher {
     steps: Arc<StepRegistry>,
     db: &'static DatabaseConnection,
     credentials: acmecast_access::CredentialStore<'static>,
+    /// webhook 通知订阅端；与 HTTP 层共用同一实例。
+    notifier: Option<Arc<acmecast_notify::WebhookEventSink>>,
 }
 
 impl std::fmt::Debug for PipelineRunLauncher {
@@ -45,6 +47,7 @@ impl PipelineRunLauncher {
         db: &DatabaseConnection,
         credential_registry: Arc<acmecast_access::CredentialRegistry>,
         cipher: Option<&Arc<acmecast_core::CredentialCipher>>,
+        notifier: Option<Arc<acmecast_notify::WebhookEventSink>>,
     ) -> Self {
         let leaked: &'static DatabaseConnection = Box::leak(Box::new(db.clone()));
         let cipher = cipher.cloned().or_else(|| {
@@ -64,6 +67,7 @@ impl PipelineRunLauncher {
             steps,
             db: leaked,
             credentials,
+            notifier,
         }
     }
 }
@@ -95,6 +99,8 @@ impl PipelineLauncher for PipelineRunLauncher {
         let history_id = crate::run::start_run(self.db, request.pipeline_id, request.source)
             .await
             .map_err(Error::Pipeline)?;
+        let events: Option<&dyn acmecast_pipeline::EventSink> =
+            self.notifier.as_deref().map(|sink| sink as _);
         let outcome = crate::run::execute_run(
             self.db,
             &self.steps,
@@ -102,6 +108,7 @@ impl PipelineLauncher for PipelineRunLauncher {
             &definition,
             history_id,
             request.source,
+            events,
         )
         .await?;
 
@@ -134,6 +141,7 @@ pub fn spawn_scheduler(
     steps: Arc<StepRegistry>,
     credential_registry: Arc<acmecast_access::CredentialRegistry>,
     cipher: Option<&std::sync::Arc<acmecast_core::CredentialCipher>>,
+    notifier: Option<Arc<acmecast_notify::WebhookEventSink>>,
     shutdown: watch::Receiver<bool>,
 ) -> JoinHandle<()> {
     let cipher = cipher.cloned();
@@ -143,6 +151,7 @@ pub fn spawn_scheduler(
             &db,
             credential_registry,
             cipher.as_ref(),
+            notifier,
         );
         let engine = SchedulerEngine::new(&db, &launcher, SchedulerConfig::default());
 

@@ -199,6 +199,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/notifications/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 通知渠道测试的文档占位函数。 */
+        post: operations["test_notifications"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/pipelines": {
         parameters: {
             query?: never;
@@ -525,6 +542,14 @@ export interface components {
                 token: string;
                 /** @description 令牌类型，固定 `Bearer`。 */
                 token_type: string;
+            };
+        };
+        /** @description 统一成功响应。 */
+        ApiResponse_NotificationTestResponse: {
+            /** @description 通知渠道测试响应：逐渠道给出投递结果。 */
+            data: {
+                /** @description 每个被测渠道一条结果，顺序与配置一致。 */
+                results: components["schemas"]["NotificationTestResult"][];
             };
         };
         /** @description 统一成功响应。 */
@@ -1144,6 +1169,27 @@ export interface components {
             token: string;
             /** @description 令牌类型，固定 `Bearer`。 */
             token_type: string;
+        };
+        /** @description 通知渠道测试请求。 */
+        NotificationTestRequest: {
+            /** @description 要测试的渠道名；缺省时测试全部启用渠道。 */
+            name?: string | null;
+        };
+        /** @description 通知渠道测试响应：逐渠道给出投递结果。 */
+        NotificationTestResponse: {
+            /** @description 每个被测渠道一条结果，顺序与配置一致。 */
+            results: components["schemas"]["NotificationTestResult"][];
+        };
+        /** @description 单个通知渠道的测试投递结果。 */
+        NotificationTestResult: {
+            /** @description 失败原因。 */
+            error?: string | null;
+            /** @description 渠道名。 */
+            name: string;
+            /** @description 投递是否成功。 */
+            ok: boolean;
+            /** @description 适配器类型。 */
+            provider: string;
         };
         /** @description 通用分页响应。 */
         PageResponse_CertificateResponse: {
@@ -2112,6 +2158,46 @@ export interface operations {
                 };
             };
             429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    test_notifications: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": null | components["schemas"]["NotificationTestRequest"];
+            };
+        };
+        responses: {
+            /** @description 逐渠道投递结果 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_NotificationTestResponse"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -139,7 +139,9 @@ impl CredentialType for SshHostCredentialType {
     fn redact(&self, fields: &serde_json::Value, message: &str) -> String {
         let mut redacted = message.to_owned();
         for secret in [
-            fields.get("private_key").and_then(serde_json::Value::as_str),
+            fields
+                .get("private_key")
+                .and_then(serde_json::Value::as_str),
             fields.get("password").and_then(serde_json::Value::as_str),
         ]
         .into_iter()

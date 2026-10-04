@@ -44,6 +44,7 @@ use crate::response::ApiResponse;
         delete_credential,
         test_credential,
         list_credential_types,
+        test_notifications,
         list_tasks,
         task_schema,
         list_histories,
@@ -83,6 +84,9 @@ use crate::response::ApiResponse;
             crate::handlers::HistoryResponse,
             crate::handlers::HistoryLogResponse,
             crate::handlers::ConnectivityResponse,
+            crate::handlers::NotificationTestRequest,
+            crate::handlers::NotificationTestResponse,
+            crate::handlers::NotificationTestResult,
             PageResponse<crate::handlers::PipelineSummaryResponse>,
             PageResponse<crate::handlers::CertificateResponse>,
             PageResponse<crate::handlers::CredentialResponse>,
@@ -168,6 +172,10 @@ fn test_credential() {}
 
 #[utoipa::path(get, path = "/api/credential-types", responses((status = 200, description = "凭据类型与字段 Schema")), security(("bearerAuth" = [])))]
 fn list_credential_types() {}
+
+/// 通知渠道测试的文档占位函数。
+#[utoipa::path(post, path = "/api/notifications/test", request_body = Option<crate::handlers::NotificationTestRequest>, responses((status = 200, body = ApiResponse<crate::handlers::NotificationTestResponse>, description = "逐渠道投递结果"), (status = 404, body = crate::response::ApiErrorBody), (status = 409, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
+fn test_notifications() {}
 
 #[utoipa::path(get, path = "/api/tasks", responses((status = 200, description = "任务类型列表")), security(("bearerAuth" = [])))]
 fn list_tasks() {}

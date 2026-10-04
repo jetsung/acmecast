@@ -20,6 +20,8 @@
   同窗口重复触发自动去重，全部触发落审计记录。
 - **证书管理**：证书入库去重、到期状态判定（健康/临期/已过期）、下载
   PEM/DER/PFX/P7B/JKS 五种格式、向 CA 吊销并归档。
+- **webhook 通知**：证书申请、部署成功后向飞书（Lark）/钉钉等 IM 群机器人
+  推送文本消息，支持签名校验与按事件订阅，投递不阻塞流水线。
 - **安全**：全部 `/api/` 端点（除登录与文档）强制 Bearer JWT；管理员口令以
   Argon2 PHC 存储；登录失败限流锁定；凭据以 AES-256-GCM 加密落库，密钥只存在
   于环境变量。
@@ -33,6 +35,7 @@
 | 配置服务 | [配置参考](03-configuration.md) |
 | 配 DNS 与账号凭据 | [凭据体系](04-credentials.md) / [DNS 提供商](06-dns-providers.md) |
 | 建一条签发流水线 | [流水线](05-pipelines.md) / [部署目标](07-deploy-targets.md) |
+| 申请/部署成功后推送 IM | [webhook 通知](03-configuration.md#webhook-通知)（[配置参考](03-configuration.md)） |
 | 自动续期 | [定时调度与自动续期](08-scheduling.md) |
 | 对接 API | [REST API](09-api.md) |
 | 换数据库 / 备份 | [数据库与数据目录](11-database.md) |

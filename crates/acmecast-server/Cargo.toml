@@ -16,6 +16,8 @@ acmecast-core.workspace = true
 acmecast-pipeline.workspace = true
 acmecast-scheduler.workspace = true
 acmecast-store.workspace = true
+# webhook 通知：渠道适配器与事件订阅端。
+acmecast-notify.workspace = true
 # 管理员口令校验（Argon2 PHC）。
 argon2.workspace = true
 # 子命令（init / hash-password）与全局 --config 解析。
@@ -53,6 +55,8 @@ rcgen = { workspace = true }
 # http_conventions 里装 tracing 订阅器的用例必须互斥：订阅器是线程本地的，
 # 并发跑时 tracing 的全局 callsite 状态会串（见该文件里的说明）。
 serial_test = "3"
+# 通知测试端点用 wiremock 断言测试消息确实发出。
+wiremock.workspace = true
 tokio = { workspace = true, features = ["time", "macros", "rt-multi-thread"] }
 tower = { workspace = true, features = ["util"] }
 

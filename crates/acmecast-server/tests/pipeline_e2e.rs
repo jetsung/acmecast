@@ -571,6 +571,7 @@ async fn renewal_scan_triggers_a_single_reissue() {
         &db,
         Arc::clone(&credential_registry),
         Some(&cipher),
+        None,
     );
     launcher
         .launch(acmecast_scheduler::LaunchRequest {
@@ -779,6 +780,7 @@ async fn revocation_updates_ca_and_local_state() {
         &db,
         Arc::clone(&credential_registry),
         Some(&cipher),
+        None,
     );
     launcher
         .launch(acmecast_scheduler::LaunchRequest {

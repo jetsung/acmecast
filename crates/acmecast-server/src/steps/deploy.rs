@@ -160,14 +160,10 @@ mod tests {
         registry
             .register(acmecast_deploy::SshTarget::live())
             .expect("首次注册应成功");
-        let step = CertDeployStep::new(
-            Arc::new(registry),
-            Arc::new(InMemoryDeploymentState::new()),
-        );
+        let step =
+            CertDeployStep::new(Arc::new(registry), Arc::new(InMemoryDeploymentState::new()));
 
-        let schema = step
-            .input_schema()
-            .expect("cert.deploy 应声明输入结构");
+        let schema = step.input_schema().expect("cert.deploy 应声明输入结构");
         let rendered: serde_json::Value = serde_json::to_value(&schema).expect("序列化 schema");
         let targets = &rendered["properties"]["config"]["x-target-schemas"];
 

@@ -8,8 +8,8 @@ use std::sync::Arc;
 use acmecast_core::CredentialCipher;
 use acmecast_pipeline::{HistoryQuery, HistoryRepository, StepRegistry};
 use acmecast_scheduler::{LaunchRequest, PipelineLauncher};
-use acmecast_store::repository::{PipelineInput, PipelineRepository};
 use acmecast_store::migrate;
+use acmecast_store::repository::{PipelineInput, PipelineRepository};
 use sea_orm::{Database, DatabaseConnection};
 
 /// 内存库 + 一条指定启用状态的流水线，返回 (db, pipeline_id)。
@@ -50,6 +50,7 @@ fn launcher(db: &DatabaseConnection) -> acmecast_server::scheduler::PipelineRunL
             CredentialCipher::from_base64(&CredentialCipher::generate_key_base64())
                 .expect("生成的密钥应可用"),
         )),
+        None,
     )
 }
 

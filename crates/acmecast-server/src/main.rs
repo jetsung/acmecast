@@ -117,14 +117,14 @@ async fn run(config_override: Option<&str>) -> Result<(), Box<dyn std::error::Er
 
     // 鉴权状态在启动时就要说清楚：关闭是显式选择，缺失配置是错误，
     // 两者都不该让人在第一次请求被拒时才发现。
-    let runtime = acmecast_server::RuntimeState::from_environment_with_steps(std::sync::Arc::new(
-        acmecast_server::steps::default_steps(
+    let mut runtime = acmecast_server::RuntimeState::from_environment_with_steps(
+        std::sync::Arc::new(acmecast_server::steps::default_steps(
             db.clone(),
             config.data_dir.clone(),
             acmecast_server::steps::default_dns_registry(),
             acmecast_server::steps::default_deploy_registry(),
-        ),
-    ))?;
+        )),
+    )?;
     match &runtime.auth {
         AuthMode::Disabled => {
             tracing::warn!("鉴权已关闭（ACMECAST_AUTH_DISABLED），仅适用于本地单机场景");
@@ -136,6 +136,22 @@ async fn run(config_override: Option<&str>) -> Result<(), Box<dyn std::error::Er
             );
         }
         AuthMode::Enforced(_) => {}
+    }
+
+    // webhook 通知：配置了启用渠道才装配订阅端；渠道数在启动日志里可见，
+    // 让「我以为配了通知」这类误解在第一时间暴露。
+    let enabled_channels = config
+        .notifications
+        .iter()
+        .filter(|channel| channel.enabled)
+        .count();
+    if enabled_channels > 0 {
+        tracing::info!(channels = enabled_channels, "webhook 通知已启用");
+        runtime.notifier = Some(std::sync::Arc::new(acmecast_notify::WebhookEventSink::new(
+            db.clone(),
+            config.notifications.clone(),
+            acmecast_notify::DeliveryOptions::default(),
+        )));
     }
 
     // 停机信号经 watch 广播：HTTP 服务与调度器各持一个接收端，
@@ -152,6 +168,7 @@ async fn run(config_override: Option<&str>) -> Result<(), Box<dyn std::error::Er
         std::sync::Arc::clone(&runtime.step_registry),
         std::sync::Arc::clone(&runtime.credential_registry),
         runtime.cipher.as_ref(),
+        runtime.notifier.clone(),
         http_shutdown.clone(),
     );
 
