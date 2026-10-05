@@ -1,0 +1,25 @@
+/target
+
+# 本地运行数据：数据库与证书/私钥文件，含敏感内容，不入库
+data/
+*.db
+*.db-shm
+*.db-wal
+*.tsbuildinfo
+
+# 前端依赖安装产生的 pnpm 内容寻址缓存（可重建，不入库）
+.pnpm-store/
+
+# 文档站点构建产物（zensical build 生成，可重建，不入库）
+/site/
+
+# direnv 的本地状态（缓存的 flake profile，可重建，不入库）
+/.direnv/
+
+# mise 的本地覆盖文件（个人环境定制，不入库）
+mise.local.toml
+mise.*.local.toml
+
+.env
+.admin-password
+.admin-hash

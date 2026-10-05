@@ -1,0 +1,119 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+# 全部为内部 crate，不发布到 crates.io。
+# 这也使 cargo-deny 认可 `foo.workspace = true` 形式的依赖（版本由根统一钉住）。
+# 将来若要把某个 crate（例如 acmecast-acme）单独发布，需为其显式指定版本依赖
+# 并覆盖此项，而不是简单删掉这一行。
+publish = false
+
+[workspace.dependencies]
+# 内部 crate
+acmecast-core = { path = "crates/acmecast-core" }
+acmecast-acme = { path = "crates/acmecast-acme" }
+acmecast-pipeline = { path = "crates/acmecast-pipeline" }
+acmecast-cert = { path = "crates/acmecast-cert" }
+acmecast-dns = { path = "crates/acmecast-dns" }
+acmecast-deploy = { path = "crates/acmecast-deploy" }
+acmecast-access = { path = "crates/acmecast-access" }
+acmecast-scheduler = { path = "crates/acmecast-scheduler" }
+acmecast-store = { path = "crates/acmecast-store" }
+acmecast-notify = { path = "crates/acmecast-notify" }
+
+# 异步与运行时
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "fs", "process", "sync"] }
+async-trait = "0.1"
+
+# 序列化
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+toml = "0.8"
+schemars = "0.8"
+
+# 错误与日志
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# 时间
+chrono = { version = "0.4", features = ["serde"] }
+# cron 表达式解析与触发时刻推算（定时调度）。
+cron = "0.13"
+
+# Web
+axum = { version = "0.8", features = ["macros"] }
+# 命令行参数解析（derive + 环境变量回退）。
+clap = { version = "4.5", features = ["derive", "env"] }
+tower = { version = "0.5", features = ["timeout", "limit"] }
+tower-http = { version = "0.6", features = ["trace", "cors", "fs", "compression-gzip", "request-id"] }
+utoipa = { version = "5", features = ["chrono"] }
+utoipa-swagger-ui = { version = "9", features = ["axum"] }
+
+# 数据库
+sea-orm = { version = "1.1", features = [
+    "sqlx-sqlite",
+    "sqlx-mysql",
+    "sqlx-postgres",
+    "runtime-tokio-rustls",
+    "macros",
+    "with-chrono",
+    "with-json",
+] }
+sea-orm-migration = { version = "1.1", features = [
+    "sqlx-sqlite",
+    "sqlx-mysql",
+    "sqlx-postgres",
+    "runtime-tokio-rustls",
+] }
+
+# 密码学
+aes-gcm = "0.10"
+rand = "0.9"
+base64 = "0.22"
+sha2 = "0.10"
+sha1 = "0.10"
+hmac = "0.12"
+# 管理员口令以 Argon2 PHC 字符串存储，登录时校验。
+argon2 = "0.6"
+
+# 工具
+uuid = { version = "1", features = ["v4", "serde"] }
+# `chown` 没有 std 封装；用 nix 而非裸 libc，免得为一个调用引入 unsafe。
+nix = { version = "0.29", features = ["user", "fs"] }
+# SSH 远程部署：纯 Rust，避免依赖系统的 libssh2。
+russh = "0.63"
+# ACME 申请步骤的密钥对与 CSR 生成（证书解析 crate 同用此版本）。
+rcgen = "0.14.10"
+jsonwebtoken = "9"
+# default-features 关闭（默认的 native-tls 依赖系统 OpenSSL，musl 静态构建
+# 无法提供）；TLS 统一走 rustls，与项目其余部分一致。
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "rustls-tls",
+    "socks",
+    "charset",
+    "http2",
+] }
+rustls-pemfile = "2"
+
+# 测试：进程内 HTTP mock（webhook 渠道适配器的请求断言）。
+wiremock = "0.6"
+
+[workspace.lints.rust]
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+rust_2018_idioms = "warn"
+unreachable_pub = "warn"
+unsafe_code = "warn"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true

@@ -1,0 +1,8 @@
+node_modules
+dist
+*.local
+
+# Playwright 产物：报告、失败追踪与快照
+playwright-report
+test-results
+blob-report

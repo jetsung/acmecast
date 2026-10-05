@@ -1,0 +1,38 @@
+[package]
+name = "acmecast-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "SeaORM 实体、迁移与仓储：SQLite / MySQL / PostgreSQL 三方言支持"
+
+[dependencies]
+acmecast-core.workspace = true
+acmecast-cert.workspace = true
+async-trait.workspace = true
+cron.workspace = true
+sea-orm.workspace = true
+sea-orm-migration.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+# 数据目录的文件读写走 tokio::fs：证书 PEM 只有几 KB，但把同步 IO 放进
+# async 上下文仍会阻塞 reactor，不如一开始就用异步接口。
+tokio.workspace = true
+
+[features]
+# 启用需要真实数据库的集成测试。未启用时这些用例被跳过。
+# 这个特性必须声明，否则引用它的 `#[cfg(feature = "integration-db")]` 会触发
+# rustc 的 `unexpected_cfgs`，在 CI 的 `clippy -D warnings` 下直接失败。
+integration-db = []
+
+[dev-dependencies]
+tokio.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,31 @@
+# 构建产物与本地数据不进上下文：前者巨大，后者含凭据密钥与数据库。
+target/
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# 编辑器与系统文件
+.vscode/
+.idea/
+.DS_Store
+
+# 本地文档与脚本（不影响构建）
+certd/
+frontend/node_modules
+frontend/dist
+
+# 文档站点构建产物与缓存（zensical 生成，不影响构建）
+site/
+.cache/
+
+# mise 开发环境配置不进 Docker 构建：Dockerfile 有自己的镜像处理
+.cargo/
+mise.toml
+mise.lock
+
+# 含真实 DNS 厂商凭据的本地笔记，绝不进镜像与构建上下文
+DNSTOKEN.md
+
+# OpenSpec 规划工件不进运行时镜像
+openspec/

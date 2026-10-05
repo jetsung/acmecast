@@ -1,0 +1,36 @@
+# acmecast 的 Docker Compose 定义。在仓库根目录执行：
+#
+#   docker compose -f docker/compose.yaml up -d      # 首次会按需构建 acmecast:dev
+#   docker compose -f docker/compose.yaml logs -f
+#   docker compose -f docker/compose.yaml down
+#
+# 变量插值取自本文件所在目录的 docker/.env（Compose 按项目目录查找，不会去读仓库根的
+# .env —— 那个文件由 mise 的 _.file 加载，是本地开发用的），也可以直接在当前 shell 里 export。
+# 需要的三个变量（生成方式见 docs/13-docker-deployment.md 13.3）：
+#   ACMECAST_JWT_SECRET  ACMECAST_CREDENTIAL_KEY  ACMECAST_ADMIN_PASSWORD_HASH
+# 三者用 ${VAR:?} 声明：任何一个没设置，**任何** compose 子命令（含 logs/build/down）都会
+# 直接报错退出，不会带着空密钥把服务拉起来。长期使用建议写进 docker/.env，否则每开一个
+# 新 shell 都要重新 export，连 logs、down 都用不了。
+#
+# 数据落在仓库根的 data/（与 docker run 写法一致）。容器以 uid 65532 运行，目录需可写：
+#   mkdir -p data && chmod 0777 data
+
+name: acmecast
+
+services:
+  acmecast:
+    image: acmecast:dev
+    container_name: acmecast
+    build:
+      context: ..
+      args:
+        # 上线构建改为 false，关闭镜像内的国内源配置
+        USE_CN_MIRROR: "${USE_CN_MIRROR:-true}"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ../data:/data
+    environment:
+      ACMECAST_JWT_SECRET: "${ACMECAST_JWT_SECRET:?未设置：先 export，或写入 docker/.env}"
+      ACMECAST_CREDENTIAL_KEY: "${ACMECAST_CREDENTIAL_KEY:?未设置：先 export，或写入 docker/.env}"
+      ACMECAST_ADMIN_PASSWORD_HASH: "${ACMECAST_ADMIN_PASSWORD_HASH:?未设置：先 export，或写入 docker/.env}"

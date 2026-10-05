@@ -1,0 +1,33 @@
+[package]
+name = "acmecast-notify"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "webhook 通知：渠道适配器（飞书/钉钉/通用）、事件订阅与异步投递"
+
+[dependencies]
+# 事件订阅实现 `EventSink`；事件协议（`PipelineEvent`）由引擎定义。
+acmecast-pipeline.workspace = true
+# 消息素材取自运行历史与流水线定义。
+acmecast-store.workspace = true
+async-trait.workspace = true
+base64.workspace = true
+chrono.workspace = true
+hmac.workspace = true
+reqwest.workspace = true
+sea-orm.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+wiremock.workspace = true
+# `start_paused`：退避重试的用例在虚拟时钟下秒级完成。
+tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

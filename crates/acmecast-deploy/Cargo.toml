@@ -1,0 +1,39 @@
+[package]
+name = "acmecast-deploy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "证书部署：部署目标抽象与结果记录"
+
+[dependencies]
+acmecast-core.workspace = true
+# SSH 目标的私钥来自凭据系统，因此部署时要能按标识取凭据。
+acmecast-access.workspace = true
+# 部署状态落在数据库（8.5 的幂等依据）。
+acmecast-store.workspace = true
+async-trait.workspace = true
+base64.workspace = true
+chrono.workspace = true
+sea-orm.workspace = true
+sha2.workspace = true
+russh.workspace = true
+nix.workspace = true
+tokio.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+acmecast-store.workspace = true
+# 集成测试是独立 crate，只能看见主 crate 与 dev-dependencies。
+chrono.workspace = true
+nix.workspace = true
+sea-orm.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

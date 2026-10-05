@@ -1,0 +1,115 @@
+# CNB 云原生构建 / 云原生开发配置。
+#
+# ⚠️ 分支匹配是「先 glob、未命中再落到 $」两阶段，且**各分支只读取匹配到的那一段**。
+# 因此一旦给 main / dev 写了分支 key，它们就再也不会去读 $ 段——$ 里的 vscode
+# （云原生开发环境）必须在 main / dev 下各写一份，否则这两个分支的开发环境会
+# 悄悄退回平台默认镜像，而不是用 .ide/Dockerfile。
+#
+# 触发矩阵：
+#   main push → 镜像 :latest；构建文档；部署文档到 EdgeOne Pages
+#   dev  push → 镜像 :dev   ；构建文档（不部署，避免 dev 内容覆盖线上文档）
+#   其他分支   → 仅 $ 兜底：提供云原生开发环境
+
+# $:
+#   vscode:
+#     # 小规格：4 核 / 8G
+#     - name: dev-small
+#       if: $SIZE == "small"
+#       runner:
+#         cpus: 4
+#       docker:
+#         image: cnbcool/default-dev-env:latest
+#       services:
+#         - vscode
+#         - docker
+
+#     # 大规格：8 核 / 16G（默认镜像，仅调大 CPU）
+#     - name: dev-large
+#       if: $SIZE == "large"
+#       runner:
+#         cpus: 8
+#       docker:
+#         image: cnbcool/default-dev-env:latest
+#       services:
+#         - vscode
+#         - docker
+
+main:
+  push:
+    - name: docker image
+      services:
+        - docker
+      stages:
+        - name: set docker tag
+          script: echo -n "${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}:latest"
+          exports:
+            info: IMAGE_TAG
+        - name: docker build
+          script: docker build -t $IMAGE_TAG .
+        - name: push image
+          script: docker push $IMAGE_TAG
+
+    - name: docs
+      imports:
+        - https://cnb.cool/jetsung/secret/-/blob/main/pages.yml
+      stages:
+        - name: zensical build
+          image: zensical/zensical
+          script: zensical build
+
+        - name: 检查 EDGEONE_API_TOKEN
+          script: |
+            if [ -z "$EDGEONE_API_TOKEN" ]; then
+              echo "环境变量 EDGEONE_API_TOKEN 未配置，或与密钥仓库里的名字不一致"; exit 1
+            fi
+            echo "EDGEONE_API_TOKEN 已配置"
+        - name: 部署到 EdgeOne Pages
+          image: tencentcom/deploy-eopages:latest
+          script: |
+            edgeone makers deploy ./site \
+              --name "$CNB_REPO_NAME_LOWERCASE" \
+              --site global \
+              --area overseas \
+              --token "$EDGEONE_API_TOKEN" \
+              --env production
+
+dev:
+  push:
+    - name: docker image
+      services:
+        - docker
+      stages:
+        - name: set docker tag
+          script: echo -n "${CNB_DOCKER_REGISTRY}/${CNB_REPO_SLUG_LOWERCASE}:dev"
+          exports:
+            info: IMAGE_TAG
+        - name: docker build
+          script: docker build -t $IMAGE_TAG .
+        - name: push image
+          script: docker push $IMAGE_TAG
+
+    - name: docs
+      imports:
+        - https://cnb.cool/jetsung/secret/-/blob/main/pages.yml
+      stages:
+        - name: zensical build
+          image: zensical/zensical
+          script: zensical build
+
+        # dev 部署到 EdgeOne 的**预发环境**（environment: preview），不覆盖生产站点。
+        # 插件参数：https://cnb.cool/cnb/plugins/market/-/blob/main/plugins/tencentcom/deploy-eopages/README.md
+        - name: 检查 EDGEONE_API_TOKEN
+          script: |
+            if [ -z "$EDGEONE_API_TOKEN" ]; then
+              echo "环境变量 EDGEONE_API_TOKEN 未配置，或与密钥仓库里的名字不一致"; exit 1
+            fi
+            echo "EDGEONE_API_TOKEN 已配置"
+        - name: 部署到 EdgeOne（预发）
+          image: tencentcom/deploy-eopages:latest
+          script: |
+            edgeone makers deploy ./site \
+              --name "$CNB_REPO_NAME_LOWERCASE" \
+              --site global \
+              --area overseas \
+              --token "$EDGEONE_API_TOKEN" \
+              --env preview

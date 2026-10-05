@@ -1,0 +1,64 @@
+[package]
+name = "acmecast-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+acmecast-access.workspace = true
+# 流水线步骤实现：ACME 申请、证书入库与部署。
+acmecast-acme.workspace = true
+acmecast-cert.workspace = true
+acmecast-deploy.workspace = true
+acmecast-dns.workspace = true
+acmecast-core.workspace = true
+acmecast-pipeline.workspace = true
+acmecast-scheduler.workspace = true
+acmecast-store.workspace = true
+# webhook 通知：渠道适配器与事件订阅端。
+acmecast-notify.workspace = true
+# 管理员口令校验（Argon2 PHC）。
+argon2.workspace = true
+# 子命令（init / hash-password）与全局 --config 解析。
+clap.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+chrono.workspace = true
+# 访问令牌（HS256 JWT）。
+jsonwebtoken.workspace = true
+# cert.apply 步骤在申请时生成密钥对与 CSR。
+rcgen.workspace = true
+sea-orm.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# 统一 config.toml 的解析与生成。
+toml.workspace = true
+# 步骤输入的 JSON Schema 推导。
+schemars.workspace = true
+tokio.workspace = true
+# 静态资源服务与请求追踪中间件。
+tower.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+utoipa.workspace = true
+utoipa-swagger-ui.workspace = true
+# 请求追踪标识。
+uuid.workspace = true
+
+[dev-dependencies]
+# 停机语义测试需要可控延迟的 handler 与真实 HTTP 客户端。
+reqwest.workspace = true
+# 下载端点的测试需要真实证书；现场生成，避免把固定样本写进仓库。
+rcgen = { workspace = true }
+# http_conventions 里装 tracing 订阅器的用例必须互斥：订阅器是线程本地的，
+# 并发跑时 tracing 的全局 callsite 状态会串（见该文件里的说明）。
+serial_test = "3"
+# 通知测试端点用 wiremock 断言测试消息确实发出。
+wiremock.workspace = true
+tokio = { workspace = true, features = ["time", "macros", "rt-multi-thread"] }
+tower = { workspace = true, features = ["util"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,114 @@
+# cargo-deny 配置
+#
+# 本项目以 Apache-2.0 发行（宽松许可），依赖树中的许可冲突风险很低；
+# 清单保留作为依赖审计基线。历史上的 AGPL 决策已变更为 Apache-2.0（与 LICENSE 一致）。
+# 注意：若将来改回强 copyleft（如 AGPL-3.0），同族的 GPL-3.0 / LGPL-3.0 / AGPL-3.0
+# 本身是兼容的；真正不兼容的是仅 GPL-2.0（不带 or-later）等单向条款，
+# 以及未在 allow 列表中的自定义许可证。
+
+[graph]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "x86_64-pc-windows-msvc",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+]
+# 把 dev 依赖一并纳入检查：测试工具同样会被分发到源码包中。
+all-features = true
+
+[advisories]
+version = 2
+ignore = [
+    # sqlx-mysql 为 MySQL 的 caching_sha2_password 认证引入 rsa crate。
+    # RUSTSEC-2023-0071 描述的是 Marvin Attack——通过时间侧信道**恢复 RSA 私钥**，
+    # 攻击面位于解密侧。本项目的 MySQL 客户端路径只做口令加密，不做 RSA 解密，
+    # 因此不暴露在该攻击面下。
+    # 若将来引入服务端侧的 RSA 解密（例如自建 MySQL 代理），必须重新评估此项。
+    "RUSTSEC-2023-0071",
+]
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+
+# 允许当前依赖树尚未用到的许可证条目。这份列表是「本项目接受的许可证边界声明」，
+# 而不是「当前依赖树的许可证快照」，因此不因未使用而报错。
+unused-allowed-license = "allow"
+
+allow = [
+    # 宽松许可证：与 AGPL-3.0 无冲突
+    "Apache-2.0",
+    "MIT",
+    "MIT-0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "CC0-1.0",
+    "BSL-1.0",
+    "0BSD",
+    # 弱 copyleft：MPL-2.0 明确与 GPL 系列兼容
+    "MPL-2.0",
+    # 同族 copyleft：与 AGPL-3.0 兼容（含 -only / -or-later 两种写法）
+    "AGPL-3.0",
+    "AGPL-3.0-only",
+    "AGPL-3.0-or-later",
+    "GPL-3.0",
+    "GPL-3.0-only",
+    "GPL-3.0-or-later",
+    "LGPL-3.0",
+    "LGPL-3.0-only",
+    "LGPL-3.0-or-later",
+    # ring 等密码学 crate 的常见组合许可证
+    "OpenSSL",
+    # 来自 webpki-roots（根证书数据集）。CDLA-Permissive-2.0 是**数据**许可证：
+    # 据 cdla.dev 官方 FAQ，其 Section 3.1 明确对计算结果不施加任何义务，
+    # 唯一条件是在重新共享数据本身时附带协议文本——这比 MIT 的归属义务还弱，
+    # 不构成 copyleft，因此与 AGPL-3.0 不冲突。
+    # 注：此为工程侧判断，正式发行前建议由法务复核。
+    "CDLA-Permissive-2.0",
+    # 明确不含 GPL-2.0 / LGPL-2.1：它们无法与 AGPL-3.0 合并发布。
+    # 一旦这类依赖进入依赖树，本检查必须失败。
+]
+
+# 明确排除：仅 GPL-2.0（无 or-later）无法与 AGPL-3.0 合并发布。
+# 出现这类依赖时 CI 必须失败，而不是给出警告。
+exceptions = []
+
+private = { ignore = true }
+
+[[licenses.clarify]]
+crate = "ring"
+expression = "MIT AND ISC AND OpenSSL"
+license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# `foo.workspace = true` 在成员 crate 的清单里看起来像通配符依赖，
+# 但版本实际由 workspace 根统一钉住，等价于显式版本，应予放行。
+allow-wildcard-paths = true
+highlight = "all"
+skip = []
+skip-tree = []
+
+# `deny` 用于「确定不该出现的 crate」，而不是「本项目没选中的 crate」。
+# 因此这里为空：本项目自身不依赖 `openssl` / `openssl-sys`（格式转换全部走纯 Rust，
+# 见 design.md 决策 9），但「没被选中」不等于「应当禁止」，
+# 其许可证（Apache-2.0 / OpenSSL）已在上面 allow 列表中放行。
+deny = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+
+[sources.allow-org]
+github = []
+gitlab = []
+bitbucket = []
