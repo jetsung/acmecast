@@ -156,6 +156,73 @@ JSON Schema 驱动的动态表单）、运行历史（按步骤分组日志）�
 - HTTP-01 挑战仅有材料计算能力，无投放通道，申请步骤请使用 DNS-01；
 - 登录失败限流为进程内计数，多副本部署时需在反向代理层另行防护。
 
+## Docker 部署
+
+### 使用预构建镜像
+
+#### 可用镜像仓库
+
+> **版本：** `latest`, `dev`(GHCR only), <`TAG`>
+
+| Registry                                                                                   | Image                                                  |
+| ------------------------------------------------------------------------------------------ | ------------------------------------------------------ |
+| [**Docker Hub**](https://hub.docker.com/r/jetsung/acmecast/)                                | `jetsung/acmecast`                                    |
+| [**GitHub Container Registry**](https://ghcr.io/jetsung/acmecast) | `ghcr.io/jetsung/acmecast`                            |
+| **Tencent Cloud Container Registry（SG）**                                                       | `sgccr.ccs.tencentyun.com/jetsung/acmecast`             |
+| **Aliyun Container Registry（GZ）**                                                              | `registry.cn-guangzhou.aliyuncs.com/jetsung/acmecast` |
+
+### 使用 compose 启动
+
+#### 默认：拉取预构建镜像
+
+```bash
+docker compose -f docker/compose.yaml up -d
+```
+
+#### 本地构建：使用 build 段
+
+如需从本地 `docker/Dockerfile` 构建镜像运行：
+
+```bash
+docker compose -f docker/compose.yaml up -d --build
+```
+
+#### docker/compose.yaml
+
+```yaml
+# acmecast 的 Docker Compose 定义。在仓库根目录执行：
+#
+#   docker compose -f docker/compose.yaml up -d      # 首次会按需构建 acmecast:dev
+#   docker compose -f docker/compose.yaml logs -f
+#   docker compose -f docker/compose.yaml down
+#
+# 变量插值取自本文件所在目录的 docker/.env（Compose 按项目目录查找，不会去读仓库根的
+# .env —— 那个文件由 mise 的 _.file 加载，是本地开发用的），也可以直接在当前 shell 里 export。
+# 需要的三个变量（生成方式见 docs/13-docker-deployment.md 13.3）：
+#   ACMECAST_JWT_SECRET  ACMECAST_CREDENTIAL_KEY  ACMECAST_ADMIN_PASSWORD_HASH
+# 三者用 ${VAR:?} 声明：任何一个没设置，**任何** compose 子命令（含 logs/build/down）都会
+# 直接报错退出，不会带着空密钥把服务拉起来。长期使用建议写进 docker/.env，否则每开一个
+# 新 shell 都要重新 export，连 logs、down 都用不了。
+#
+# 数据落在仓库根的 data/（与 docker run 写法一致）。容器以 uid 65532 运行，目录需可写：
+#   mkdir -p data && chmod 0777 data
+
+name: acmecast
+
+services:
+  acmecast:
+    image: ghcr.io/jetsung/acmecast:dev
+    container_name: acmecast
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+    environment:
+      ACMECAST_JWT_SECRET: "${ACMECAST_JWT_SECRET:?未设置：先 export，或写入 docker/.env}"
+      ACMECAST_CREDENTIAL_KEY: "${ACMECAST_CREDENTIAL_KEY:?未设置：先 export，或写入 docker/.env}"
+      ACMECAST_ADMIN_PASSWORD_HASH: "${ACMECAST_ADMIN_PASSWORD_HASH:?未设置：先 export，或写入 docker/.env}"
+```
+
 ## 许可
 
 Apache-2.0（见 [LICENSE](LICENSE)）

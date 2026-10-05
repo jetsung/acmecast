@@ -5,7 +5,7 @@
 # 出站 HTTPS（ACME、DoH、DNS 提供商 API）的根证书无需额外安装。
 
 # ---- builder：完整工具链 + musl 静态目标 ----
-FROM rust:1.98-slim AS builder
+FROM rust:1-slim AS builder
 
 # 中国网络开发环境默认：apt 换阿里云镜像、cargo/rustup 走 rsproxy 镜像源；
 # 上线构建传 `--build-arg USE_CN_MIRROR=false` 关闭。配置只写入 builder 层，
@@ -59,7 +59,7 @@ COPY frontend/ .
 RUN pnpm build
 
 # ---- 运行阶段：distroless static（非 root） ----
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian13:nonroot
 
 COPY --from=builder /acmecast-server /acmecast-server
 COPY --from=frontend-builder /app/frontend/dist /static

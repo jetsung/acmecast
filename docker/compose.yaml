@@ -19,7 +19,7 @@ name: acmecast
 
 services:
   acmecast:
-    image: acmecast:dev
+    image: ghcr.io/jetsung/acmecast:dev
     container_name: acmecast
     build:
       context: ..
@@ -29,7 +29,7 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ../data:/data
+      - ./data:/data
     environment:
       ACMECAST_JWT_SECRET: "${ACMECAST_JWT_SECRET:?未设置：先 export，或写入 docker/.env}"
       ACMECAST_CREDENTIAL_KEY: "${ACMECAST_CREDENTIAL_KEY:?未设置：先 export，或写入 docker/.env}"

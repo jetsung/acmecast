@@ -117,3 +117,15 @@ opt-level = "z"
 lto = true
 codegen-units = 1
 strip = true
+
+[package.metadata.deb]
+maintainer = "Jetsung Chan <i@jetsung.com>"
+assets = [
+    ["target/release/acmecast", "usr/bin/acmecast", "755"],
+]
+
+[package.metadata.generate-rpm]
+maintainer = "Jetsung Chan <i@jetsung.com>"
+assets = [
+    { source = "target/release/acmecast", dest = "/usr/bin/acmecast", mode = "755" },
+]
