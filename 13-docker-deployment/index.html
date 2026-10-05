@@ -933,9 +933,9 @@
   logs/build/down）都报错退出。</li>
 <li>变量插值取自 <code>docker/.env</code>（Compose 按项目目录找，不读仓库根 <code>.env</code>）。</li>
 <li>数据落在仓库根 <code>data/</code>（<code>../data:/data</code>）。</li>
-<li><code>USE_CN_MIRROR</code> 构建参数默认 <code>true</code>（apt 换阿里云、cargo 走 rsproxy、
-  npm 走 npmmirror）；上线构建传 <code>--build-arg USE_CN_MIRROR=false</code>，产物不含
-  任何镜像源配置。</li>
+<li>compose 本地构建默认使用 <code>docker/CN.Dockerfile</code>（apt 换阿里云、cargo 走
+  rsproxy、npm 走 npmmirror）；上线/国际构建把 build 段的 <code>dockerfile</code> 改为
+  <code>docker/Dockerfile</code>（官方源），产物不含任何镜像源配置。</li>
 </ul>
 <h2 id="_2">切换数据库<a class="headerlink" href="#_2" title="Permanent link">&para;</a></h2>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>docker<span class="w"> </span>run<span class="w"> </span>-d<span class="w"> </span>--name<span class="w"> </span>acmecast<span class="w"> </span><span class="se">\</span>
