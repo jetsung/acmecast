@@ -61,7 +61,7 @@ RUN pnpm build
 # ---- 运行阶段：distroless static（非 root） ----
 FROM gcr.io/distroless/static-debian13:nonroot
 
-COPY --from=builder /acmecast-server /acmecast-server
+COPY --from=builder /acmecast-server /usr/bin/acmecast-server
 COPY --from=frontend-builder /app/frontend/dist /static
 
 # 数据目录（数据库、证书文件、凭据密钥）挂卷持久化；前端产物目录交给静态托管。
@@ -71,4 +71,4 @@ ENV ACMECAST_LISTEN=0.0.0.0:8080 \
 EXPOSE 8080
 VOLUME ["/data"]
 
-ENTRYPOINT ["/acmecast-server"]
+ENTRYPOINT ["acmecast-server"]

@@ -5,7 +5,10 @@ on:
     branches:
       - dev*
     paths:
-      - "src/**"
+      - "crates/**"
+      - "frontend/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - "docker/Dockerfile"
       - ".github/workflows/docker-dev.yml"
 
