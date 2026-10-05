@@ -10,6 +10,10 @@
 # ---- builder：完整工具链 + musl 静态目标 ----
 FROM rust:1-slim AS builder
 
+# buildx 会按目标平台注入 TARGETPLATFORM（linux/amd64、linux/arm64）；
+# 预定义 ARG 必须显式声明才能在 RUN 中引用。
+ARG TARGETPLATFORM
+
 # musl-gcc 供链接器使用；ring 的构建脚本还需要 make/perl（rust 镜像已含）。
 RUN apt-get update \
     && apt-get install -y --no-install-recommends musl-tools pkg-config \

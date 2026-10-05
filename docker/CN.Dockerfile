@@ -15,6 +15,10 @@
 # ---- builder：完整工具链 + musl 静态目标 ----
 FROM rust:1-slim AS builder
 
+# buildx 会按目标平台注入 TARGETPLATFORM（linux/amd64、linux/arm64）；
+# 预定义 ARG 必须显式声明才能在 RUN 中引用。
+ARG TARGETPLATFORM
+
 # apt 换阿里云镜像；cargo 走 rsproxy（sparse index），拉依赖不走外网。
 RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' \
         /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list 2>/dev/null || true \
