@@ -45,7 +45,7 @@ main:
           exports:
             info: IMAGE_TAG
         - name: docker build
-          script: docker build -t $IMAGE_TAG .
+          script: docker build -f docker/CN.Dockerfile -t $IMAGE_TAG .
         - name: push image
           script: docker push $IMAGE_TAG
 
@@ -84,7 +84,7 @@ dev:
           exports:
             info: IMAGE_TAG
         - name: docker build
-          script: docker build -t $IMAGE_TAG .
+          script: docker build -f docker/CN.Dockerfile -t $IMAGE_TAG .
         - name: push image
           script: docker push $IMAGE_TAG
 
