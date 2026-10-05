@@ -6,6 +6,7 @@ import type { components } from "@/api/schema";
 import { client } from "@/api/client";
 import { unwrapData } from "@/api/helpers";
 import { SchemaForm } from "@/components/SchemaForm";
+import { PageHeader } from "@/components/PageHeader";
 
 /** `account_credential_id` 一类字段只接受这类凭据。 */
 const ACME_ACCOUNT_TYPE_ID = "acme.account";
@@ -220,9 +221,10 @@ export function PipelineEditorPage() {
 
   return (
     <div>
-      <Typography.Title level={4}>
-        {editingId === null ? "新建流水线" : `编辑流水线 #${editingId}`}
-      </Typography.Title>
+      <PageHeader
+        title={editingId === null ? "新建流水线" : `编辑流水线 #${editingId}`}
+        description="按执行顺序组织 DNS 挑战、签发与部署步骤"
+      />
       <Form form={form} layout="vertical" onFinish={onSave}>
         <Space size={24} wrap>
           <Form.Item

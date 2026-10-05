@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { App, Button, Descriptions, Space, Typography } from "antd";
+import { App, Button, Card, Descriptions, Space, Typography } from "antd";
 import type { components } from "@/api/schema";
 import { useParams } from "react-router";
 import { useState } from "react";
@@ -7,6 +7,7 @@ import { client } from "@/api/client";
 import { downloadFile, formatTime, unwrapData } from "@/api/helpers";
 import { ApiError } from "@/api/client";
 import { useAuthStore } from "@/auth/store";
+import { PageHeader } from "@/components/PageHeader";
 
 type CertificateDetail = components["schemas"]["CertificateResponse"];
 
@@ -87,49 +88,55 @@ export function CertificateDetailPage() {
 
   return (
     <div>
-      <Typography.Title level={4}>
-        证书 #{cert.id}
-        {cert.revoked_at && (
-          <Typography.Text type="secondary" style={{ marginLeft: 12, fontSize: 14 }}>
-            已于 {formatTime(cert.revoked_at)} 吊销
-          </Typography.Text>
-        )}
-      </Typography.Title>
+      <PageHeader
+        title={`证书 #${cert.id}`}
+        subtitle={
+          cert.revoked_at && (
+            <Typography.Text type="secondary" style={{ fontSize: 14 }}>
+              已于 {formatTime(cert.revoked_at)} 吊销
+            </Typography.Text>
+          )
+        }
+        description={cert.domains.join(", ")}
+        extra={
+          <Space wrap>
+            {FORMATS.map((format) => (
+              <Button
+                key={format.value}
+                disabled={cert.revoked_at !== null}
+                loading={downloading === format.value}
+                onClick={() => doDownload(format.value)}
+              >
+                {format.label}
+              </Button>
+            ))}
+            <Button
+              danger
+              disabled={cert.revoked_at !== null || cert.acme_account_access_id === null}
+              onClick={confirmRevoke}
+            >
+              吊销
+            </Button>
+          </Space>
+        }
+      />
 
-      <Descriptions bordered column={1} size="small" style={{ marginBottom: 24 }}>
-        <Descriptions.Item label="域名">{cert.domains.join(", ")}</Descriptions.Item>
-        <Descriptions.Item label="签发者">{cert.issuer ?? "-"}</Descriptions.Item>
-        <Descriptions.Item label="生效时间">{formatTime(cert.not_before)}</Descriptions.Item>
-        <Descriptions.Item label="到期时间">{formatTime(cert.not_after)}</Descriptions.Item>
-        <Descriptions.Item label="指纹">
-          <Typography.Text code copyable>{cert.fingerprint}</Typography.Text>
-        </Descriptions.Item>
-        <Descriptions.Item label="签发账号凭据">
-          {cert.acme_account_access_id ? `#${cert.acme_account_access_id}` : "未绑定（手动上传）"}
-        </Descriptions.Item>
-        <Descriptions.Item label="证书文件">{cert.cert_pem_path}</Descriptions.Item>
-        <Descriptions.Item label="私钥文件">{cert.key_pem_path}</Descriptions.Item>
-      </Descriptions>
-
-      <Space wrap>
-        {FORMATS.map((format) => (
-          <Button
-            key={format.value}
-            disabled={cert.revoked_at !== null}
-            loading={downloading === format.value}
-            onClick={() => doDownload(format.value)}
-          >
-            {format.label}
-          </Button>
-        ))}
-        <Button
-          danger
-          disabled={cert.revoked_at !== null || cert.acme_account_access_id === null}
-          onClick={confirmRevoke}
-        >
-          吊销
-        </Button>
-      </Space>
+      <Card>
+        <Descriptions bordered column={1} size="small">
+          <Descriptions.Item label="域名">{cert.domains.join(", ")}</Descriptions.Item>
+          <Descriptions.Item label="签发者">{cert.issuer ?? "-"}</Descriptions.Item>
+          <Descriptions.Item label="生效时间">{formatTime(cert.not_before)}</Descriptions.Item>
+          <Descriptions.Item label="到期时间">{formatTime(cert.not_after)}</Descriptions.Item>
+          <Descriptions.Item label="指纹">
+            <Typography.Text code copyable>{cert.fingerprint}</Typography.Text>
+          </Descriptions.Item>
+          <Descriptions.Item label="签发账号凭据">
+            {cert.acme_account_access_id ? `#${cert.acme_account_access_id}` : "未绑定（手动上传）"}
+          </Descriptions.Item>
+          <Descriptions.Item label="证书文件">{cert.cert_pem_path}</Descriptions.Item>
+          <Descriptions.Item label="私钥文件">{cert.key_pem_path}</Descriptions.Item>
+        </Descriptions>
+      </Card>
     </div>
   );
 }

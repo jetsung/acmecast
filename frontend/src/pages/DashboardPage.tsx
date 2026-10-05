@@ -1,9 +1,17 @@
 import { useQuery } from "@tanstack/react-query";
-import { Card, Col, Row, Statistic, Table, Tag, Typography } from "antd";
+import { Col, Row, Table, Tag } from "antd";
 import type { TableColumnsType } from "antd";
+import {
+  SafetyCertificateOutlined,
+  WarningOutlined,
+  CloseCircleOutlined,
+} from "@ant-design/icons";
 import type { components } from "@/api/schema";
 import { client } from "@/api/client";
 import { formatTime, unwrapData } from "@/api/helpers";
+import { PageHeader } from "@/components/PageHeader";
+import { StatCard } from "@/components/StatCard";
+import { Panel } from "@/components/Panel";
 
 type CertificateRow = components["schemas"]["CertificateResponse"];
 
@@ -67,45 +75,59 @@ export function DashboardPage() {
 
   return (
     <div>
-      <Typography.Title level={4}>仪表盘</Typography.Title>
+      <PageHeader
+        title="仪表盘"
+        description="证书有效期与流水线运行的总体概况"
+      />
       <Row gutter={16} style={{ marginBottom: 24 }}>
         <Col span={8}>
-          <Card>
-            <Statistic title="有效证书" value={active.length} suffix={`/ ${certs?.total ?? 0}`} />
-          </Card>
+          <StatCard
+            title="有效证书"
+            value={
+              <>
+                {active.length}
+                <span style={{ fontSize: 16, fontWeight: 400, color: "#8a93a6" }}>
+                  {" "}
+                  / {certs?.total ?? 0}
+                </span>
+              </>
+            }
+            icon={<SafetyCertificateOutlined />}
+            tone={{ bg: "#e8f7ef", color: "#16a05d" }}
+          />
         </Col>
         <Col span={8}>
-          <Card>
-            <Statistic
-              title="30 天内到期"
-              value={active.filter((cert) => new Date(cert.not_after).getTime() <= soonThreshold).length}
-              valueStyle={{ color: "#cf1322" }}
-            />
-          </Card>
+          <StatCard
+            title="30 天内到期"
+            value={active.filter((cert) => new Date(cert.not_after).getTime() <= soonThreshold).length}
+            icon={<WarningOutlined />}
+            tone={{ bg: "#fdf1e3", color: "#e8830c" }}
+            valueColor="#e8830c"
+          />
         </Col>
         <Col span={8}>
-          <Card>
-            <Statistic
-              title="最近失败运行"
-              value={(histories?.items ?? []).filter((item) => item.status === "failed").length}
-              valueStyle={{ color: "#cf1322" }}
-            />
-          </Card>
+          <StatCard
+            title="最近失败运行"
+            value={(histories?.items ?? []).filter((item) => item.status === "failed").length}
+            icon={<CloseCircleOutlined />}
+            tone={{ bg: "#fdecec", color: "#e0483e" }}
+            valueColor="#e0483e"
+          />
         </Col>
       </Row>
 
-      <Typography.Title level={5}>最早到期的证书</Typography.Title>
-      <Table<CertificateRow>
-        rowKey="id"
-        columns={columns}
-        dataSource={expiringSoon}
-        pagination={false}
-        size="small"
-        style={{ marginBottom: 24 }}
-      />
+      <Panel title="最早到期的证书" style={{ marginBottom: 24 }}>
+        <Table<CertificateRow>
+          rowKey="id"
+          columns={columns}
+          dataSource={expiringSoon}
+          pagination={false}
+          size="small"
+        />
+      </Panel>
 
-      <Typography.Title level={5}>最近运行</Typography.Title>
-      <Table<HistoryRow>
+      <Panel title="最近运行">
+        <Table<HistoryRow>
         rowKey="id"
         columns={[
           {
@@ -136,6 +158,7 @@ export function DashboardPage() {
         pagination={false}
         size="small"
       />
+      </Panel>
     </div>
   );
 }

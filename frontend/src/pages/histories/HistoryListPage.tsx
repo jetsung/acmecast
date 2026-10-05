@@ -6,6 +6,8 @@ import { useNavigate } from "react-router";
 import type { components } from "@/api/schema";
 import { client } from "@/api/client";
 import { formatTime, unwrapData } from "@/api/helpers";
+import { PageHeader } from "@/components/PageHeader";
+import { Panel } from "@/components/Panel";
 
 type HistoryRow = components["schemas"]["HistoryResponse"];
 
@@ -83,7 +85,25 @@ export function HistoryListPage() {
 
   return (
     <div>
-      <Typography.Title level={4}>运行历史</Typography.Title>
+      <PageHeader
+        title="运行历史"
+        description="流水线每次执行的审计与结果"
+        extra={
+          <Select
+            allowClear
+            placeholder="按流水线过滤"
+            style={{ width: 200 }}
+            onChange={(value) => {
+              setPipelineId(value);
+              setPage(1);
+            }}
+            options={(data?.items ?? [])
+              .map((item) => item.pipeline_id)
+              .filter((value, index, all) => all.indexOf(value) === index)
+              .map((value) => ({ value, label: `流水线 #${value}` }))}
+          />
+        }
+      />
       {error && (
         // 查询失败时把原因摆出来：吞掉错误会让「没数据」和「没加载成功」无法区分。
         <Alert
@@ -95,36 +115,25 @@ export function HistoryListPage() {
           style={{ marginBottom: 16 }}
         />
       )}
-      <Select
-        allowClear
-        placeholder="按流水线过滤"
-        style={{ width: 240, marginBottom: 16 }}
-        onChange={(value) => {
-          setPipelineId(value);
-          setPage(1);
-        }}
-        options={(data?.items ?? [])
-          .map((item) => item.pipeline_id)
-          .filter((value, index, all) => all.indexOf(value) === index)
-          .map((value) => ({ value, label: `流水线 #${value}` }))}
-      />
-      <Table<HistoryRow>
-        rowKey="id"
-        loading={isFetching}
-        columns={columns}
-        dataSource={data?.items ?? []}
-        onRow={(row) => ({
-          onClick: () => navigate(`/histories/${row.id}`),
-          style: { cursor: "pointer" },
-        })}
-        pagination={{
-          current: page,
-          pageSize: 20,
-          total: data?.total ?? 0,
-          onChange: setPage,
-          showTotal: (total) => `共 ${total} 条`,
-        }}
-      />
+      <Panel>
+        <Table<HistoryRow>
+          rowKey="id"
+          loading={isFetching}
+          columns={columns}
+          dataSource={data?.items ?? []}
+          onRow={(row) => ({
+            onClick: () => navigate(`/histories/${row.id}`),
+            style: { cursor: "pointer" },
+          })}
+          pagination={{
+            current: page,
+            pageSize: 20,
+            total: data?.total ?? 0,
+            onChange: setPage,
+            showTotal: (total) => `共 ${total} 条`,
+          }}
+        />
+      </Panel>
     </div>
   );
 }

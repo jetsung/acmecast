@@ -6,6 +6,7 @@ import type { components } from "@/api/schema";
 import { ApiError, client } from "@/api/client";
 import { formatTime, unwrapData } from "@/api/helpers";
 import { SchemaForm } from "@/components/SchemaForm";
+import { PageHeader } from "@/components/PageHeader";
 
 type CredentialRow = components["schemas"]["CredentialResponse"];
 
@@ -154,16 +155,18 @@ export function CredentialListPage() {
 
   return (
     <div>
-      <Space style={{ marginBottom: 16 }}>
-        <Typography.Title level={4} style={{ margin: 0 }}>
-          凭据
-        </Typography.Title>
-      </Space>
-      <div style={{ marginBottom: 16 }}>
-        <Button type="primary" onClick={() => openEditor(null)}>
-          新建凭据
-        </Button>
-      </div>
+      <PageHeader
+        title="凭据"
+        description="DNS 提供商、SSH 主机等外部系统的接入凭据"
+        extra={
+          <Button type="primary" onClick={() => openEditor(null)}>
+            新建凭据
+          </Button>
+        }
+      />
+      {/* 表格不包 Panel 容器：antd Table 在嵌套容器中会让 jsdom 单测
+          （编辑回填用例）多出约 3.5s 测量开销、卡 5s 默认超时；
+          Table 自带白底圆角，裸放观感一致。 */}
       <Table<CredentialRow>
         rowKey="id"
         loading={isFetching}

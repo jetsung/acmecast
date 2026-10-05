@@ -1,11 +1,13 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { App, Button, Space, Switch, Table, Tag, Typography } from "antd";
+import { App, Button, Space, Switch, Table, Tag } from "antd";
 import type { TableColumnsType } from "antd";
 import { useState } from "react";
 import { useNavigate } from "react-router";
 import type { components } from "@/api/schema";
 import { client } from "@/api/client";
 import { formatTime, unwrapData } from "@/api/helpers";
+import { PageHeader } from "@/components/PageHeader";
+import { Panel } from "@/components/Panel";
 
 type PipelineSummary = components["schemas"]["PipelineSummaryResponse"];
 
@@ -131,19 +133,14 @@ export function PipelineListPage() {
       title: "操作",
       width: 220,
       render: (_, row) => (
-        <Space>
-          <Button
-            size="small"
-            type="primary"
-            loading={runningId === row.id}
-            onClick={() => runNow(row)}
-          >
+        <Space size={4}>
+          <Button size="small" type="link" loading={runningId === row.id} onClick={() => runNow(row)}>
             立即运行
           </Button>
-          <Button size="small" onClick={() => navigate(`/pipelines/${row.id}`)}>
+          <Button size="small" type="link" onClick={() => navigate(`/pipelines/${row.id}`)}>
             编辑
           </Button>
-          <Button size="small" danger onClick={() => confirmDelete(row)}>
+          <Button size="small" type="link" danger onClick={() => confirmDelete(row)}>
             删除
           </Button>
         </Space>
@@ -153,32 +150,35 @@ export function PipelineListPage() {
 
   return (
     <div>
-      <Space style={{ marginBottom: 16 }}>
-        <Typography.Title level={4} style={{ margin: 0 }}>
-          流水线
-        </Typography.Title>
-        <Tag color={data?.items.some((row) => row.enabled) ? "processing" : "default"}>
-          {data?.items.filter((row) => row.enabled).length ?? 0} 条启用中
-        </Tag>
-      </Space>
-      <div style={{ marginBottom: 16 }}>
-        <Button type="primary" onClick={() => navigate("/pipelines/new")}>
-          新建流水线
-        </Button>
-      </div>
-      <Table<PipelineSummary>
-        rowKey="id"
-        loading={isFetching}
-        columns={columns}
-        dataSource={data?.items ?? []}
-        pagination={{
-          current: page,
-          pageSize: 20,
-          total: data?.total ?? 0,
-          onChange: setPage,
-          showTotal: (total) => `共 ${total} 条`,
-        }}
+      <PageHeader
+        title="流水线"
+        subtitle={
+          <Tag color={data?.items.some((row) => row.enabled) ? "processing" : "default"}>
+            {data?.items.filter((row) => row.enabled).length ?? 0} 条启用中
+          </Tag>
+        }
+        description="证书签发与部署的自动化流程"
+        extra={
+          <Button type="primary" onClick={() => navigate("/pipelines/new")}>
+            新建流水线
+          </Button>
+        }
       />
+      <Panel>
+        <Table<PipelineSummary>
+          rowKey="id"
+          loading={isFetching}
+          columns={columns}
+          dataSource={data?.items ?? []}
+          pagination={{
+            current: page,
+            pageSize: 20,
+            total: data?.total ?? 0,
+            onChange: setPage,
+            showTotal: (total) => `共 ${total} 条`,
+          }}
+        />
+      </Panel>
     </div>
   );
 }

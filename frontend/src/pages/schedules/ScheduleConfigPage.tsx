@@ -5,6 +5,7 @@ import { useState } from "react";
 import type { components } from "@/api/schema";
 import { client } from "@/api/client";
 import { formatTime, unwrapData } from "@/api/helpers";
+import { PageHeader } from "@/components/PageHeader";
 
 type ScheduleRow = components["schemas"]["ScheduleResponse"];
 type TriggerLogRow = components["schemas"]["TriggerLogResponse"];
@@ -169,7 +170,10 @@ export function ScheduleConfigPage() {
 
   return (
     <div>
-      <Typography.Title level={4}>调度配置</Typography.Title>
+      <PageHeader
+        title="调度配置"
+        description="按 cron 或证书到期扫描自动触发流水线"
+      />
       <Card
         title={editingPipelineId === null ? "新建调度" : `编辑流水线 #${editingPipelineId} 的调度`}
         style={{ marginBottom: 24 }}

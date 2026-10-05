@@ -5,6 +5,7 @@ import { useParams } from "react-router";
 import { client } from "@/api/client";
 import { formatTime, unwrapData } from "@/api/helpers";
 import { useEffect } from "react";
+import { PageHeader } from "@/components/PageHeader";
 
 type HistoryDetail = components["schemas"]["HistoryResponse"];
 
@@ -89,22 +90,26 @@ export function HistoryDetailPage() {
 
   return (
     <div>
-      <Typography.Title level={4}>
-        运行 #{history.id}
-        <Tag
-          style={{ marginLeft: 12 }}
-          color={history.status === "failed" ? "error" : history.status === "running" ? "processing" : "success"}
-        >
-          {history.status}
-        </Tag>
-      </Typography.Title>
+      <PageHeader
+        title={`运行 #${history.id}`}
+        subtitle={
+          <Tag
+            color={history.status === "failed" ? "error" : history.status === "running" ? "processing" : "success"}
+          >
+            {history.status}
+          </Tag>
+        }
+        description={`流水线 #${history.pipeline_id} · 触发来源 ${history.trigger_source}`}
+      />
 
-      <Descriptions bordered size="small" column={2} style={{ marginBottom: 24 }}>
-        <Descriptions.Item label="流水线">#{history.pipeline_id}</Descriptions.Item>
-        <Descriptions.Item label="触发来源">{history.trigger_source}</Descriptions.Item>
-        <Descriptions.Item label="开始">{formatTime(history.started_at)}</Descriptions.Item>
-        <Descriptions.Item label="结束">{formatTime(history.finished_at)}</Descriptions.Item>
-      </Descriptions>
+      <Card style={{ marginBottom: 24 }}>
+        <Descriptions bordered size="small" column={2}>
+          <Descriptions.Item label="流水线">#{history.pipeline_id}</Descriptions.Item>
+          <Descriptions.Item label="触发来源">{history.trigger_source}</Descriptions.Item>
+          <Descriptions.Item label="开始">{formatTime(history.started_at)}</Descriptions.Item>
+          <Descriptions.Item label="结束">{formatTime(history.finished_at)}</Descriptions.Item>
+        </Descriptions>
+      </Card>
 
       {history.error_message && (
         <Alert
