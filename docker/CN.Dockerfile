@@ -1,7 +1,12 @@
+# 中国网络环境专用构建文件：apt 换阿里云镜像，cargo/rustup 走 rsproxy，
+# npm 走 npmmirror。配置只写入 builder 层，最终运行镜像不含任何镜像源或
+# 代理配置。国际/上线构建请用 docker/Dockerfile（官方源），二者除镜像源
+# 配置外完全一致：
+#
+#   docker build -f docker/CN.Dockerfile -t acmecast:dev .   # 中国网络环境
+#   docker build -f docker/Dockerfile    -t acmecast:dev .   # 国际/上线构建
+#
 # 构建上下文是本 workspace 根（含 crates/ 与 Cargo.toml）。
-# 本文件全部使用官方源（apt/cargo/rustup/npm 均为国际默认），供 CI 与上线
-# 构建；中国网络环境请用 docker/CN.Dockerfile（全量国内镜像源），二者除
-# 镜像源配置外完全一致。
 #
 # 运行阶段用 distroless/static：项目全程 rustls（无 OpenSSL）、依赖均为纯 Rust，
 # 因此 musl 静态链接后不依赖 glibc；static 变体自带 ca-certificates 与 tzdata，
@@ -9,6 +14,16 @@
 
 # ---- builder：完整工具链 + musl 静态目标 ----
 FROM rust:1-slim AS builder
+
+# apt 换阿里云镜像；cargo 走 rsproxy（sparse index），拉依赖不走外网。
+RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g' \
+        /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list 2>/dev/null || true \
+    && printf '[source.crates-io]\nreplace-with = "rsproxy"\n\n[source.rsproxy]\nregistry = "sparse+https://rsproxy.cn/index/"\n\n[net]\ngit-fetch-with-cli = true\n' \
+        > /usr/local/cargo/config.toml
+
+# rustup 下载 musl target 组件走 rsproxy 镜像。
+ENV RUSTUP_DIST_SERVER=https://rsproxy.cn \
+    RUSTUP_UPDATE_ROOT=https://rsproxy.cn/rustup
 
 # musl-gcc 供链接器使用；ring 的构建脚本还需要 make/perl（rust 镜像已含）。
 RUN apt-get update \
@@ -53,7 +68,9 @@ RUN corepack enable
 
 WORKDIR /app/frontend
 COPY frontend/package.json frontend/pnpm-lock.yaml frontend/pnpm-workspace.yaml ./
-RUN pnpm install --frozen-lockfile
+# npmmirror 加速依赖安装（仅进 builder 层）。
+RUN npm config set registry https://registry.npmmirror.com \
+    && pnpm install --frozen-lockfile
 
 COPY frontend/ .
 RUN pnpm build

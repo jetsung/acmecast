@@ -23,9 +23,9 @@ services:
     container_name: acmecast
     build:
       context: ..
-      args:
-        # 上线构建改为 false，关闭镜像内的国内源配置
-        USE_CN_MIRROR: "${USE_CN_MIRROR:-true}"
+      # 本地（中国网络）构建默认走 CN.Dockerfile：apt/cargo/rustup/npm 全部
+      # 国内镜像源；国际/上线构建把这里改为 docker/Dockerfile（官方源）。
+      dockerfile: docker/CN.Dockerfile
     ports:
       - "8080:8080"
     volumes:

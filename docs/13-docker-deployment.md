@@ -35,9 +35,9 @@ docker compose -f docker/compose.yaml logs -f
   logs/build/down）都报错退出。
 - 变量插值取自 `docker/.env`（Compose 按项目目录找，不读仓库根 `.env`）。
 - 数据落在仓库根 `data/`（`../data:/data`）。
-- `USE_CN_MIRROR` 构建参数默认 `true`（apt 换阿里云、cargo 走 rsproxy、
-  npm 走 npmmirror）；上线构建传 `--build-arg USE_CN_MIRROR=false`，产物不含
-  任何镜像源配置。
+- compose 本地构建默认使用 `docker/CN.Dockerfile`（apt 换阿里云、cargo 走
+  rsproxy、npm 走 npmmirror）；上线/国际构建把 build 段的 `dockerfile` 改为
+  `docker/Dockerfile`（官方源），产物不含任何镜像源配置。
 
 ## 切换数据库
 

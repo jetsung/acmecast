@@ -58,12 +58,12 @@ docker compose -f docker/compose.yaml logs -f
 
 ```bash
 cargo build --release -p acmecast-server
-# 静态链接的 Docker 镜像（见 Dockerfile）
-docker build -t acmecast:dev .
+# 静态链接的 Docker 镜像：中国网络环境用 CN.Dockerfile（国内镜像源），
+# 国际/上线构建用 Dockerfile（官方源），二者除镜像源配置外一致
+docker build -f docker/CN.Dockerfile -t acmecast:dev .
 ```
 
-中国网络环境下构建镜像默认走阿里云 apt 源与 rsproxy 镜像；上线构建请传
-`--build-arg USE_CN_MIRROR=false`，产物不含任何镜像源配置。镜像分层与
+镜像源配置只进 builder 层，运行镜像不含任何镜像源或代理配置。镜像分层与
 `.dockerignore` 细节见 [docs/14-docker-image.md](docs/14-docker-image.md)。
 
 ## 配置
@@ -181,7 +181,8 @@ docker compose -f docker/compose.yaml up -d
 
 #### 本地构建：使用 build 段
 
-如需从本地 `docker/Dockerfile` 构建镜像运行：
+如需本地构建镜像运行（compose 默认使用 `docker/CN.Dockerfile`；国际/上线
+构建把 build 段的 `dockerfile` 改为 `docker/Dockerfile`）：
 
 ```bash
 docker compose -f docker/compose.yaml up -d --build

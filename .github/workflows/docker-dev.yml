@@ -10,6 +10,7 @@ on:
       - "Cargo.toml"
       - "Cargo.lock"
       - "docker/Dockerfile"
+      - "docker/CN.Dockerfile"
       - ".github/workflows/docker-dev.yml"
 
 env:
