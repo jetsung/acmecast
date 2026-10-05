@@ -6,6 +6,8 @@ members = ["crates/*"]
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
+authors = ["Jetsung Chan <i@jetsung.com>"]
+repository = "https://github.com/jetsung/acmecast"
 # 全部为内部 crate，不发布到 crates.io。
 # 这也使 cargo-deny 认可 `foo.workspace = true` 形式的依赖（版本由根统一钉住）。
 # 将来若要把某个 crate（例如 acmecast-acme）单独发布，需为其显式指定版本依赖
@@ -117,15 +119,3 @@ opt-level = "z"
 lto = true
 codegen-units = 1
 strip = true
-
-[package.metadata.deb]
-maintainer = "Jetsung Chan <i@jetsung.com>"
-assets = [
-    ["target/release/acmecast", "usr/bin/acmecast", "755"],
-]
-
-[package.metadata.generate-rpm]
-maintainer = "Jetsung Chan <i@jetsung.com>"
-assets = [
-    { source = "target/release/acmecast", dest = "/usr/bin/acmecast", mode = "755" },
-]

@@ -3,7 +3,10 @@ name = "acmecast-acme"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
 publish.workspace = true
+description = "ACME 客户端（RFC 8555）：账号、订单与挑战流程，instant-acme 的防腐层，附进程内 mock"
 
 [dependencies]
 acmecast-core.workspace = true

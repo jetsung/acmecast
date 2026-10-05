@@ -3,6 +3,8 @@ name = "acmecast-cert"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
 publish.workspace = true
 description = "证书处理：PEM / DER 编解码、X.509 语义解析、格式转换"
 

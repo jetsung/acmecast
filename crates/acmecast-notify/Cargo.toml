@@ -3,6 +3,8 @@ name = "acmecast-notify"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
 publish.workspace = true
 description = "webhook 通知：渠道适配器（飞书/钉钉/通用）、事件订阅与异步投递"
 

@@ -3,7 +3,34 @@ name = "acmecast-server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
 publish.workspace = true
+description = "acmecast 服务端：带鉴权的 REST API、OpenAPI 文档与可执行入口"
+
+# cargo-deb / cargo-generate-rpm 只能从 `[package]` 所在的清单读取元数据，
+# 因此打包配置放在这个二进制包里，而不是 workspace 根。
+[package.metadata.deb]
+maintainer = "Jetsung Chan <i@jetsung.com>"
+section = "net"
+extended-description = """\
+证书自动签发与部署系统：通过 ACME 协议向 Let's Encrypt 或自建 CA 申请证书，\
+自动完成 DNS-01 挑战、证书入库与部署到本地/远程目标，并通过 cron 与到期扫描\
+自动续期；提供带鉴权的 REST API、OpenAPI 文档与 Web 控制台。\
+"""
+assets = [
+    ["target/release/acmecast-server", "usr/bin/acmecast-server", "755"],
+]
+
+[package.metadata.generate-rpm]
+maintainer = "Jetsung Chan <i@jetsung.com>"
+summary = "证书自动签发与部署系统"
+description = "通过 ACME 协议向 Let's Encrypt 或自建 CA 申请与续期证书，按流水线完成 DNS-01 挑战、证书入库与部署，提供带鉴权的 REST API 与 Web 控制台。"
+license = "Apache-2.0"
+url = "https://github.com/jetsung/acmecast"
+assets = [
+    { source = "target/release/acmecast-server", dest = "/usr/bin/acmecast-server", mode = "755" },
+]
 
 [dependencies]
 acmecast-access.workspace = true
