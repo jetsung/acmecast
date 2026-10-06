@@ -91,7 +91,9 @@ nix = { version = "0.29", features = ["user", "fs"] }
 # SSH 远程部署：纯 Rust，避免依赖系统的 libssh2。
 russh = "0.63"
 # ACME 申请步骤的密钥对与 CSR 生成（证书解析 crate 同用此版本）。
-rcgen = "0.14.10"
+# aws_lc_rs：RSA 密钥生成只有该后端支持（ring 无 RSA keygen）；aws-lc-rs 已在
+# 依赖树（russh 默认后端），保留默认 ring 以免全量切换密码学后端。
+rcgen = { version = "0.14.10", features = ["aws_lc_rs"] }
 jsonwebtoken = "9"
 # default-features 关闭（默认的 native-tls 依赖系统 OpenSSL，musl 静态构建
 # 无法提供）；TLS 统一走 rustls，与项目其余部分一致。
