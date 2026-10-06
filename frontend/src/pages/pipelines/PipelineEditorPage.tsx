@@ -20,6 +20,8 @@ const SSH_HOST_TYPE_ID = "ssh";
 const DNS_PROVIDERS = [
   { value: "cloudflare", label: "Cloudflare" },
   { value: "aliyun", label: "阿里云" },
+  { value: "tencent", label: "腾讯云" },
+  { value: "tencent-eo", label: "腾讯云 EdgeOne" },
 ];
 const DNS_PROVIDER_TYPE_IDS = new Set(DNS_PROVIDERS.map((provider) => provider.value));
 

@@ -21,6 +21,6 @@ pub use propagation::{
     wait_until_visible,
 };
 pub use provider::{DnsProvider, TxtRecord, parse_credentials};
-pub use providers::{AliyunProvider, CloudflareProvider};
+pub use providers::{AliyunProvider, CloudflareProvider, TencentEoProvider, TencentProvider};
 pub use registry::DnsProviderRegistry;
 pub use resolvers::{ResolverEntry, load_extended_resolvers};

@@ -16,7 +16,6 @@ use acmecast_dns::{
     challenge_record_name, ensure_kind_covers, wait_until_visible,
 };
 use acmecast_pipeline::{PipelineStep, Result, StepContext, StepOutput};
-use chrono::Duration;
 use schemars::JsonSchema;
 use serde::Deserialize;
 
@@ -67,13 +66,22 @@ fn default_true() -> bool {
 #[derive(Debug)]
 pub struct CertApplyStep {
     dns: Arc<DnsProviderRegistry>,
+    /// DNS-01 传播等待策略；来自服务配置的 `[propagation]` 段，
+    /// 装配期注入——它是系统级调优，不属于步骤输入。
+    propagation: PropagationPolicy,
 }
 
 impl CertApplyStep {
-    /// 用 DNS 提供商注册表装配。
+    /// 用 DNS 提供商注册表装配，传播等待取默认策略。
     #[must_use]
     pub fn new(dns: Arc<DnsProviderRegistry>) -> Self {
-        Self { dns }
+        Self::with_policy(dns, PropagationPolicy::default())
+    }
+
+    /// 用 DNS 提供商注册表与显式传播等待策略装配。
+    #[must_use]
+    pub fn with_policy(dns: Arc<DnsProviderRegistry>, propagation: PropagationPolicy) -> Self {
+        Self { dns, propagation }
     }
 }
 
@@ -297,10 +305,7 @@ impl CertApplyStep {
                     &credentials,
                     &record,
                     &refs,
-                    &PropagationPolicy {
-                        interval: Duration::seconds(5).to_std().expect("间隔应为正"),
-                        timeout: Duration::minutes(2).to_std().expect("超时应为正"),
-                    },
+                    &self.propagation,
                 )
                 .await?;
                 ctx.log_info(format!("TXT 记录已在权威/公共解析器可见：{}", record.name));

@@ -25,25 +25,53 @@ const CLOUDFLARE_TYPE = {
   },
 };
 
-/** 从运行中的 8080 抓下来的 acme.account schema（服务端已带 enum 与 x-required-when）。 */
+/** 从运行中的 8080 抓下来的 acme.account schema（服务端已带 enum、x-required-when 与布局扩展）。 */
 const ACME_ACCOUNT_SCHEMA = {
   type: "object",
+  // 真实产物的 properties 是字母序（serde_json Map 重排）：eab_hmac_key 会排到
+  // eab_kid 前面。渲染顺序由后端注入的 x-field-order 钉住——EAB 密钥对相邻、
+  // kid 在前，两个半宽标量流式排成同一行。
+  "x-field-order": ["ca", "directory_url", "eab_kid", "eab_hmac_key", "credentials"],
   properties: {
     ca: {
       description: "CA 类型。",
       enum: ["letsencrypt", "letsencrypt-staging", "zerossl", "google", "sslcom", "custom"],
       type: "string",
     },
+    credentials: { description: "账号凭据。", type: ["string", "null"], "x-multiline": true },
     directory_url: {
       description: "自定义 Directory URL。",
       type: ["string", "null"],
       "x-required-when": { Equals: { field: "ca", values: ["custom"] } },
+      "x-full-width": true,
     },
-    eab_kid: { description: "EAB 密钥标识。", type: ["string", "null"] },
     eab_hmac_key: { description: "EAB HMAC 密钥。", type: ["string", "null"] },
-    credentials: { description: "账号凭据。", type: ["string", "null"] },
+    eab_kid: { description: "EAB 密钥标识。", type: ["string", "null"] },
   },
   required: ["ca"],
+};
+
+const TENCENT_TYPE = {
+  type_id: "tencent",
+  display_name: "腾讯云（DNS）",
+  schema: {
+    type: "object",
+    // 真实产物的 properties 是字母序（serde_json Map 重排），渲染顺序
+    // 由后端注入的 x-field-order 钉住：站点打头，两半密钥成对随后。
+    "x-field-order": ["account_site", "secret_id", "secret_key"],
+    properties: {
+      account_site: {
+        description: "账号站点。",
+        type: "string",
+        enum: ["cn", "intl"],
+        // 半宽框独占一行：渲染后补空列占位换行（SSH 主机档案式）。
+        "x-end-row": true,
+      },
+      secret_id: { description: "API 密钥 ID（SecretId）。", type: "string" },
+      secret_key: { description: "API 密钥 Key（SecretKey）。", type: "string" },
+    },
+    required: ["secret_id", "secret_key", "account_site"],
+  },
 };
 
 const ACME_TYPE = {
@@ -104,7 +132,7 @@ vi.mock("@/api/client", () => ({
       }
       if (path === "/api/credential-types") {
         return {
-          data: { data: [CLOUDFLARE_TYPE, ACME_TYPE, SSH_HOST_TYPE] },
+          data: { data: [CLOUDFLARE_TYPE, ACME_TYPE, TENCENT_TYPE, SSH_HOST_TYPE] },
           response: new Response(),
         };
       }
@@ -269,5 +297,83 @@ describe("凭据编辑弹窗", () => {
     expect(adjacent("host", "port")).toBe(true);
     expect(adjacent("user", "password")).toBe(true);
     expect(labels[labels.length - 1]).toBe("private_key");
+  });
+
+  it("acme.account：credentials 多行文本域，directory_url 整行，EAB 密钥对同行半宽", async () => {
+    await openEditorForRow(1);
+
+    // credentials（含私钥的 JSON）渲染成多行文本域，而不是单行输入框。
+    await waitFor(() => {
+      expect(document.querySelector("#fields_credentials")?.tagName).toBe("TEXTAREA");
+    });
+
+    // 宽度由 schema 扩展驱动：标注 x-full-width 的占整行（24），
+    // 未标注的标量半宽（12）成对同行。col 链要跳过 Form.Item 内层的
+    // 控制列，从 .ant-form-item 向外找 SchemaForm 渲染的 Col。
+    const colOf = (id: string) =>
+      document
+        .querySelector(id)
+        ?.closest(".ant-form-item")
+        ?.closest(".ant-col")?.className ?? "";
+    expect(colOf("#fields_directory_url")).toContain("ant-col-24");
+    expect(colOf("#fields_credentials")).toContain("ant-col-24");
+    expect(colOf("#fields_eab_kid")).toContain("ant-col-12");
+    expect(colOf("#fields_eab_hmac_key")).toContain("ant-col-12");
+
+    // 渲染顺序由 x-field-order 钉住：真实产物 properties 是字母序（hmac 会
+    // 排到 kid 前面），表单里 EAB 密钥对必须相邻且 kid 在前。
+    const labels = Array.from(
+      document.querySelectorAll<HTMLElement>(".ant-modal .ant-form-item"),
+    )
+      .map((item) => item.querySelector("label")?.textContent)
+      .filter((text): text is string => !!text && !["名称", "类型"].includes(text));
+    expect(labels).toEqual(["ca", "directory_url", "eab_kid", "eab_hmac_key", "credentials"]);
+  });
+
+  it("腾讯云：account_site 一列宽打头，secret_id 与 secret_key 同为半宽（两列一行）", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: /新\s*建/ }));
+
+    const typeSelect = await waitFor(() => {
+      const el = document.querySelector("#type_id");
+      expect(el).toBeTruthy();
+      return el as HTMLElement;
+    });
+    fireEvent.mouseDown(typeSelect);
+    const typeDropdown = await waitFor(() => {
+      const el = document.querySelector(".ant-select-dropdown:not(.ant-select-dropdown-hidden)");
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    fireEvent.click(
+      typeDropdown.querySelector('.ant-select-item-option[title="腾讯云（DNS）"]')!,
+    );
+
+    await waitFor(() => {
+      expect(document.querySelector("#fields_secret_id")).toBeTruthy();
+    });
+    // 与流水线部署配置的布局语义一致：渲染顺序由 x-field-order 钉住——
+    // account_site 打头，x-end-row 在行尾补空占位列使其独占一行（框仍
+    // 一列宽，SSH 主机档案式）；两半密钥成对两列（cert_path/key_path 式）
+    // 排在第二行。
+    const items = Array.from(document.querySelectorAll<HTMLElement>(".ant-modal .ant-form-item"));
+    const labels = items
+      .map((item) => item.querySelector("label")?.textContent)
+      .filter((text): text is string => !!text && !["名称", "类型"].includes(text));
+    expect(labels).toEqual(["account_site", "secret_id", "secret_key"]);
+
+    const colOf = (id: string) =>
+      document
+        .querySelector(id)
+        ?.closest(".ant-form-item")
+        ?.closest(".ant-col")?.className ?? "";
+    expect(colOf("#fields_secret_id")).toContain("ant-col-12");
+    expect(colOf("#fields_secret_key")).toContain("ant-col-12");
+    expect(colOf("#fields_account_site")).toContain("ant-col-12");
+    expect(colOf("#fields_account_site")).not.toContain("ant-col-24");
+    // 行尾空占位列：把密钥对推到下一行的正是它。
+    const spacers = document.querySelectorAll<HTMLElement>(".ant-modal .ant-col[aria-hidden]");
+    expect(spacers).toHaveLength(1);
+    expect(spacers[0].className).toContain("ant-col-12");
   });
 });

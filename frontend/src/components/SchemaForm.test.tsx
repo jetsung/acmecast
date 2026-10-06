@@ -37,6 +37,72 @@ async function submitAndGet(onFinish: ReturnType<typeof vi.fn>): Promise<Record<
 }
 
 describe("SchemaForm", () => {
+  it("x-full-width：标注的标量字段占整行，未标注的保持半宽", () => {
+    render(
+      <Harness
+        onFinish={vi.fn()}
+        schema={objectSchema({
+          directory_url: {
+            type: ["string", "null"],
+            description: "自定义 Directory URL。",
+            "x-full-width": true,
+          },
+          eab_kid: { type: ["string", "null"], description: "EAB 密钥标识。" },
+        })}
+      />,
+    );
+
+    // 宽度按 antd 的 Col span 落到 class 上：整行 24，半宽 12。
+    const cols = Array.from(document.querySelectorAll<HTMLElement>(".ant-form-item")).map(
+      (item) => item.closest(".ant-col")?.className ?? "",
+    );
+    expect(cols).toHaveLength(2);
+    expect(cols[0]).toContain("ant-col-24");
+    expect(cols[1]).toContain("ant-col-12");
+  });
+
+  it("x-end-row：半宽字段渲染后补空占位列，后续字段从新行开始", () => {
+    render(
+      <Harness
+        onFinish={vi.fn()}
+        schema={objectSchema({
+          account_site: { type: "string", enum: ["cn", "intl"], "x-end-row": true },
+          secret_id: { type: "string" },
+          secret_key: { type: "string" },
+        })}
+      />,
+    );
+
+    // 三个字段都是半宽（12）；account_site 行尾多一个 aria-hidden 空列
+    // 占位——独占一行但右侧留空，密钥对从第二行开始。
+    const cols = Array.from(document.querySelectorAll<HTMLElement>(".ant-form-item")).map(
+      (item) => item.closest(".ant-col")?.className ?? "",
+    );
+    expect(cols).toHaveLength(3);
+    for (const className of cols) {
+      expect(className).toContain("ant-col-12");
+    }
+    const spacers = document.querySelectorAll<HTMLElement>(".ant-col[aria-hidden]");
+    expect(spacers).toHaveLength(1);
+    expect(spacers[0].className).toContain("ant-col-12");
+  });
+
+  it("x-multiline：标注的字段占整行（既有机制不回归）", () => {
+    render(
+      <Harness
+        onFinish={vi.fn()}
+        schema={objectSchema({
+          credentials: { type: ["string", "null"], "x-multiline": true },
+        })}
+      />,
+    );
+
+    const col = document
+      .querySelector<HTMLElement>(".ant-form-item")
+      ?.closest(".ant-col")?.className;
+    expect(col).toContain("ant-col-24");
+  });
+
   it("string：把输入提交到 namePrefix 指定的路径下", async () => {
     const onFinish = vi.fn();
     render(

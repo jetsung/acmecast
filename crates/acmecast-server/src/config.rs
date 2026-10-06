@@ -45,6 +45,8 @@ pub struct ServerConfig {
     /// 来自 `[[notifications]]` 段并已通过合并校验；`enabled = false` 的
     /// 渠道保留在列表里但不投递（装配与测试端点各自过滤）。
     pub notifications: Vec<ChannelConfig>,
+    /// DNS-01 传播等待策略；来自 `[propagation]` 段与环境变量的合并。
+    pub propagation: PropagationConfig,
 }
 
 impl Default for ServerConfig {
@@ -58,6 +60,10 @@ impl Default for ServerConfig {
             body_limit_bytes: DEFAULT_BODY_LIMIT_BYTES,
             accept_invalid_acme_certs: false,
             notifications: Vec::new(),
+            propagation: PropagationConfig {
+                timeout_secs: 300,
+                interval_secs: 5,
+            },
         }
     }
 }
@@ -89,12 +95,56 @@ pub struct AppConfig {
     /// 服务端字段。
     #[serde(default)]
     pub server: ServerSection,
+    /// DNS-01 传播等待策略；缺省字段经 serde 默认值填充。
+    #[serde(default)]
+    pub propagation: PropagationSection,
     /// 解析器扩展条目；与内置集合按 endpoint 去重。
     #[serde(default)]
     pub resolvers: Vec<ResolverEntry>,
     /// 通知渠道条目；字段合法性在合并阶段校验。
     #[serde(default)]
     pub notifications: Vec<NotificationEntry>,
+}
+
+/// `config.toml` 中 `[propagation]` 段的字段：DNS-01 传播等待策略。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PropagationSection {
+    /// 传播等待总超时（秒）。商有 DNS（EdgeOne 等）从控制面到权威 NS 的
+    /// 同步延迟可达数分钟，慢同步环境建议放宽到 600；配置过小（如 10）
+    /// 会让挑战几乎必然超时——等待期记录始终存在且退出时必清理，
+    /// 偏大没有残留风险，偏小只有失败风险。
+    #[serde(default = "default_propagation_timeout_secs")]
+    pub timeout_secs: u64,
+    /// 每轮查询之间的间隔（秒）。
+    #[serde(default = "default_propagation_interval_secs")]
+    pub interval_secs: u64,
+}
+
+impl Default for PropagationSection {
+    fn default() -> Self {
+        Self {
+            timeout_secs: default_propagation_timeout_secs(),
+            interval_secs: default_propagation_interval_secs(),
+        }
+    }
+}
+
+fn default_propagation_timeout_secs() -> u64 {
+    300
+}
+
+fn default_propagation_interval_secs() -> u64 {
+    5
+}
+
+/// 运行时的 DNS-01 传播等待策略（由 `[propagation]` 段与环境变量合并得出）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PropagationConfig {
+    /// 传播等待总超时（秒）。
+    pub timeout_secs: u64,
+    /// 每轮查询之间的间隔（秒）。
+    pub interval_secs: u64,
 }
 
 /// `config.toml` 中一条 `[[notifications]]` 通知渠道声明。
@@ -279,6 +329,10 @@ fn apply_file(config: &mut ServerConfig, file: &AppConfig) {
     config.body_limit_bytes = s.body_limit_bytes;
     config.accept_invalid_acme_certs = s.accept_invalid_acme_certs;
     config.notifications = resolve_notifications(&file.notifications);
+    config.propagation = PropagationConfig {
+        timeout_secs: file.propagation.timeout_secs,
+        interval_secs: file.propagation.interval_secs,
+    };
 }
 
 /// 校验并转换 `[[notifications]]` 条目；非法条目跳过并告警。
@@ -433,6 +487,18 @@ fn apply_env(config: &mut ServerConfig) {
     {
         config.body_limit_bytes = limit;
     }
+    if let Ok(value) = std::env::var("ACMECAST_PROPAGATION_TIMEOUT_SECS")
+        && let Ok(secs) = value.trim().parse::<u64>()
+        && secs > 0
+    {
+        config.propagation.timeout_secs = secs;
+    }
+    if let Ok(value) = std::env::var("ACMECAST_PROPAGATION_INTERVAL_SECS")
+        && let Ok(secs) = value.trim().parse::<u64>()
+        && secs > 0
+    {
+        config.propagation.interval_secs = secs;
+    }
 }
 
 /// 生成带注释的 `config.toml` 模板内容。
@@ -466,6 +532,16 @@ pub fn template_content() -> String {
     ));
     out.push_str("# 跳过 ACME CA 的 TLS 证书校验，仅为自建测试 CA（pebble 等）准备。\n");
     out.push_str("accept_invalid_acme_certs = false\n\n");
+
+    out.push_str("# DNS-01 传播等待策略（可选）。\n");
+    out.push_str("# timeout_secs：总超时。商有 DNS（EdgeOne 等）从控制面到权威 NS 的\n");
+    out.push_str("#   同步延迟可达数分钟，慢同步环境建议放宽到 600；偏大无残留风险\n");
+    out.push_str("#   （等待期记录始终存在、退出必清理），偏小只有失败风险。\n");
+    out.push_str("# interval_secs：每轮查询之间的间隔。\n");
+    out.push_str("# 环境变量 ACMECAST_PROPAGATION_TIMEOUT_SECS / ACMECAST_PROPAGATION_INTERVAL_SECS 可覆盖。\n");
+    out.push_str("[propagation]\n");
+    out.push_str("timeout_secs = 300\n");
+    out.push_str("interval_secs = 5\n\n");
 
     out.push_str("# DNS-01 传播检测解析器扩展（可选）。\n");
     out.push_str("# type: doh / dot / dns；dot/dns 目前仅校验，传输层尚未实现。\n");
@@ -580,6 +656,8 @@ mod tests {
             "ACMECAST_BODY_LIMIT_BYTES",
             "ACMECAST_INSECURE_SKIP_VERIFY",
             "ACMECAST_CONFIG",
+            "ACMECAST_PROPAGATION_TIMEOUT_SECS",
+            "ACMECAST_PROPAGATION_INTERVAL_SECS",
         ] {
             // SAFETY: 唯一调用者为标注 `#[serial]` 的测试用例。
             unsafe { std::env::remove_var(k) };
@@ -635,6 +713,42 @@ mod tests {
 
         unsafe { std::env::remove_var("ACMECAST_CONFIG") };
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[serial]
+    fn propagation_file_overrides_builtin_env_overrides_file() {
+        clear_server_env();
+        let dir = unique_dir("propagation");
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            "[propagation]\ntimeout_secs = 600\ninterval_secs = 10\n",
+        )
+        .unwrap();
+
+        unsafe { std::env::set_var("ACMECAST_CONFIG", &path) };
+        let config = ServerConfig::from_env_and_file().unwrap();
+        // 文件胜过内置
+        assert_eq!(config.propagation.timeout_secs, 600);
+        assert_eq!(config.propagation.interval_secs, 10);
+
+        // env 胜过文件
+        unsafe { std::env::set_var("ACMECAST_PROPAGATION_TIMEOUT_SECS", "900") };
+        let config = ServerConfig::from_env_and_file().unwrap();
+        assert_eq!(config.propagation.timeout_secs, 900);
+        assert_eq!(config.propagation.interval_secs, 10);
+
+        unsafe { std::env::remove_var("ACMECAST_CONFIG") };
+        unsafe { std::env::remove_var("ACMECAST_PROPAGATION_TIMEOUT_SECS") };
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn propagation_defaults_are_documented_values() {
+        let config = ServerConfig::default();
+        assert_eq!(config.propagation.timeout_secs, 300);
+        assert_eq!(config.propagation.interval_secs, 5);
     }
 
     #[test]
@@ -995,6 +1109,14 @@ mod tests {
         assert!(!content.contains("token"));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn template_contains_propagation_section() {
+        let content = template_content();
+        assert!(content.contains("[propagation]"), "{content}");
+        assert!(content.contains("timeout_secs = 300"), "{content}");
+        assert!(content.contains("interval_secs = 5"), "{content}");
     }
 
     #[test]

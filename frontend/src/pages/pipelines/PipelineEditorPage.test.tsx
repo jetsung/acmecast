@@ -540,6 +540,23 @@ describe("PipelineEditorPage", () => {
     });
   });
 
+  it("dns_provider 下拉覆盖全部内置 DNS 提供商", async () => {
+    posted.length = 0;
+    const queryClient = renderPage();
+    await waitForTasks(queryClient);
+    await waitFor(() => expect(queryClient.getQueryState(["credentials"])?.status).toBe("success"));
+    fireEvent.change(screen.getByLabelText("名称"), { target: { value: "p" } });
+
+    await addStep("任务 F");
+
+    // 内置清单与后端 default_dns_registry 对齐：四家提供商都在下拉里。
+    const provider = await screen.findByLabelText("dns_provider");
+    fireEvent.mouseDown(provider);
+    for (const label of ["Cloudflare", "阿里云", "腾讯云", "腾讯云 EdgeOne"]) {
+      expect(await screen.findByTitle(label)).toBeTruthy();
+    }
+  });
+
   /** cert.apply 步骤的 domains 填入两个域名，并等必填联动落地。 */
   async function fillTwoDomains() {
     const domains = await screen.findByLabelText("domains");

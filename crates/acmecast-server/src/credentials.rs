@@ -8,16 +8,47 @@
 //! DNS 提供商沿用 trait 默认的 `NotTestable`——一次有效探测需要具体
 //! zone，这里不猜一个域名去试。
 
+use std::sync::Arc;
+
 use acmecast_access::{ConnectivityOutcome, CredentialType};
 use acmecast_deploy::{SshHostFields, probe_host, ssh_host_fields_schema};
 use acmecast_dns::providers::aliyun::AliyunCredentials;
 use acmecast_dns::providers::cloudflare::CloudflareCredentials;
+use acmecast_dns::providers::tencent::{TencentCredentials, tencent_credentials_schema};
+use acmecast_dns::{
+    AliyunProvider, CloudflareProvider, HttpTransport, ReqwestTransport, TencentEoProvider,
+    TencentProvider,
+};
 use schemars::schema::RootSchema;
 use schemars::schema_for;
 
 /// Cloudflare DNS 凭据类型（字段：`api_token`）。
+///
+/// `Default` 走真实网络；测试用 [`Self::with_transport`] 注入替身，
+/// 让「可用 / 不可用」两条分支都能离线验证。
 #[derive(Debug, Default)]
-pub struct CloudflareCredentialType;
+pub struct CloudflareCredentialType {
+    /// 测试用传输层替身。
+    transport: Option<Arc<dyn HttpTransport>>,
+}
+
+impl CloudflareCredentialType {
+    /// 注入传输层替身，供测试用。
+    #[must_use]
+    pub fn with_transport(transport: Arc<dyn HttpTransport>) -> Self {
+        Self {
+            transport: Some(transport),
+        }
+    }
+
+    fn provider(&self) -> CloudflareProvider {
+        let transport: Arc<dyn HttpTransport> = match &self.transport {
+            Some(transport) => Arc::clone(transport),
+            None => Arc::new(ReqwestTransport::default()),
+        };
+        CloudflareProvider::with_transport(transport)
+    }
+}
 
 #[async_trait::async_trait]
 impl CredentialType for CloudflareCredentialType {
@@ -47,11 +78,42 @@ impl CredentialType for CloudflareCredentialType {
         }
         Ok(())
     }
+
+    async fn test_connectivity(&self, fields: &serde_json::Value) -> ConnectivityOutcome {
+        match self.provider().verify_credentials(fields).await {
+            Ok(()) => ConnectivityOutcome::Ok,
+            Err(error) => ConnectivityOutcome::Unavailable {
+                // 外部报错可能回显请求里的密钥，先脱敏再交给用户。
+                reason: self.redact(fields, &error.to_string()),
+            },
+        }
+    }
 }
 
 /// 阿里云 DNS 凭据类型（字段：`access_key_id` / `access_key_secret`）。
 #[derive(Debug, Default)]
-pub struct AliyunCredentialType;
+pub struct AliyunCredentialType {
+    /// 测试用传输层替身。
+    transport: Option<Arc<dyn HttpTransport>>,
+}
+
+impl AliyunCredentialType {
+    /// 注入传输层替身，供测试用。
+    #[must_use]
+    pub fn with_transport(transport: Arc<dyn HttpTransport>) -> Self {
+        Self {
+            transport: Some(transport),
+        }
+    }
+
+    fn provider(&self) -> AliyunProvider {
+        let transport: Arc<dyn HttpTransport> = match &self.transport {
+            Some(transport) => Arc::clone(transport),
+            None => Arc::new(ReqwestTransport::default()),
+        };
+        AliyunProvider::with_transport(transport)
+    }
+}
 
 #[async_trait::async_trait]
 impl CredentialType for AliyunCredentialType {
@@ -86,6 +148,144 @@ impl CredentialType for AliyunCredentialType {
             ));
         }
         Ok(())
+    }
+
+    async fn test_connectivity(&self, fields: &serde_json::Value) -> ConnectivityOutcome {
+        match self.provider().verify_credentials(fields).await {
+            Ok(()) => ConnectivityOutcome::Ok,
+            Err(error) => ConnectivityOutcome::Unavailable {
+                reason: self.redact(fields, &error.to_string()),
+            },
+        }
+    }
+}
+
+/// 腾讯云体系的凭据字段校验：云解析与 EdgeOne 共用一份字段定义，
+/// 两个凭据类型只是标识不同，校验规则完全一致。
+fn validate_tencent_fields(fields: &serde_json::Value) -> acmecast_core::Result<()> {
+    let parsed: TencentCredentials = serde_json::from_value(fields.clone()).map_err(|error| {
+        acmecast_core::Error::validation("secret_id", format!("字段不合法: {error}"))
+    })?;
+    if parsed.secret_id.trim().is_empty() {
+        return Err(acmecast_core::Error::validation(
+            "secret_id",
+            "SecretId 不能为空白",
+        ));
+    }
+    if parsed.secret_key.trim().is_empty() {
+        return Err(acmecast_core::Error::validation(
+            "secret_key",
+            "SecretKey 不能为空白",
+        ));
+    }
+    Ok(())
+}
+
+/// 腾讯云 DNS 凭据类型（字段：`secret_id` / `secret_key` / `account_site`）。
+#[derive(Debug, Default)]
+pub struct TencentCredentialType {
+    /// 测试用传输层替身。
+    transport: Option<Arc<dyn HttpTransport>>,
+}
+
+impl TencentCredentialType {
+    /// 注入传输层替身，供测试用。
+    #[must_use]
+    pub fn with_transport(transport: Arc<dyn HttpTransport>) -> Self {
+        Self {
+            transport: Some(transport),
+        }
+    }
+
+    fn provider(&self) -> TencentProvider {
+        let transport: Arc<dyn HttpTransport> = match &self.transport {
+            Some(transport) => Arc::clone(transport),
+            None => Arc::new(ReqwestTransport::default()),
+        };
+        TencentProvider::with_transport(transport)
+    }
+}
+
+#[async_trait::async_trait]
+impl CredentialType for TencentCredentialType {
+    fn type_id(&self) -> &'static str {
+        // 与 `TencentProvider::type_id` 对齐：cert.apply 的 dns_provider 也用它。
+        "tencent"
+    }
+
+    fn display_name(&self) -> &'static str {
+        "腾讯云（DNS）"
+    }
+
+    fn fields_schema(&self) -> RootSchema {
+        tencent_credentials_schema()
+    }
+
+    fn validate(&self, fields: &serde_json::Value) -> acmecast_core::Result<()> {
+        validate_tencent_fields(fields)
+    }
+
+    async fn test_connectivity(&self, fields: &serde_json::Value) -> ConnectivityOutcome {
+        match self.provider().verify_credentials(fields).await {
+            Ok(()) => ConnectivityOutcome::Ok,
+            Err(error) => ConnectivityOutcome::Unavailable {
+                reason: self.redact(fields, &error.to_string()),
+            },
+        }
+    }
+}
+
+/// 腾讯云 EdgeOne DNS 凭据类型（字段与腾讯云 DNS 相同，标识独立）。
+#[derive(Debug, Default)]
+pub struct TencentEoCredentialType {
+    /// 测试用传输层替身。
+    transport: Option<Arc<dyn HttpTransport>>,
+}
+
+impl TencentEoCredentialType {
+    /// 注入传输层替身，供测试用。
+    #[must_use]
+    pub fn with_transport(transport: Arc<dyn HttpTransport>) -> Self {
+        Self {
+            transport: Some(transport),
+        }
+    }
+
+    fn provider(&self) -> TencentEoProvider {
+        let transport: Arc<dyn HttpTransport> = match &self.transport {
+            Some(transport) => Arc::clone(transport),
+            None => Arc::new(ReqwestTransport::default()),
+        };
+        TencentEoProvider::with_transport(transport)
+    }
+}
+
+#[async_trait::async_trait]
+impl CredentialType for TencentEoCredentialType {
+    fn type_id(&self) -> &'static str {
+        // 与 `TencentEoProvider::type_id` 对齐。
+        "tencent-eo"
+    }
+
+    fn display_name(&self) -> &'static str {
+        "腾讯云 EdgeOne（DNS）"
+    }
+
+    fn fields_schema(&self) -> RootSchema {
+        tencent_credentials_schema()
+    }
+
+    fn validate(&self, fields: &serde_json::Value) -> acmecast_core::Result<()> {
+        validate_tencent_fields(fields)
+    }
+
+    async fn test_connectivity(&self, fields: &serde_json::Value) -> ConnectivityOutcome {
+        match self.provider().verify_credentials(fields).await {
+            Ok(()) => ConnectivityOutcome::Ok,
+            Err(error) => ConnectivityOutcome::Unavailable {
+                reason: self.redact(fields, &error.to_string()),
+            },
+        }
     }
 }
 
@@ -160,11 +360,87 @@ impl CredentialType for SshHostCredentialType {
 mod tests {
     use super::*;
 
+    /// 按给定的响应体应答的传输层替身：探测的「可用 / 不可用」两条
+    /// 分支都能在无外网的情况下验证。
+    #[derive(Debug)]
+    struct FakeTransport {
+        body: &'static str,
+    }
+
+    #[async_trait::async_trait]
+    impl HttpTransport for FakeTransport {
+        async fn send(
+            &self,
+            _request: acmecast_dns::HttpRequest,
+        ) -> acmecast_dns::Result<acmecast_dns::HttpResponse> {
+            Ok(acmecast_dns::HttpResponse::new(200, self.body))
+        }
+    }
+
+    /// 有效凭据时腾讯云返回的成功形态。
+    const STS_OK: &str = r#"{"Response":{"AccountId":"1234","RequestId":"req-1"}}"#;
+    /// 无效凭据时腾讯云返回的业务错误形态。
+    const AUTH_FAILURE: &str = r#"{"Response":{"Error":{"Code":"AuthFailure.SecretIdNotFound","Message":"The SecretId does not exist"},"RequestId":"req-1"}}"#;
+    /// 无效凭据时 Cloudflare 返回的错误形态。
+    const CF_INVALID: &str = r#"{"success":false,"errors":[{"message":"Invalid request headers"}]}"#;
+    /// 有效凭据时 Cloudflare 返回的成功形态。
+    const CF_ACTIVE: &str = r#"{"success":true,"result":{"status":"active"}}"#;
+
     /// 类型标识必须与 DNS 提供商的 type_id 一致，否则 `dns_provider` 对不上。
     #[test]
     fn type_ids_match_dns_providers() {
-        assert_eq!(CloudflareCredentialType.type_id(), "cloudflare");
-        assert_eq!(AliyunCredentialType.type_id(), "aliyun");
+        assert_eq!(CloudflareCredentialType::default().type_id(), "cloudflare");
+        assert_eq!(AliyunCredentialType::default().type_id(), "aliyun");
+        assert_eq!(TencentCredentialType::default().type_id(), "tencent");
+        assert_eq!(TencentEoCredentialType::default().type_id(), "tencent-eo");
+    }
+
+    #[tokio::test]
+    async fn tencent_probe_reports_ok_or_a_redacted_reason() {
+        let ok = TencentCredentialType::with_transport(Arc::new(FakeTransport { body: STS_OK }));
+        assert!(
+            ok.test_connectivity(&serde_json::json!({
+                "secret_id": "AKID", "secret_key": "tencent-secret", "account_site": "intl"
+            }))
+            .await
+            .is_ok(),
+            "有效凭据应判定可用"
+        );
+
+        let broken =
+            TencentCredentialType::with_transport(Arc::new(FakeTransport { body: AUTH_FAILURE }));
+        let outcome = broken
+            .test_connectivity(&serde_json::json!({
+                "secret_id": "AKID", "secret_key": "tencent-secret", "account_site": "intl"
+            }))
+            .await;
+        assert!(!outcome.is_ok(), "无效凭据不应判定可用");
+        let reason = outcome.reason().expect("不可用应给出原因");
+        assert!(reason.contains("AuthFailure.SecretIdNotFound"), "{reason}");
+        assert!(!reason.contains("tencent-secret"), "原因不得回显密钥: {reason}");
+    }
+
+    #[tokio::test]
+    async fn cloudflare_probe_reports_ok_or_a_redacted_reason() {
+        let ok = CloudflareCredentialType::with_transport(Arc::new(FakeTransport {
+            body: CF_ACTIVE,
+        }));
+        assert!(
+            ok.test_connectivity(&serde_json::json!({ "api_token": "cf-token" }))
+                .await
+                .is_ok(),
+            "有效令牌应判定可用"
+        );
+
+        let broken = CloudflareCredentialType::with_transport(Arc::new(FakeTransport {
+            body: CF_INVALID,
+        }));
+        let outcome = broken
+            .test_connectivity(&serde_json::json!({ "api_token": "cf-token" }))
+            .await;
+        let reason = outcome.reason().expect("不可用应给出原因");
+        assert!(reason.contains("Invalid request headers"), "{reason}");
+        assert!(!reason.contains("cf-token"), "原因不得回显令牌: {reason}");
     }
 
     /// SSH 档案的标识必须与 SSH 部署目标一致，前端据此对齐语义。
@@ -176,7 +452,7 @@ mod tests {
 
     #[test]
     fn cloudflare_requires_a_non_blank_token() {
-        let err = CloudflareCredentialType
+        let err = CloudflareCredentialType::default()
             .validate(&serde_json::json!({ "api_token": "   " }))
             .expect_err("空白 token 应被拒绝");
         match err {
@@ -184,17 +460,17 @@ mod tests {
             other => panic!("期望 Validation，实际 {other:?}"),
         }
 
-        CloudflareCredentialType
+        CloudflareCredentialType::default()
             .validate(&serde_json::json!({ "api_token": "token" }))
             .expect("非空 token 应通过");
     }
 
     #[test]
     fn aliyun_requires_both_halves() {
-        AliyunCredentialType
+        AliyunCredentialType::default()
             .validate(&serde_json::json!({ "access_key_id": "id" }))
             .expect_err("缺 secret 应被拒绝");
-        let err = AliyunCredentialType
+        let err = AliyunCredentialType::default()
             .validate(&serde_json::json!({ "access_key_id": "id", "access_key_secret": " " }))
             .expect_err("空白 secret 应被拒绝");
         match err {
@@ -204,9 +480,55 @@ mod tests {
             other => panic!("期望 Validation，实际 {other:?}"),
         }
 
-        AliyunCredentialType
+        AliyunCredentialType::default()
             .validate(&serde_json::json!({ "access_key_id": "id", "access_key_secret": "secret" }))
             .expect("两半齐全应通过");
+    }
+
+    #[test]
+    fn tencent_requires_both_halves_and_a_known_site() {
+        TencentCredentialType::default()
+            .validate(&serde_json::json!({ "secret_id": "id" }))
+            .expect_err("缺 secret 应被拒绝");
+        let err = TencentCredentialType::default()
+            .validate(&serde_json::json!({ "secret_id": "id", "secret_key": " " }))
+            .expect_err("空白 secret 应被拒绝");
+        match err {
+            acmecast_core::Error::Validation { field, .. } => assert_eq!(field, "secret_key"),
+            other => panic!("期望 Validation，实际 {other:?}"),
+        }
+
+        // account_site 有默认值：缺省即国内站。
+        TencentCredentialType::default()
+            .validate(&serde_json::json!({ "secret_id": "id", "secret_key": "secret" }))
+            .expect("缺省站点应通过");
+        TencentCredentialType::default()
+            .validate(&serde_json::json!({
+                "secret_id": "id", "secret_key": "secret", "account_site": "intl"
+            }))
+            .expect("国际站应通过");
+
+        let err = TencentCredentialType::default()
+            .validate(&serde_json::json!({
+                "secret_id": "id", "secret_key": "secret", "account_site": "eu"
+            }))
+            .expect_err("未知站点应被拒绝");
+        // serde 的原始信息会指明合法取值（expected `cn` or `intl`）。
+        assert!(
+            err.to_string().contains("expected `cn` or `intl`"),
+            "报错应指明合法取值: {err}"
+        );
+    }
+
+    #[test]
+    fn the_edgeone_credential_type_shares_the_field_validation() {
+        // 与腾讯云 DNS 共用字段定义：标识独立，校验规则相同。
+        TencentEoCredentialType::default()
+            .validate(&serde_json::json!({ "secret_id": " ", "secret_key": "secret" }))
+            .expect_err("空白 SecretId 应被拒绝");
+        TencentEoCredentialType::default()
+            .validate(&serde_json::json!({ "secret_id": "id", "secret_key": "secret" }))
+            .expect("合法字段应通过");
     }
 
     /// 一份可直接创建的档案字段。

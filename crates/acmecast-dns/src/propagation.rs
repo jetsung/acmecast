@@ -257,11 +257,13 @@ pub struct PropagationPolicy {
 
 impl Default for PropagationPolicy {
     fn default() -> Self {
-        // ACME 的 DNS-01 常见传播是几十秒；两分钟足够覆盖慢解析器，
-        // 又不至于让一次失败的挑战挂太久。
+        // ACME 的 DNS-01 常见传播是几十秒，但商有 DNS（EdgeOne 等）从
+        // 控制面到权威 NS 的同步延迟实测可达数分钟且波动大。等待期挑战
+        // 记录始终存在、退出路径保证清理，偏大没有残留副作用，五分钟
+        // 覆盖慢同步长尾；需要收紧的环境走 [propagation] 配置。
         Self {
             interval: Duration::from_secs(5),
-            timeout: Duration::from_secs(120),
+            timeout: Duration::from_secs(300),
         }
     }
 }

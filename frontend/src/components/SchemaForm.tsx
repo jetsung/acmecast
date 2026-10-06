@@ -319,33 +319,41 @@ export function SchemaForm({ schema, form, namePrefix = [], disabled }: SchemaFo
         const topType = Array.isArray(node.type) ? node.type[0] : node.type;
         const topIsScalar =
           topType === "integer" || topType === "number" || topType === "boolean" || topType === "string";
-        const span = node["x-target-schemas"] || node["x-multiline"] || !topIsScalar ? 24 : 12;
+        const span =
+          node["x-target-schemas"] || node["x-multiline"] || node["x-full-width"] || !topIsScalar
+            ? 24
+            : 12;
 
         return (
-          <Col span={span} key={path.join(".")}>
-            <SchemaDefault
-              value={(values as Record<string, unknown>)?.[name]}
-              node={node}
-              form={form}
-              path={path}
-            />
-            <Form.Item
-              name={path}
-              label={node["x-label"] ?? name}
-              tooltip={node.description}
-              rules={rules}
-              valuePropName={node.type === "boolean" ? "checked" : "value"}
-            >
-              <SchemaField
+          <Fragment key={path.join(".")}>
+            <Col span={span}>
+              <SchemaDefault
+                value={(values as Record<string, unknown>)?.[name]}
                 node={node}
                 form={form}
                 path={path}
-                root={root}
-                values={values as Record<string, unknown>}
-                disabled={disabled}
               />
-            </Form.Item>
-          </Col>
+              <Form.Item
+                name={path}
+                label={node["x-label"] ?? name}
+                tooltip={node.description}
+                rules={rules}
+                valuePropName={node.type === "boolean" ? "checked" : "value"}
+              >
+                <SchemaField
+                  node={node}
+                  form={form}
+                  path={path}
+                  root={root}
+                  values={values as Record<string, unknown>}
+                  disabled={disabled}
+                />
+              </Form.Item>
+            </Col>
+            {/* 行尾标记：补空列占满剩余宽度，下一个字段从新行开始——
+                独占一行但右侧留空，而不是让后面的字段补位上来。 */}
+            {node["x-end-row"] && span === 12 && <Col span={12} aria-hidden />}
+          </Fragment>
         );
       })}
     </Row>

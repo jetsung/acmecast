@@ -30,7 +30,10 @@ use utoipa::ToSchema;
 use crate::{
     HttpState,
     auth::{AuthMode, ClientIp, issue_token},
-    credentials::{AliyunCredentialType, CloudflareCredentialType, SshHostCredentialType},
+    credentials::{
+        AliyunCredentialType, CloudflareCredentialType, SshHostCredentialType,
+        TencentCredentialType, TencentEoCredentialType,
+    },
     response::{ApiError, ApiJson, ApiQuery, ApiResponse},
 };
 
@@ -1944,11 +1947,17 @@ pub(crate) fn default_credential_registry() -> Arc<CredentialRegistry> {
     // DNS 提供商凭据：cert.apply 的 DNS-01 需要按类型创建它们，注册后
     // 前端凭据页与流水线的 dns_credential_id 下拉才有来源。
     registry
-        .register(CloudflareCredentialType)
+        .register(CloudflareCredentialType::default())
         .expect("内置 Cloudflare 凭据类型不应重复注册");
     registry
-        .register(AliyunCredentialType)
+        .register(AliyunCredentialType::default())
         .expect("内置阿里云凭据类型不应重复注册");
+    registry
+        .register(TencentCredentialType::default())
+        .expect("内置腾讯云凭据类型不应重复注册");
+    registry
+        .register(TencentEoCredentialType::default())
+        .expect("内置腾讯云 EdgeOne 凭据类型不应重复注册");
     // SSH 主机档案：cert.deploy 的 SSH 配置引用它，注册后凭据页才能
     // 创建/测试档案，部署配置也才能从「每次手抄」变成「选一份档案」。
     registry

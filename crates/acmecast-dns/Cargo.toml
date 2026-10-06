@@ -19,6 +19,7 @@ hickory-resolver = { version = "0.26", default-features = false, features = ["to
 hmac.workspace = true
 reqwest.workspace = true
 sha1.workspace = true
+sha2.workspace = true
 uuid.workspace = true
 async-trait.workspace = true
 schemars.workspace = true

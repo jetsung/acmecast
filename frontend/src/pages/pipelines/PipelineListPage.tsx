@@ -14,7 +14,7 @@ type PipelineSummary = components["schemas"]["PipelineSummaryResponse"];
 /** 流水线列表（3.1）：概要、启用开关、立即运行、删除确认。 */
 export function PipelineListPage() {
   const navigate = useNavigate();
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const queryClient = useQueryClient();
   const [page, setPage] = useState(1);
   const [runningId, setRunningId] = useState<number | null>(null);
@@ -87,7 +87,7 @@ export function PipelineListPage() {
   };
 
   const confirmDelete = (row: PipelineSummary) => {
-    App.useApp().modal.confirm({
+    modal.confirm({
       title: "删除流水线？",
       content: `${row.name} 及其步骤、调度将一并删除。`,
       okButtonProps: { danger: true },
