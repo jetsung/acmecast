@@ -14,6 +14,8 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
  * `Option<T>`（`anyOf: [T, null]`）解包出内层并标记可空；internally tagged 枚举
  * （oneOf 每支是对象，如 SSH 认证的 `kind`）合并成普通对象渲染成表单；
  * 显隐联动遵循后端扩展：`x-visible-when: {"Equals": {field, values}}`、`x-hidden: bool`；
+ * 必填联动同理（`x-required-when`，支持 `Equals` 与数组长度下限 `MinItems`，
+ * 后者用于 cert.apply 的「多域名时 dns_zone 必填」）；
  * 另有调用方注入的 `x-options`，把「资源 ID」字段渲染成按名称选择的下拉；
  * `x-multiline`（后端 schema 注入，如 SSH 档案的私钥）：string 字段渲染成多行文本域；
  * `x-target-schemas`（cert.deploy 的 config）：按同级 `target` 的取值渲染成
@@ -96,6 +98,12 @@ type SchemaObject = JsonSchemaNode & Extension;
 
 interface Condition {
   Equals?: { field: string; values: unknown[] };
+  /**
+   * 数组字段的长度下限（后端 schema 注入，如 cert.apply 的 dns_zone）：
+   * `domains` 填了至少 `count` 个域名时命中——其余形态（非数组、字段缺失）
+   * 一律按「不满足」处理，不会误标必填。
+   */
+  MinItems?: { field: string; count: number };
 }
 
 export interface SchemaFormProps {
@@ -208,12 +216,19 @@ function deref(node: JsonSchemaNode, root: JsonSchemaNode): JsonSchemaNode {
   return resolveVariants(node, root);
 }
 
-/** 求值一条 `Equals` 条件；条件缺失或形态不认识时按「不满足」处理。 */
+/** 求值一条条件；条件缺失或形态不认识时按「不满足」处理。 */
 function conditionSatisfied(condition: Condition | undefined, values: Record<string, unknown>): boolean {
   const equals = condition?.Equals;
-  if (!equals) return false;
-  const actual = values[equals.field];
-  return actual !== undefined && equals.values.some((value) => value === actual);
+  if (equals) {
+    const actual = values[equals.field];
+    return actual !== undefined && equals.values.some((value) => value === actual);
+  }
+  const minItems = condition?.MinItems;
+  if (minItems) {
+    const actual = values[minItems.field];
+    return Array.isArray(actual) && actual.length >= minItems.count;
+  }
+  return false;
 }
 
 /**
@@ -286,7 +301,8 @@ export function SchemaForm({ schema, form, namePrefix = [], disabled }: SchemaFo
 
         const rules: Rule[] = [];
         // 必填来源有二：字段本身在 required 列表里；或带了 x-required-when 且
-        // 当前取值命中条件（如 directory_url 仅在 ca=custom 时必填）。
+        // 当前取值命中条件（如 directory_url 仅在 ca=custom 时必填、dns_zone
+        // 在 domains ≥ 2 时必填）。
         const conditionallyRequired = conditionSatisfied(
           node["x-required-when"],
           values as Record<string, unknown>,

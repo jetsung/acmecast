@@ -131,6 +131,108 @@ describe("SchemaForm", () => {
     });
   });
 
+  it("x-required-when MinItems：数组字段达标时转必填，不达标时可留空", async () => {
+    // cert.apply 的诉求：domains 配置多个域名时 dns_zone 必填（多域名下
+    // 静默推导 zone 容易踩错），单域名时保持可选。条件由后端 schema 以
+    // x-required-when 扩展下发，这里是求值器的行为契约。
+    const onFinish = vi.fn();
+    render(
+      <Harness
+        onFinish={onFinish}
+        schema={objectSchema({
+          domains: { type: "array", items: { type: "string" } },
+          dns_zone: {
+            type: ["string", "null"],
+            description: "DNS zone；多个域名时必须显式配置。",
+            "x-required-when": { MinItems: { field: "domains", count: 2 } },
+          },
+        })}
+      />,
+    );
+
+    const combo = screen.getByRole("combobox");
+    // 单域名：dns_zone 不必填，留空也能提交。
+    fireEvent.change(combo, { target: { value: "a.example.com" } });
+    fireEvent.keyDown(combo, { key: "Enter" });
+    expect(await submitAndGet(onFinish)).toEqual({ fields: { domains: ["a.example.com"] } });
+
+    // 第二个域名：同一字段转必填，空值提交被拦下。
+    onFinish.mockClear();
+    fireEvent.change(combo, { target: { value: "b.example.com" } });
+    fireEvent.keyDown(combo, { key: "Enter" });
+    // 等联动重渲染落地（label 出现必填星号）再提交，避免与规则更新竞态。
+    await waitFor(() => {
+      expect(document.querySelector("#fields_dns_zone[aria-required='true']")).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "确定" }));
+    expect(await screen.findByText("请填写 dns_zone")).toBeTruthy();
+    expect(onFinish).not.toHaveBeenCalled();
+
+    // 补上 zone 后即可提交。
+    onFinish.mockClear();
+    fireEvent.change(screen.getByLabelText("dns_zone"), {
+      target: { value: "example.com" },
+    });
+    expect(await submitAndGet(onFinish)).toEqual({
+      fields: { domains: ["a.example.com", "b.example.com"], dns_zone: "example.com" },
+    });
+  });
+
+  it("x-required-when MinItems：目标字段不是数组（或缺失）时按不满足处理", async () => {
+    // 防误伤：MinItems 只对数组字段生效，非数组/缺失一律不算命中，
+    // 不会把字段误标成必填。
+    const onFinish = vi.fn();
+    render(
+      <Harness
+        onFinish={onFinish}
+        schema={objectSchema({
+          domains: { type: "string" },
+          dns_zone: {
+            type: "string",
+            "x-required-when": { MinItems: { field: "domains", count: 2 } },
+          },
+        })}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("domains"), {
+      target: { value: "a.example.com" },
+    });
+
+    expect(await submitAndGet(onFinish)).toEqual({
+      fields: { domains: "a.example.com" },
+    });
+  });
+
+  it("x-visible-when：Equals 控制显隐，不受 MinItems 分支影响", async () => {
+    const onFinish = vi.fn();
+    render(
+      <Harness
+        onFinish={onFinish}
+        schema={objectSchema({
+          challenge: { type: "string", enum: ["dns-01", "http-01"] },
+          dns_provider: {
+            type: "string",
+            "x-visible-when": { Equals: { field: "challenge", values: ["dns-01"] } },
+          },
+        })}
+      />,
+    );
+
+    // dns-01：字段显示。
+    fireEvent.mouseDown(screen.getByRole("combobox"));
+    fireEvent.click(await screen.findByTitle("dns-01"));
+    expect(await screen.findByLabelText("dns_provider")).toBeTruthy();
+
+    // 切到 http-01：字段不再渲染，提交不受影响。
+    fireEvent.mouseDown(screen.getByRole("combobox"));
+    fireEvent.click(await screen.findByTitle("http-01"));
+    await waitFor(() => {
+      expect(screen.queryByLabelText("dns_provider")).toBeNull();
+    });
+    expect(await submitAndGet(onFinish)).toEqual({ fields: { challenge: "http-01" } });
+  });
+
   it("boolean：Switch 的 checked 能提交", async () => {
     const onFinish = vi.fn();
     render(

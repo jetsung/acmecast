@@ -37,7 +37,11 @@ pub struct AcmeApplyInput {
     /// DNS 提供商凭据标识；DNS-01 时必填。
     #[serde(default)]
     pub dns_credential_id: Option<i64>,
-    /// DNS zone；缺省时从主域名去掉第一段推导（`a.example.com` → `example.com`）。
+    /// DNS zone；显式配置优先。`domains` 配置多个域名时必须显式配置
+    /// （各域名需同属该 zone）。留空时仅当「去掉第一段后仍是合法 zone」
+    /// 才自动推导（`a.example.com` → `example.com`）；注册域本身
+    /// （`skiy.net`）与通配符注册域（`*.skiy.net`）无法可靠推导，
+    /// 会在执行时报错要求显式配置。
     #[serde(default)]
     pub dns_zone: Option<String>,
     /// 是否等待 TXT 记录在公共解析器可见后再让 CA 验证。
@@ -80,7 +84,23 @@ impl PipelineStep for CertApplyStep {
     }
 
     fn input_schema(&self) -> Option<schemars::schema::RootSchema> {
-        Some(schemars::schema_for!(AcmeApplyInput))
+        let mut schema = schemars::schema_for!(AcmeApplyInput);
+        // `domains` 配置多个域名时 `dns_zone` 必填：条件由前端 SchemaForm
+        // 求值（与 ACME 账号凭据 `directory_url` 的 Equals 同通道）。`dns_zone`
+        // 是 Option，schemars 出来是 anyOf 包裹的顶层节点——扩展挂在它上面，
+        // 前端解包 anyOf 时会原样保留。结构变化时宁可少注入也不丢 schema。
+        if let Some(schemars::schema::Schema::Object(zone)) = schema
+            .schema
+            .object
+            .as_mut()
+            .and_then(|object| object.properties.get_mut("dns_zone"))
+        {
+            zone.extensions.insert(
+                "x-required-when".to_owned(),
+                serde_json::json!({ "MinItems": { "field": "domains", "count": 2 } }),
+            );
+        }
+        Some(schema)
     }
 
     async fn execute(&self, ctx: &mut StepContext<'_>) -> Result<StepOutput> {
@@ -369,12 +389,16 @@ fn generate_key_and_csr(domains: &[String]) -> Result<(String, Vec<u8>)> {
     Ok((key.serialize_pem(), csr.der().to_vec()))
 }
 
-/// 从主域名推导 DNS zone：去掉第一段（`a.example.com` → `example.com`）。
+/// 从授权域名推导 DNS zone：剥掉通配符前缀并去掉第一段（`a.example.com` →
+/// `example.com`）。
+///
+/// 剩余部分不再含点（只剩 TLD）时推导不可信：注册域本身（`skiy.net`、
+/// `example.com`）与通配符注册域（`*.skiy.net`）剥前缀去段后都只剩 TLD，
+/// 拿它当 zone 会一路走到 DNS 提供商才报「找不到域名 `net`」。这种域名
+/// 返回 `None`，由调用点要求显式配置 `dns_zone`。
 fn zone_of(domain: &str) -> Option<String> {
-    domain
-        .trim_start_matches("*.")
-        .split_once('.')
-        .map(|(_, rest)| rest.to_owned())
+    let rest = domain.trim_start_matches("*.").split_once('.')?.1;
+    rest.contains('.').then(|| rest.to_owned())
 }
 
 /// 把联系人统一补全为 `mailto:` URI 形式。
@@ -400,7 +424,54 @@ fn normalize_contacts(contacts: &[String]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{generate_key_and_csr, normalize_contacts};
+    use super::{generate_key_and_csr, normalize_contacts, zone_of};
+
+    #[test]
+    fn schema_marks_dns_zone_required_for_multiple_domains() {
+        use std::sync::Arc;
+
+        use super::CertApplyStep;
+        use acmecast_dns::DnsProviderRegistry;
+        use acmecast_pipeline::PipelineStep as _;
+
+        let step = CertApplyStep::new(Arc::new(DnsProviderRegistry::new()));
+        let schema = step.input_schema().expect("cert.apply 应声明输入结构");
+        let zone = schema
+            .schema
+            .object
+            .as_ref()
+            .expect("顶层应是对象")
+            .properties
+            .get("dns_zone")
+            .expect("dns_zone 应在 properties 里");
+        let rendered = serde_json::to_value(zone).expect("dns_zone schema 应能序列化");
+        assert_eq!(
+            rendered["x-required-when"],
+            serde_json::json!({ "MinItems": { "field": "domains", "count": 2 } }),
+            "dns_zone 应携带多域名必填条件：{rendered}"
+        );
+        let description = rendered["description"].as_str().expect("dns_zone 应有说明");
+        assert!(
+            description.contains("多个域名"),
+            "说明应包含多域名指引：{description}"
+        );
+    }
+
+    #[test]
+    fn zone_of_only_trusts_multi_label_remainders() {
+        // 三级以上域名剥第一段后剩余部分仍是合法 zone，推导可信。
+        assert_eq!(zone_of("a.example.com").as_deref(), Some("example.com"));
+        assert_eq!(
+            zone_of("a.b.example.com").as_deref(),
+            Some("b.example.com")
+        );
+
+        // 注册域本身与通配符注册域剥前缀去段后只剩 TLD：`*.skiy.net` 一度
+        // 被推导成 `net` 拿去查 Cloudflare（histories/26），必须交给显式配置。
+        assert_eq!(zone_of("skiy.net"), None);
+        assert_eq!(zone_of("*.skiy.net"), None);
+        assert_eq!(zone_of("example.com"), None);
+    }
 
     #[test]
     fn wildcard_csr_has_no_cn_and_keeps_wildcard_san() {

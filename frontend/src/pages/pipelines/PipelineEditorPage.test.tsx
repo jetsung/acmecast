@@ -88,7 +88,13 @@ vi.mock("@/api/client", () => ({
                   type: ["integer", "null"],
                   format: "int64",
                 },
-                dns_zone: { description: "DNS zone。", default: null, type: ["string", "null"] },
+                // 后端 input_schema() 注入的多域名必填条件（与 cert.apply 真实产物一致）。
+                dns_zone: {
+                  description: "DNS zone。",
+                  default: null,
+                  type: ["string", "null"],
+                  "x-required-when": { MinItems: { field: "domains", count: 2 } },
+                },
                 wait_propagation: { description: "等待传播。", default: true, type: "boolean" },
                 contacts: {
                   description: "账号联系人。",
@@ -532,5 +538,72 @@ describe("PipelineEditorPage", () => {
       // 提交只含档案引用与部署输入,连接/权限字段由档案在执行时提供。
       config: { credential_id: 10, cert_path: "/srv/ssl/site.crt", key_path: "/srv/ssl/site.key" },
     });
+  });
+
+  /** cert.apply 步骤的 domains 填入两个域名，并等必填联动落地。 */
+  async function fillTwoDomains() {
+    const domains = await screen.findByLabelText("domains");
+    for (const domain of ["a.example.com", "b.example.com"]) {
+      fireEvent.change(domains, { target: { value: domain } });
+      fireEvent.keyDown(domains, { key: "Enter" });
+    }
+    // 等联动重渲染落地（dns_zone 出现必填星号）再点保存，避免与
+    // Form.useWatch 驱动的规则更新竞态。
+    await waitFor(() => {
+      expect(
+        document.querySelector("input#inputs_1_dns_zone[aria-required='true']"),
+      ).toBeTruthy();
+    });
+  }
+
+  it("cert.apply 多域名留空 dns_zone 被拦截，填写后放行", async () => {
+    // 多域名下静默推导 zone 容易踩错（*.skiy.net 曾被推成 net），表单要求
+    // 显式配置：domains ≥ 2 时 dns_zone 必填。保存成功会跳转页面，
+    // 所以「拦截 → 放行」在同一次渲染里完成，删减场景另起用例。
+    posted.length = 0;
+    const queryClient = renderPage();
+    await waitForTasks(queryClient);
+    fireEvent.change(screen.getByLabelText("名称"), { target: { value: "p" } });
+
+    await addStep("任务 B");
+    await fillTwoDomains();
+
+    // 留空 dns_zone：保存被拦截，请求不发出。
+    fireEvent.click(screen.getByRole("button", { name: /保\s*存/ }));
+    expect(await screen.findByText("请填写 dns_zone")).toBeTruthy();
+    expect(posted).toHaveLength(0);
+
+    // 填上 zone：放行，提交值带 zone。
+    fireEvent.change(screen.getByLabelText("dns_zone"), { target: { value: "example.com" } });
+    fireEvent.click(screen.getByRole("button", { name: /保\s*存/ }));
+    await waitFor(() => expect(posted).toHaveLength(1));
+    expect(posted[0].steps[0].input).toMatchObject({
+      domains: ["a.example.com", "b.example.com"],
+      dns_zone: "example.com",
+    });
+  });
+
+  it("cert.apply 域名删到单个后 dns_zone 联动解除", async () => {
+    posted.length = 0;
+    const queryClient = renderPage();
+    await waitForTasks(queryClient);
+    fireEvent.change(screen.getByLabelText("名称"), { target: { value: "p" } });
+
+    await addStep("任务 B");
+    await fillTwoDomains();
+
+    // 删到只剩 1 个域名：必填联动解除，zone 清空也能提交。
+    const remove = document.querySelector<HTMLElement>(".ant-select-selection-item-remove");
+    expect(remove).toBeTruthy();
+    fireEvent.click(remove!);
+    await waitFor(() => {
+      expect(
+        document.querySelector("input#inputs_1_dns_zone[aria-required='true']"),
+      ).toBeFalsy();
+    });
+    fireEvent.change(screen.getByLabelText("dns_zone"), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: /保\s*存/ }));
+    await waitFor(() => expect(posted).toHaveLength(1));
+    expect(posted[0].steps[0].input).toMatchObject({ domains: ["b.example.com"] });
   });
 });
