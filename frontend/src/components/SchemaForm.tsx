@@ -60,6 +60,12 @@ interface Extension {
    */
   "x-options"?: Array<{ value: string | number; label: string }>;
   /**
+   * 枚举展示名（后端 schema 注入，如 cert.apply 的 key_algorithm）：`enum`
+   * 选项的 value 是 snake_case 配置串，下拉里按这里的映射显示可读名称，
+   * 缺失时回退显示原值。
+   */
+  "x-enum-labels"?: Record<string, string>;
+  /**
    * cert.deploy 的 `config`：结构随同级的 `target` 字段变化，后端把各部署
    * 目标的展示名、输入示例与 schema 按目标标识挂在这里。选中目标后按
    * schema 渲染成结构化子表单（见 {@link TargetConfigField}）。
@@ -402,13 +408,14 @@ function SchemaField({
   }
 
   if (node.enum && node.enum.length > 0) {
+    const labels = node["x-enum-labels"];
     return (
       <Select
         disabled={disabled}
-        options={node.enum.map((value) => ({
-          value: String(value),
-          label: String(value),
-        }))}
+        options={node.enum.map((value) => {
+          const key = String(value);
+          return { value: key, label: labels?.[key] ?? key };
+        })}
         {...control}
       />
     );

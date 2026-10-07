@@ -17,15 +17,67 @@ use acmecast_dns::{
 };
 use acmecast_pipeline::{PipelineStep, Result, StepContext, StepOutput};
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::domain_error;
+
+/// 申请密钥与证书的算法类型。
+///
+/// 显式 `rename` 而不靠 `rename_all`：`EcdsaP256` 这类带数字的变体在
+/// snake_case 下的分词结果不可靠（见 `DnsChallengeKind` 的先例）。
+/// CA 是否接受所选算法的 CSR 由 CA 决定，拒绝时按其错误如实上报。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum CertKeyAlgorithm {
+    /// ECDSA on NIST P-256（缺省，与旧版行为一致）。
+    #[default]
+    #[serde(rename = "ecdsa_p256")]
+    EcdsaP256,
+    /// ECDSA on NIST P-384。
+    #[serde(rename = "ecdsa_p384")]
+    EcdsaP384,
+    /// Ed25519。
+    #[serde(rename = "ed25519")]
+    Ed25519,
+    /// RSA 2048。
+    #[serde(rename = "rsa2048")]
+    Rsa2048,
+}
+
+impl CertKeyAlgorithm {
+    /// 对应的 rcgen 签名算法——决定密钥类型与 CSR 的签名算法，
+    /// CA 据此签发同类型的证书。
+    #[must_use]
+    pub fn signature_algorithm(self) -> &'static rcgen::SignatureAlgorithm {
+        match self {
+            Self::EcdsaP256 => &rcgen::PKCS_ECDSA_P256_SHA256,
+            Self::EcdsaP384 => &rcgen::PKCS_ECDSA_P384_SHA384,
+            Self::Ed25519 => &rcgen::PKCS_ED25519,
+            Self::Rsa2048 => &rcgen::PKCS_RSA_SHA256,
+        }
+    }
+
+    /// 日志里的展示名（与证书详情的算法文案一致）。
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::EcdsaP256 => "ECDSA P-256",
+            Self::EcdsaP384 => "ECDSA P-384",
+            Self::Ed25519 => "Ed25519",
+            Self::Rsa2048 => "RSA 2048",
+        }
+    }
+}
 
 /// `cert.apply` 的输入。
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct AcmeApplyInput {
     /// 要申请的域名集合；通配符（`*.example.com`）会被强制走 DNS-01。
     pub domains: Vec<String>,
+    /// 申请密钥与证书的算法；缺省 ECDSA P-256。密钥类型在签发时即固定，
+    /// 无法事后更改。
+    #[serde(default)]
+    #[schemars(default = "default_key_algorithm")]
+    pub key_algorithm: CertKeyAlgorithm,
     /// 挑战类型。当前只支持 DNS-01——HTTP-01 的投放通道尚未提供。
     pub challenge: DnsChallengeKind,
     /// ACME 账号凭据标识（`acme.account` 类型）。
@@ -60,6 +112,13 @@ pub struct AcmeApplyInput {
 
 fn default_true() -> bool {
     true
+}
+
+/// `key_algorithm` 的 schema 缺省值：表单无值时预填，保存的配置显式携带
+/// `ecdsa_p256` 而不是靠运行时回退（schemars 不会为 enum 的 `#[default]`
+/// 变体生成 schema default）。
+fn default_key_algorithm() -> CertKeyAlgorithm {
+    CertKeyAlgorithm::EcdsaP256
 }
 
 /// ACME 申请步骤。
@@ -108,6 +167,25 @@ impl PipelineStep for CertApplyStep {
                 serde_json::json!({ "MinItems": { "field": "domains", "count": 2 } }),
             );
         }
+        // `key_algorithm` 的枚举值是 snake_case 配置串，下拉里直接显示可读性
+        // 差——展示名挂在字段节点上（schemars 会把带说明的字段包成
+        // `allOf: [$ref]`，前端解包时外层属性原样保留，与 dns_zone 同通道）。
+        if let Some(schemars::schema::Schema::Object(alg)) = schema
+            .schema
+            .object
+            .as_mut()
+            .and_then(|object| object.properties.get_mut("key_algorithm"))
+        {
+            alg.extensions.insert(
+                "x-enum-labels".to_owned(),
+                serde_json::json!({
+                    "ecdsa_p256": "ECDSA P-256",
+                    "ecdsa_p384": "ECDSA P-384",
+                    "ed25519": "Ed25519",
+                    "rsa2048": "RSA 2048",
+                }),
+            );
+        }
         Some(schema)
     }
 
@@ -139,7 +217,8 @@ impl PipelineStep for CertApplyStep {
         }
 
         // 密钥与 CSR 在本次运行中生成；私钥不落盘、不进日志，只随产物交给入库步骤。
-        let (key_pem, csr_der) = generate_key_and_csr(&input.domains)?;
+        ctx.log_info(format!("生成本次申请的密钥：{}", input.key_algorithm.as_str()));
+        let (key_pem, csr_der) = generate_key_and_csr(&input.domains, input.key_algorithm)?;
         wait_for_ready(&mut order).await?;
         ctx.log_info("提交 CSR 并等待签发");
         let cert_pem = order
@@ -368,8 +447,15 @@ fn transport_options(input: &AcmeApplyInput) -> acmecast_acme::ProxyConfig {
 }
 
 /// 生成本次申请的密钥对与 CSR（SAN 覆盖全部域名，通配符原样保留）。
-fn generate_key_and_csr(domains: &[String]) -> Result<(String, Vec<u8>)> {
-    let key = rcgen::KeyPair::generate().map_err(|e| domain_error("生成密钥", e))?;
+///
+/// 密钥类型由 `algorithm` 决定，CSR 的签名算法随之确定，CA 据此签发
+/// 同类型的证书。RSA 依赖 rcgen 的 aws-lc-rs 后端（ring 无 RSA keygen）。
+fn generate_key_and_csr(
+    domains: &[String],
+    algorithm: CertKeyAlgorithm,
+) -> Result<(String, Vec<u8>)> {
+    let key = rcgen::KeyPair::generate_for(algorithm.signature_algorithm())
+        .map_err(|e| domain_error("生成密钥", e))?;
     let mut params = rcgen::CertificateParams::default();
     // 必须清掉 rcgen 的默认 CN（「rcgen self signed cert」），且不放任何 CN：
     // LE 会把 CSR 的 CN 也并入标识符集合，与订单标识符做规范化后的完全相等
@@ -429,7 +515,7 @@ fn normalize_contacts(contacts: &[String]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{generate_key_and_csr, normalize_contacts, zone_of};
+    use super::{CertKeyAlgorithm, generate_key_and_csr, normalize_contacts, zone_of};
 
     #[test]
     fn schema_marks_dns_zone_required_for_multiple_domains() {
@@ -463,6 +549,84 @@ mod tests {
     }
 
     #[test]
+    fn schema_marks_key_algorithm_with_display_labels() {
+        use std::sync::Arc;
+
+        use super::CertApplyStep;
+        use acmecast_dns::DnsProviderRegistry;
+        use acmecast_pipeline::PipelineStep as _;
+
+        let step = CertApplyStep::new(Arc::new(DnsProviderRegistry::new()));
+        let schema = step.input_schema().expect("cert.apply 应声明输入结构");
+        let algorithm = schema
+            .schema
+            .object
+            .as_ref()
+            .expect("顶层应是对象")
+            .properties
+            .get("key_algorithm")
+            .expect("key_algorithm 应在 properties 里");
+        let rendered = serde_json::to_value(algorithm).expect("key_algorithm schema 应能序列化");
+        let labels = rendered["x-enum-labels"]
+            .as_object()
+            .expect("key_algorithm 应携带展示名映射");
+        assert_eq!(
+            labels["ecdsa_p256"], "ECDSA P-256",
+            "四个选项都应有展示名：{rendered}"
+        );
+        assert_eq!(labels["rsa2048"], "RSA 2048");
+        assert_eq!(
+            rendered["default"], "ecdsa_p256",
+            "schema 应携带缺省值供表单预填：{rendered}"
+        );
+    }
+
+    #[test]
+    fn each_algorithm_generates_matching_key_and_csr() {
+        // RSA 位数由 rcgen（aws-lc-rs 后端）的 Rsa2048 档固定，不再重复断言。
+        for (algorithm, expected) in [
+            (CertKeyAlgorithm::EcdsaP256, acmecast_cert::KeyAlgorithm::EcdsaP256),
+            (CertKeyAlgorithm::EcdsaP384, acmecast_cert::KeyAlgorithm::EcdsaP384),
+            (CertKeyAlgorithm::Ed25519, acmecast_cert::KeyAlgorithm::Ed25519),
+            (CertKeyAlgorithm::Rsa2048, acmecast_cert::KeyAlgorithm::Rsa),
+        ] {
+            let (key_pem, csr_der) = generate_key_and_csr(&["example.com".to_owned()], algorithm)
+                .unwrap_or_else(|e| panic!("{algorithm:?} 生成应成功: {e}"));
+            assert!(!csr_der.is_empty(), "CSR 应非空");
+            assert_eq!(
+                acmecast_cert::detect_algorithm(&key_pem).expect("识别私钥算法"),
+                expected,
+                "{algorithm:?} 生成的私钥类型应一致"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_key_algorithm_is_rejected_and_default_is_p256() {
+        use super::AcmeApplyInput;
+
+        let input: AcmeApplyInput = serde_json::from_value(serde_json::json!({
+            "domains": ["example.com"],
+            "challenge": "dns-01",
+            "account_credential_id": 1,
+        }))
+        .expect("缺省 key_algorithm 应可反序列化");
+        assert_eq!(
+            input.key_algorithm,
+            CertKeyAlgorithm::EcdsaP256,
+            "缺省应回退 ECDSA P-256"
+        );
+
+        let rejected = serde_json::from_value::<AcmeApplyInput>(serde_json::json!({
+            "domains": ["example.com"],
+            "challenge": "dns-01",
+            "account_credential_id": 1,
+            "key_algorithm": "dsa",
+        }));
+        assert!(rejected.is_err(), "未知算法值应在输入校验时被拒绝");
+    }
+
+    #[test]
     fn zone_of_only_trusts_multi_label_remainders() {
         // 三级以上域名剥第一段后剩余部分仍是合法 zone，推导可信。
         assert_eq!(zone_of("a.example.com").as_deref(), Some("example.com"));
@@ -484,9 +648,11 @@ mod tests {
         // CN 会把 base domain 带进集合，通配订单的 finalize 会被判
         // 「CSR does not specify same identifiers as Order」。
         // 这里直接检查 DER 字节：subject 不得含 CN OID（2.5.4.3），SAN 原样保留 `*.`。
-        let (_key_pem, csr_der) =
-            generate_key_and_csr(&["example.com".to_owned(), "*.example.com".to_owned()])
-                .expect("生成 CSR 应成功");
+        let (_key_pem, csr_der) = generate_key_and_csr(
+            &["example.com".to_owned(), "*.example.com".to_owned()],
+            CertKeyAlgorithm::default(),
+        )
+        .expect("生成 CSR 应成功");
 
         let cn_oid: &[u8] = &[0x06, 0x03, 0x55, 0x04, 0x03];
         assert!(

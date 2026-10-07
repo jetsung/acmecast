@@ -377,6 +377,60 @@ describe("SchemaForm", () => {
     expect(await submitAndGet(onFinish)).toEqual({ fields: { challenge: "http-01" } });
   });
 
+  it("x-enum-labels：enum 选项按展示名渲染，提交原始配置值（cert.apply 的 key_algorithm）", async () => {
+    const onFinish = vi.fn();
+    render(
+      <Harness
+        onFinish={onFinish}
+        schema={{
+          type: "object",
+          definitions: {
+            CertKeyAlgorithm: {
+              oneOf: [
+                { enum: ["ecdsa_p256"], type: "string" },
+                { enum: ["ecdsa_p384"], type: "string" },
+                { enum: ["ed25519"], type: "string" },
+                { enum: ["rsa2048"], type: "string" },
+              ],
+            },
+          },
+          properties: {
+            key_algorithm: {
+              allOf: [{ $ref: "#/definitions/CertKeyAlgorithm" }],
+              description: "申请密钥与证书的算法；缺省 ECDSA P-256。",
+              default: "ecdsa_p256",
+              "x-enum-labels": {
+                ecdsa_p256: "ECDSA P-256",
+                ecdsa_p384: "ECDSA P-384",
+                ed25519: "Ed25519",
+                rsa2048: "RSA 2048",
+              },
+            },
+          },
+        }}
+      />,
+    );
+
+    // 展开下拉：四个选项都以展示名出现，snake_case 原值不出现在选项里。
+    // schema 带缺省值时选择器框本身也有 title（ECDSA P-256），所以会匹配到
+    // 多个元素——下拉里真正可点的是带 .ant-select-item-option 的可见项。
+    fireEvent.mouseDown(screen.getByRole("combobox"));
+    for (const label of ["ECDSA P-256", "ECDSA P-384", "Ed25519", "RSA 2048"]) {
+      const matches = await screen.findAllByTitle(label);
+      expect(matches.length, `应显示展示名 ${label}`).toBeGreaterThan(0);
+    }
+    expect(screen.queryByTitle("ecdsa_p384")).toBeNull();
+
+    const option = (await screen.findAllByTitle("ECDSA P-384")).find((element) =>
+      element.className.includes("ant-select-item-option"),
+    );
+    expect(option).toBeTruthy();
+    fireEvent.click(option!);
+    expect(await submitAndGet(onFinish)).toEqual({
+      fields: { key_algorithm: "ecdsa_p384" },
+    });
+  });
+
   it("x-options：按调用方给的选项渲染下拉，提交原始（数字）值", async () => {
     const onFinish = vi.fn();
     render(

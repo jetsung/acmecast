@@ -31,6 +31,7 @@
 |---|---|---|---|
 | `domains` | string[] | 是 | 域名集合；通配符（`*.example.com`）强制走 DNS-01 |
 | `challenge` | string | 是 | 挑战类型，当前只支持 `dns-01`（HTTP-01 尚无投放通道） |
+| `key_algorithm` | string | 否（默认 `ecdsa_p256`） | 申请密钥与证书的算法：`ecdsa_p256` / `ecdsa_p384` / `ed25519` / `rsa2048`；密钥类型在签发时即固定，CA 是否接受所选算法以 CA 支持为准 |
 | `account_credential_id` | int | 是 | ACME 账号凭据标识（`acme.account` 类型） |
 | `dns_provider` | string | DNS-01 必填 | DNS 提供商标识：`cloudflare` / `aliyun` |
 | `dns_credential_id` | int | DNS-01 必填 | DNS 提供商凭据标识 |
@@ -46,6 +47,8 @@
 
 - ACME 交互重试为指数退避（初始 500ms、倍率 2.0、总上限 120s）；badNonce
   自动重试（上限 3 次）。
+- `key_algorithm` 决定本次申请的密钥对与 CSR 签名算法，CA 据此签发同类型
+  证书；CA 不支持所选算法时按 CA 返回的错误失败，不回退重试。
 - 通配符下单保留 `*.` 前缀（剥前缀会被 CA 在 finalize 时拒绝）。
 - DNS-01 写 TXT 记录前先查同值（幂等跳过）；发现**异值残留直接报错**——
   宁可失败也不让 CA 读到旧值。挑战结束无论成败都清理记录。

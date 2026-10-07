@@ -72,6 +72,18 @@ vi.mock("@/api/client", () => ({
                   description: "挑战类型。",
                   allOf: [{ $ref: "#/definitions/ChallengeKind" }],
                 },
+                // 与 cert.apply 真实产物一致：allOf+$ref 枚举 + 缺省值 + 展示名注入。
+                key_algorithm: {
+                  description: "申请密钥与证书的算法；缺省 ECDSA P-256。",
+                  allOf: [{ $ref: "#/definitions/CertKeyAlgorithm" }],
+                  default: "ecdsa_p256",
+                  "x-enum-labels": {
+                    ecdsa_p256: "ECDSA P-256",
+                    ecdsa_p384: "ECDSA P-384",
+                    ed25519: "Ed25519",
+                    rsa2048: "RSA 2048",
+                  },
+                },
                 account_credential_id: {
                   description: "ACME 账号凭据标识。",
                   type: "integer",
@@ -203,6 +215,15 @@ vi.mock("@/api/client", () => ({
                     { type: "string", enum: ["http-01"] },
                   ],
                 },
+                CertKeyAlgorithm: {
+                  description: "申请密钥与证书的算法类型。",
+                  oneOf: [
+                    { type: "string", enum: ["ecdsa_p256"] },
+                    { type: "string", enum: ["ecdsa_p384"] },
+                    { type: "string", enum: ["ed25519"] },
+                    { type: "string", enum: ["rsa2048"] },
+                  ],
+                },
               },
               properties: fields,
             },
@@ -224,6 +245,7 @@ vi.mock("@/api/client", () => ({
                   input: {
                     domains: ["abc.zzzzy.com"],
                     challenge: "dns-01",
+                    key_algorithm: "ecdsa_p384",
                     account_credential_id: 1,
                     dns_provider: "cloudflare",
                     dns_credential_id: 4,
@@ -333,6 +355,7 @@ describe("PipelineEditorPage", () => {
     expect(body.steps[1].input).toEqual({
       domains: ["abc.zzzzy.com"],
       challenge: "dns-01",
+      key_algorithm: "ecdsa_p384",
       account_credential_id: 1,
       dns_provider: "cloudflare",
       dns_credential_id: 4,
@@ -341,6 +364,8 @@ describe("PipelineEditorPage", () => {
       contacts: ["i@jetsung.com"],
       insecure_skip_verify: false,
     });
+    // key_algorithm 的下拉按已存值回显展示名。
+    expect(await screen.findByTitle("ECDSA P-384")).toBeTruthy();
     expect(body.steps[2].input).toEqual({ acme_account_credential_id: 1 });
     expect(body.steps[3].input).toEqual({
       dns_provider: "aliyun",
@@ -597,6 +622,36 @@ describe("PipelineEditorPage", () => {
     expect(posted[0].steps[0].input).toMatchObject({
       domains: ["a.example.com", "b.example.com"],
       dns_zone: "example.com",
+    });
+  });
+
+  it("cert.apply 密钥类型下拉带缺省与展示名，选择后保存", async () => {
+    posted.length = 0;
+    const queryClient = renderPage();
+    await waitForTasks(queryClient);
+    fireEvent.change(screen.getByLabelText("名称"), { target: { value: "p" } });
+
+    await addStep("任务 B");
+    // 单域名即可保存——多域名会触发 dns_zone 必填联动，与本用例无关。
+    const domains = await screen.findByLabelText("domains");
+    fireEvent.change(domains, { target: { value: "a.example.com" } });
+    fireEvent.keyDown(domains, { key: "Enter" });
+
+    // schema 的缺省值预填下拉（ECDSA P-256），展开后按展示名渲染选项。
+    // 缺省选中项让选择器框本身也带 title，取下拉里的可见选项匹配。
+    const field = await screen.findByLabelText("key_algorithm");
+    expect(field.getAttribute("role")).toBe("combobox");
+    fireEvent.mouseDown(field);
+    const option = (await screen.findAllByTitle("ECDSA P-384")).find((element) =>
+      element.className.includes("ant-select-item-option"),
+    );
+    expect(option).toBeTruthy();
+    fireEvent.click(option!);
+
+    const body = await save();
+    expect(body.steps[0].input).toMatchObject({
+      domains: ["a.example.com"],
+      key_algorithm: "ecdsa_p384",
     });
   });
 

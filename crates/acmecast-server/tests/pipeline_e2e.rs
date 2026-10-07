@@ -548,6 +548,93 @@ async fn zone_derivation_failure_fails_before_any_dns_call() {
     );
 }
 
+/// 密钥类型可选：`key_algorithm = "ecdsa_p384"` 时，pebble 按同一算法签发，
+/// 私钥识别为 ECDSA P-384，且与证书通过入库前的匹配校验（`detect_algorithm`
+/// 与 `verify_matches_pem` 与 cert.store 入库前校验同源）。
+#[tokio::test(flavor = "multi_thread")]
+async fn applies_with_ecdsa_p384_key_algorithm() {
+    let pebble = match start_pebble() {
+        Ok(pebble) => pebble,
+        Err(reason) => {
+            eprintln!("跳过 P-384 密钥算法测试：{reason}");
+            return;
+        }
+    };
+
+    let db = a_database().await;
+    let cipher = Arc::new(
+        CredentialCipher::from_base64(&CredentialCipher::generate_key_base64())
+            .expect("密钥应可用"),
+    );
+
+    let mut credential_registry = CredentialRegistry::new();
+    credential_registry
+        .register(acmecast_access::AcmeAccountType::new())
+        .expect("ACME 账号类型不应重复");
+    credential_registry
+        .register(MemoryDnsType)
+        .expect("内存 DNS 类型不应重复");
+    let credential_registry = Arc::new(credential_registry);
+    let credentials =
+        CredentialStore::new(&db, Arc::clone(&credential_registry), Arc::clone(&cipher));
+
+    let account_id = an_acme_account_credential(&db, &cipher, &pebble.directory_url).await;
+    let dns_credential_id = a_memory_dns_credential(&db, &cipher).await;
+
+    let memory_dns = MemoryDns::default();
+    let mut dns_registry = DnsProviderRegistry::new();
+    dns_registry
+        .register(memory_dns.clone())
+        .expect("内存 DNS 提供商不应重复");
+    let dns_registry = Arc::new(dns_registry);
+
+    let mut steps = StepRegistry::new();
+    steps
+        .register(CertApplyStep::new(Arc::clone(&dns_registry)))
+        .expect("cert.apply 不应重复");
+
+    let definition = PipelineDefinition {
+        id: 1,
+        steps: vec![acmecast_pipeline::StepDefinition {
+            order_index: 0,
+            type_id: "cert.apply".to_owned(),
+            input: serde_json::json!({
+                "domains": ["p384.acmecast.test"],
+                "challenge": "dns-01",
+                "key_algorithm": "ecdsa_p384",
+                "account_credential_id": account_id,
+                "dns_provider": "memory",
+                "dns_credential_id": dns_credential_id,
+                "wait_propagation": false,
+                "insecure_skip_verify": true
+            }),
+            enabled: true,
+        }],
+    };
+
+    let leaked: &'static DatabaseConnection = Box::leak(Box::new(db.clone()));
+    let state = acmecast_pipeline::DatabaseStateStore::new(leaked);
+    let runner = PipelineRunner::new(&steps, &credentials, &state);
+    let outcome = runner.run(&definition, 1).await.expect("流水线应能执行");
+    assert!(
+        outcome.is_success(),
+        "P-384 申请应成功，失败原因：{:?}",
+        outcome.failure
+    );
+
+    let key_pem: String = serde_json::from_value(outcome.artifacts.get("key_pem").cloned().expect("应有 key_pem 产物"))
+        .expect("key_pem 应是字符串");
+    let cert_pem: String =
+        serde_json::from_value(outcome.artifacts.get("cert_pem").cloned().expect("应有 cert_pem 产物"))
+            .expect("cert_pem 应是字符串");
+    assert_eq!(
+        acmecast_cert::detect_algorithm(&key_pem).expect("识别私钥算法"),
+        acmecast_cert::KeyAlgorithm::EcdsaP384,
+        "签发的私钥应是 ECDSA P-384"
+    );
+    acmecast_cert::verify_matches_pem(&key_pem, &cert_pem).expect("私钥与签发证书应匹配");
+}
+
 // ---- 11.2 定时续期闭环 ----
 //
 // 调度引擎扫描命中证书（到期阈值被调大）→ 经真实启动器重签 →
