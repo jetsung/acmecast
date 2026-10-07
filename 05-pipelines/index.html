@@ -21,7 +21,7 @@
       
       
       <link rel="icon" href="../assets/images/favicon.png">
-      <meta name="generator" content="zensical-0.0.67">
+      <meta name="generator" content="zensical-0.0.68">
     
     
       
@@ -32,12 +32,12 @@
       
         
       
-      <link rel="stylesheet" href="../assets/stylesheets/modern/main.4ae390e2.min.css">
+      <link rel="stylesheet" href="../assets/stylesheets/modern/main.595f2bf5.min.css">
       
         
           
         
-        <link rel="stylesheet" href="../assets/stylesheets/modern/palette.96d1a7e4.min.css">
+        <link rel="stylesheet" href="../assets/stylesheets/modern/palette.b27955a4.min.css">
       
       
 
@@ -79,14 +79,11 @@
     
     <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
     <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
-    <label class="md-overlay" for="__drawer" aria-label="导航栏"></label>
+    <label class="md-overlay" for="__drawer" aria-hidden="true"></label>
     <div data-md-component="skip">
-      
-        
-        <a href="#_1" class="md-skip">
-          跳转至
-        </a>
-      
+      <a href="#__skip" class="md-skip">
+        跳转至
+      </a>
     </div>
     <div data-md-component="announce">
       
@@ -952,6 +949,7 @@
 
               
               <article class="md-content__inner md-typeset">
+                <a id="__skip" tabindex="-1"></a>
                 
                   
 
@@ -1005,6 +1003,12 @@
 <td>挑战类型，当前只支持 <code>dns-01</code>（HTTP-01 尚无投放通道）</td>
 </tr>
 <tr>
+<td><code>key_algorithm</code></td>
+<td>string</td>
+<td>否（默认 <code>ecdsa_p256</code>）</td>
+<td>申请密钥与证书的算法：<code>ecdsa_p256</code> / <code>ecdsa_p384</code> / <code>ed25519</code> / <code>rsa2048</code>；密钥类型在签发时即固定，CA 是否接受所选算法以 CA 支持为准</td>
+</tr>
+<tr>
 <td><code>account_credential_id</code></td>
 <td>int</td>
 <td>是</td>
@@ -1054,6 +1058,8 @@
 <ul>
 <li>ACME 交互重试为指数退避（初始 500ms、倍率 2.0、总上限 120s）；badNonce
   自动重试（上限 3 次）。</li>
+<li><code>key_algorithm</code> 决定本次申请的密钥对与 CSR 签名算法，CA 据此签发同类型
+  证书；CA 不支持所选算法时按 CA 返回的错误失败，不回退重试。</li>
 <li>通配符下单保留 <code>*.</code> 前缀（剥前缀会被 CA 在 finalize 时拒绝）。</li>
 <li>DNS-01 写 TXT 记录前先查同值（幂等跳过）；发现<strong>异值残留直接报错</strong>——
   宁可失败也不让 CA 读到旧值。挑战结束无论成败都清理记录。</li>
@@ -1271,7 +1277,7 @@
       <script id="__config" type="application/json">{"annotate":null,"base":"..","features":["announce.dismiss","content.code.annotate","content.code.copy","content.code.select","content.footnote.tooltips","content.tabs.link","content.tooltips","navigation.footer","navigation.indexes","navigation.instant","navigation.instant.prefetch","navigation.path","navigation.sections","navigation.top","navigation.tracking","search.highlight"],"redirect":null,"search":"../assets/javascripts/workers/search.7d14d953.min.js","tags":null,"translations":{"clipboard.copied":"已复制","clipboard.copy":"复制","clipboard.error":"Could not copy to clipboard","search.result.more.one":"在该页上还有 1 个符合条件的结果","search.result.more.other":"在该页上还有 # 个符合条件的结果","search.result.none":"没有找到符合条件的结果","search.result.one":"找到 1 个符合条件的结果","search.result.other":"# 个符合条件的结果","search.result.placeholder":"键入以开始搜索","search.result.term.missing":"缺少","select.version":"选择当前版本"},"version":null}</script>
     
     
-      <script src="../assets/javascripts/bundle.67a597eb.min.js"></script>
+      <script src="../assets/javascripts/bundle.3c842f4c.min.js"></script>
       
     
   </body>
