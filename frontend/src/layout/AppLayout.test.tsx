@@ -48,3 +48,31 @@ describe("侧边栏登出", () => {
     expect(useAuthStore.getState().username).toBeNull();
   });
 });
+
+describe("侧边栏固定布局", () => {
+  beforeEach(() => {
+    useAuthStore.setState({ token: "test-token", username: "admin" });
+  });
+
+  it("侧边栏采用固定定位，不随内容滚动", () => {
+    renderLayout();
+    // antd Layout.Sider 渲染为 aside 元素
+    const sider = document.querySelector("aside");
+    expect(sider).not.toBeNull();
+    expect(sider!.style.position).toBe("fixed");
+    expect(sider!.style.top).toBe("0px");
+    expect(sider!.style.left).toBe("0px");
+    expect(sider!.style.height).toBe("100vh");
+    expect(sider!.style.overflowY).toBe("auto");
+    expect(sider!.style.overflowX).toBe("hidden");
+  });
+
+  it("侧边栏高度约束为 100vh，登出按钮始终在 DOM 中可查询", () => {
+    renderLayout();
+    const sider = document.querySelector("aside");
+    expect(sider).not.toBeNull();
+    expect(sider!.style.height).toBe("100vh");
+    // 登出按钮始终在 DOM 中（不因滚动而卸载）；getByRole 查不到会抛错
+    expect(screen.getByRole("button", { name: /登\s*出/ })).toBeTruthy();
+  });
+});

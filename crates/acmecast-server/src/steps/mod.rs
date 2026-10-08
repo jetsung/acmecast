@@ -48,6 +48,12 @@ pub fn default_dns_registry() -> Arc<DnsProviderRegistry> {
     registry
         .register(acmecast_dns::AliyunProvider::new())
         .expect("内置 DNS 提供商不应重复注册");
+    registry
+        .register(acmecast_dns::TencentProvider::new())
+        .expect("内置 DNS 提供商不应重复注册");
+    registry
+        .register(acmecast_dns::TencentEoProvider::new())
+        .expect("内置 DNS 提供商不应重复注册");
     Arc::new(registry)
 }
 
@@ -61,20 +67,27 @@ pub fn default_deploy_registry() -> Arc<DeploymentRegistry> {
     registry
         .register(acmecast_deploy::SshTarget::live())
         .expect("内置部署目标不应重复注册");
+    registry
+        .register(acmecast_deploy::TencentSslTarget::new())
+        .expect("内置部署目标不应重复注册");
     Arc::new(registry)
 }
 
 /// 装配内置流水线步骤；返回的注册表在服务启动时注入 [`RuntimeState`](crate::RuntimeState)。
+///
+/// `propagation` 是 DNS-01 传播等待策略，来自服务配置的 `[propagation]` 段。
 #[must_use]
 pub fn default_steps(
     db: DatabaseConnection,
     data_dir: PathBuf,
     dns: Arc<DnsProviderRegistry>,
     deploy: Arc<DeploymentRegistry>,
+    propagation: acmecast_dns::PropagationPolicy,
 ) -> StepRegistry {
     let mut steps = StepRegistry::new();
+    // 到期检测需读证书库：为 cert.apply 注入 db，0/负数=跳过检测，其余按 not_after 判定。
     steps
-        .register(CertApplyStep::new(dns))
+        .register(CertApplyStep::with_policy_and_db(dns, propagation, db.clone()))
         .expect("内置步骤不应重复注册");
     steps
         .register(CertStoreStep::new(db.clone(), data_dir))

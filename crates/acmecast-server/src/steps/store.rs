@@ -97,6 +97,44 @@ impl PipelineStep for CertStoreStep {
             .map(String::as_str)
             .or_else(|| leaf.primary_domain())
             .unwrap_or("certificate");
+        // 扁平活跃目录：同主域名仅保留最新。先检测既有记录，若指纹不同则将旧证书按旧指纹归档到 archived。
+        let repository = CertRepository::new(&self.db);
+        let existing = repository
+            .find_by_domains(&domains)
+            .await
+            .map_err(|e| domain_error("查询既有证书", e))?;
+        if let Some(old) = &existing {
+            if old.fingerprint != fingerprint {
+                match store
+                    .archive_replaced_certificate(
+                        &old.cert_pem_path,
+                        &old.key_pem_path,
+                        &old.fingerprint,
+                    )
+                    .await
+                {
+                    Ok(Some(_)) => {
+                        ctx.log_info(format!(
+                            "旧证书已归档到 archived/{}（主域名 {}）",
+                            old.fingerprint, primary_domain
+                        ));
+                    }
+                    Ok(None) => {
+                        tracing::warn!(
+                            old_fingerprint = %old.fingerprint,
+                            "旧证书材料缺失，跳过归档，直接覆盖活跃文件"
+                        );
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            old_fingerprint = %old.fingerprint,
+                            %error,
+                            "旧证书归档失败，仍继续写入新证书"
+                        );
+                    }
+                }
+            }
+        }
         let paths = store
             .write_certificate(&fingerprint, primary_domain, &cert_pem, &key_pem)
             .await
@@ -106,7 +144,10 @@ impl PipelineStep for CertStoreStep {
             paths.cert_pem, paths.key_pem
         ));
 
-        let repository = CertRepository::new(&self.db);
+        // 从私钥检测算法展示名（RSA / ECDSA P-256 等）；检测失败不阻断入库，留空展示。
+        let key_algorithm = acmecast_cert::detect_algorithm(&key_pem)
+            .ok()
+            .map(|algo| algo.as_str().to_owned());
         let outcome = repository
             .save(CertInput {
                 domains: domains.clone(),
@@ -117,6 +158,8 @@ impl PipelineStep for CertStoreStep {
                 not_before: leaf.not_before,
                 not_after: leaf.not_after,
                 acme_account_access_id: input.acme_account_credential_id,
+                key_algorithm,
+                description: None,
             })
             .await
             .map_err(|e| domain_error("入库证书记录", e))?;

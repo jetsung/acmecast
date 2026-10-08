@@ -46,7 +46,7 @@ const TRIGGER_LOGS = {
   ],
   total: 1,
   page: 1,
-  page_size: 10,
+  page_size: 15,
 };
 
 const mocks = vi.hoisted(() => ({
@@ -170,7 +170,7 @@ expect(screen.getByText("续期")).toBeTruthy();
         };
       }
       return {
-        data: { data: { items: [], total: 0, page: 1, page_size: 10 } },
+        data: { data: { items: [], total: 0, page: 1, page_size: 15 } },
         response: new Response(),
       };
     });
@@ -238,13 +238,15 @@ describe("快捷启停", () => {
       expect(mocks.post).toHaveBeenCalled();
     });
     const body = mocks.post.mock.calls[0][1] as { body: Record<string, unknown> };
-    expect(body.body).toEqual({
-      pipeline_id: 1,
-      cron: "0 3 * * *",
-      enabled: false,
-      catch_up: false,
-      renewal_domains: ["example.com"],
-    });
+    expect(body.body).toEqual(
+      expect.objectContaining({
+        pipeline_id: 1,
+        cron: "0 3 * * *",
+        enabled: false,
+        catch_up: false,
+        renewal_domains: ["example.com"],
+      }),
+    );
   });
 
   it("启停保存失败时提示错误，开关保持原状态", async () => {

@@ -2,9 +2,11 @@
 
 pub mod local;
 pub mod ssh;
+pub mod tencent;
 
 pub use local::{LocalInput, LocalTarget};
 pub use ssh::{
     ResolvedSshConfig, RusshConnector, SshAuth, SshAuthSource, SshConnector, SshInput, SshTarget,
     SshTransport, probe_host,
 };
+pub use tencent::{TencentSslInput, TencentSslTarget};

@@ -104,11 +104,12 @@ async fn a_cert(db: &DatabaseConnection, domains: &[&str], not_after: DateTime<U
             not_before: not_after - Duration::days(90),
             not_after,
             acme_account_access_id: None,
+            key_algorithm: None,
+            description: None,
         })
         .await
         .expect("证书应能写入");
 }
-
 /// 把某条调度写成一条「正在运行」的历史，制造运行中状态。
 async fn a_running_run(db: &DatabaseConnection, pipeline_id: i64) {
     HistoryRepository::new(db)
@@ -135,6 +136,7 @@ async fn a_cron_schedule(db: &DatabaseConnection, pipeline_id: i64, cron: &str, 
                 enabled: true,
                 catch_up,
                 renewal_domains: None,
+                    renewal_threshold_days: None,
             },
         )
         .await
@@ -209,6 +211,7 @@ async fn an_invalid_cron_is_rejected_on_save() {
                 enabled: true,
                 catch_up: false,
                 renewal_domains: None,
+                    renewal_threshold_days: None,
             },
         )
         .await
@@ -247,6 +250,7 @@ async fn a_certificate_within_the_renewal_window_triggers_its_pipeline() {
                 enabled: true,
                 catch_up: false,
                 renewal_domains: Some(vec!["a.example.com".to_owned()]),
+                    renewal_threshold_days: None,
             },
         )
         .await
@@ -286,6 +290,7 @@ async fn a_certificate_outside_the_window_does_not_trigger() {
                 enabled: true,
                 catch_up: false,
                 renewal_domains: Some(vec!["safe.example.com".to_owned()]),
+                    renewal_threshold_days: None,
             },
         )
         .await
@@ -318,6 +323,7 @@ async fn a_running_pipeline_is_not_triggered_again() {
                 enabled: true,
                 catch_up: false,
                 renewal_domains: Some(vec!["busy.example.com".to_owned()]),
+                    renewal_threshold_days: None,
             },
         )
         .await
@@ -355,6 +361,7 @@ async fn repeated_hits_within_the_dedup_window_trigger_once() {
                 enabled: true,
                 catch_up: false,
                 renewal_domains: Some(vec!["due.example.com".to_owned()]),
+                    renewal_threshold_days: None,
             },
         )
         .await
@@ -604,6 +611,7 @@ async fn a_failed_renewal_launch_is_recorded_and_throttled() {
                 enabled: true,
                 catch_up: false,
                 renewal_domains: Some(vec!["broken.example.com".to_owned()]),
+                    renewal_threshold_days: None,
             },
         )
         .await
@@ -658,6 +666,7 @@ async fn multiple_certs_matching_one_pipeline_trigger_it_once_per_scan() {
                     "one.example.com".to_owned(),
                     "two.example.com".to_owned(),
                 ]),
+                renewal_threshold_days: None,
             },
         )
         .await

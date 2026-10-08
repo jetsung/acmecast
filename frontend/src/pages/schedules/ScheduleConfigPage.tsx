@@ -45,6 +45,7 @@ export function ScheduleConfigPage() {
   /** 正在编辑的流水线 id；null 表示新建模式。 */
   const [editingPipelineId, setEditingPipelineId] = useState<number | null>(null);
   const [triggerPage, setTriggerPage] = useState(1);
+  const [triggerPageSize, setTriggerPageSize] = useState(15);
   const [triggerPipelineFilter, setTriggerPipelineFilter] = useState<number | null>(null);
 
   const { data: schedules } = useQuery({
@@ -66,13 +67,13 @@ export function ScheduleConfigPage() {
   });
 
   const { data: triggerLogs } = useQuery({
-    queryKey: ["trigger-logs", triggerPage, triggerPipelineFilter],
+    queryKey: ["trigger-logs", triggerPage, triggerPageSize, triggerPipelineFilter],
     queryFn: async () => {
       const result = await client.GET("/api/schedules/trigger-logs", {
         params: {
           query: {
             page: triggerPage,
-            page_size: 10,
+            page_size: triggerPageSize,
             ...(triggerPipelineFilter !== null ? { pipeline_id: triggerPipelineFilter } : {}),
           },
         },
@@ -309,10 +310,18 @@ export function ScheduleConfigPage() {
           locale={{ emptyText: "暂无触发记录" }}
           pagination={{
             current: triggerLogs?.page ?? triggerPage,
-            pageSize: triggerLogs?.page_size ?? 10,
+            pageSize: triggerPageSize,
             total: triggerLogs?.total ?? 0,
-            onChange: (page) => setTriggerPage(page),
-            showSizeChanger: false,
+            onChange: (newPage, newPageSize) => {
+              if (newPageSize !== triggerPageSize) {
+                setTriggerPage(1);
+                setTriggerPageSize(newPageSize);
+              } else {
+                setTriggerPage(newPage);
+              }
+            },
+            showSizeChanger: true,
+            pageSizeOptions: [15, 20, 50, 100],
           }}
           columns={[
             {

@@ -2,6 +2,11 @@
 //!
 //! 用的是阿里云的 RPC 风格 API（`Action` 参数分派、HMAC-SHA1 签名），
 //! 而非它的新版 OpenAPI——前者不需要额外 SDK，签名逻辑三十行就能写清。
+//!
+//! # API 文档
+//!
+//! - 添加解析记录（AddDomainRecord）：
+//!   <https://help.aliyun.com/zh/dns/api-alidns-2015-01-09-adddomainrecord>
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -58,10 +63,24 @@ impl AliyunProvider {
         Self { http }
     }
 
-    /// 发一次 RPC 调用。
+    /// 发一次 RPC 调用（DNS 服务端点）。
     async fn call(
         &self,
         credentials: &AliyunCredentials,
+        action: &str,
+        extra: BTreeMap<String, String>,
+    ) -> Result<Value> {
+        self.call_service(credentials, API_ENDPOINT, API_VERSION, action, extra)
+            .await
+    }
+
+    /// 发一次 RPC 调用，端点与服务版本由调用方给——
+    /// DNS 与 STS（凭据探测的 `GetCallerIdentity`）共用同一套签名。
+    async fn call_service(
+        &self,
+        credentials: &AliyunCredentials,
+        endpoint: &str,
+        version: &str,
         action: &str,
         extra: BTreeMap<String, String>,
     ) -> Result<Value> {
@@ -73,7 +92,7 @@ impl AliyunProvider {
             ("SignatureNonce".to_owned(), nonce()),
             ("SignatureVersion".to_owned(), "1.0".to_owned()),
             ("Timestamp".to_owned(), timestamp()),
-            ("Version".to_owned(), API_VERSION.to_owned()),
+            ("Version".to_owned(), version.to_owned()),
         ]);
         params.extend(extra);
 
@@ -86,10 +105,37 @@ impl AliyunProvider {
             .collect::<Vec<_>>()
             .join("&");
 
-        let request = HttpRequest::new("GET", format!("{API_ENDPOINT}?{query}"));
+        let request = HttpRequest::new("GET", format!("{endpoint}?{query}"));
         let response = self.http.send(request).await?;
 
         ensure_success(response, action)
+    }
+
+    /// 探测凭据是否可用：调 STS 的 `GetCallerIdentity`。
+    ///
+    /// 这是凭据页「测试」按钮的探测动作——只做身份辨识，
+    /// 不依赖任何 DNS 业务权限，子账号默认可调。
+    pub async fn verify_credentials(&self, credentials: &Value) -> Result<()> {
+        let credentials: AliyunCredentials = parse_credentials(credentials)?;
+        let body = self
+            .call_service(
+                &credentials,
+                "https://sts.aliyuncs.com/",
+                "2015-04-01",
+                "GetCallerIdentity",
+                BTreeMap::new(),
+            )
+            .await?;
+
+        // 鉴权失败通常伴随 HTTP 4xx（ensure_success 已摘 Code/Message），
+        // 这里再顶层的看一次：个别网关路径会把错误包在 HTTP 200 里。
+        if let Some(code) = body["Code"].as_str() {
+            let message = body["Message"].as_str().unwrap_or("");
+            return Err(Error::provider(format!(
+                "阿里云 GetCallerIdentity 失败：{code}: {message}"
+            )));
+        }
+        Ok(())
     }
 
     /// 列出某个主机记录下的全部 TXT 记录（RecordId 与值）。

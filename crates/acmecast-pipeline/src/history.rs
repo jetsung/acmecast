@@ -23,6 +23,8 @@ pub struct StepLogRecord {
     pub message: String,
     /// 产生时间。
     pub created_at: DateTime<Utc>,
+    /// 结构化输出；步骤产生可程序化读取的产物摘要时附带。
+    pub output: Option<serde_json::Value>,
 }
 
 /// 一次运行的待落库内容。
@@ -82,6 +84,7 @@ impl HistoryRecord {
                     level: log.level,
                     message: log.message.clone(),
                     created_at: log.created_at,
+                    output: log.output.clone(),
                 })
             })
             .collect();
@@ -190,6 +193,7 @@ impl<'db> HistoryRepository<'db> {
                 step_index: Set(log.step_index),
                 level: Set(log.level.as_str().to_owned()),
                 message: Set(log.message),
+                output: Set(log.output),
                 created_at: Set(log.created_at),
                 ..Default::default()
             }
@@ -241,6 +245,7 @@ impl<'db> HistoryRepository<'db> {
                 step_index: Set(log.step_index),
                 level: Set(log.level.as_str().to_owned()),
                 message: Set(log.message),
+                output: Set(log.output),
                 created_at: Set(log.created_at),
                 ..Default::default()
             }
@@ -332,6 +337,7 @@ impl<'db> HistoryRepository<'db> {
                     })?,
                     message: row.message,
                     created_at: row.created_at,
+                    output: row.output,
                 })
             })
             .collect()

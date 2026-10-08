@@ -2,18 +2,26 @@
 
 ## 构建
 
+两个构建文件除镜像源配置外完全一致，二选一：
+
 ```bash
-docker build -t acmecast:dev .                          # 构建上下文 = 仓库根
-docker build -t acmecast:dev --build-arg USE_CN_MIRROR=false .   # 上线构建（不用镜像源）
+docker build -f docker/CN.Dockerfile -t acmecast:dev .   # 中国网络：阿里云 apt / rsproxy / npmmirror
+docker build -f docker/Dockerfile    -t acmecast:dev .   # 国际/上线：官方源
 ```
+
+- 构建上下文 = 仓库根；
+- 镜像源配置只写入 builder 层，最终运行镜像不含任何镜像源或代理配置；
+- 目标平台由 buildx 的 `TARGETPLATFORM` 决定（`linux/amd64` →
+  `x86_64-unknown-linux-musl`，`linux/arm64` → `aarch64-unknown-linux-musl`），
+  镜像与目标平台同架构，不做交叉编译。
 
 ## 三段式结构
 
 | 阶段 | 基础镜像 | 产物 |
 |---|---|---|
-| `builder` | `rust:1.98-slim` + musl target | 静态链接的 `/acmecast-server` |
+| `builder` | `rust:1-slim` + musl target | 静态链接的 `/acmecast-server` |
 | `frontend-builder` | `node:24-slim` + corepack/pnpm | `frontend/dist` |
-| 运行阶段 | `gcr.io/distroless/static-debian12:nonroot` | 最终镜像 |
+| 运行阶段 | `gcr.io/distroless/static-debian13:nonroot` | 最终镜像 |
 
 选择依据：
 
@@ -32,8 +40,8 @@ ACMECAST_DATA_DIR=/data
 ACMECAST_STATIC_DIR=/static
 ```
 
-`ENTRYPOINT ["/acmecast-server"]`——子命令直接作为参数：
-`docker run --rm acmecast:dev hash-password --password 'xxx'`。
+`ENTRYPOINT ["acmecast-server"]`（二进制位于 `/usr/bin`）——子命令直接作为
+参数：`docker run --rm acmecast:dev hash-password --password 'xxx'`。
 
 ## .dockerignore 要点
 

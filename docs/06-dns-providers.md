@@ -53,9 +53,40 @@ DNS-01 挑战的生命周期：**写入 TXT 记录 → 等传播 → 通知 CA �
 不走公共 DoH 的原因：公共解析器的 NXDOMAIN 负缓存（SOA minimum 通常
 600–1800 秒）会让「写入 → 删除 → 重试」的第二次尝试稳定查不到新值。
 
-### 自定义解析器
+### 自定义解析器（腾讯云手动配置）
 
-显式设置后改用配置而非权威直查：
+显式设置后改用配置而非权威直查。腾讯云用户在国内环境建议追加腾讯 DoH
+以提升可达性，`data/config.toml` 与 `acmecast-server config init` 模板已附
+可直接取消注释的片段：
+
+```toml
+[[resolvers]]
+type = "doh"
+endpoint = "https://doh.pub/dns-query"
+name = "腾讯 DNSPod"
+
+[[resolvers]]
+type = "doh"
+endpoint = "https://1.12.12.12/dns-query"
+name = "腾讯 DNSPod（IP 直连）"
+
+# 传统 UDP 53（目前仅校验，传输层未实现；配置后告警跳过，留作清单备用）
+# [[resolvers]]
+# type = "dns"
+# endpoint = "119.29.29.29"
+# name = "腾讯 DNSPod"
+# [[resolvers]]
+# type = "dns"
+# endpoint = "119.28.28.28"
+# name = "腾讯 DNSPod"
+```
+
+环境变量等价写法：
+
+```bash
+export ACMECAST_DOH_RESOLVERS="腾讯 DoH=https://doh.pub/dns-query,https://1.12.12.12/dns-query"
+# 跳过传播等待（不推荐）：export ACMECAST_DOH_RESOLVERS=none
+```
 
 - 环境变量 `ACMECAST_DOH_RESOLVERS`：逗号分隔的 `名称=端点`（或仅端点）；
   **`none` = 跳过传播等待**（provider 确认写入后立即让 CA 验证，不推荐）。
@@ -72,10 +103,52 @@ DNS-01 挑战的生命周期：**写入 TXT 记录 → 等传播 → 通知 CA �
 
 - **UDP 53**：223.5.5.5、223.6.6.6、119.29.29.29、114.114.114.114、
   114.114.115.115、180.76.76.76、1.1.1.1、8.8.8.8、9.9.9.9、149.112.112.112
+  （含 `dnsdata/dns_servers.txt` 中收录的腾讯 `119.28.28.28` / `119.29.29.29` 体系）
 - **DoH**：dns.alidns.com、doh.pub、1.12.12.12、120.53.53.53、223.5.5.5、
   dns.google、cloudflare-dns.com、1.1.1.1（均 `/dns-query`）
+  （其中 `doh.pub` / `1.12.12.12` / `120.53.53.53` 为腾讯 DNSPod 公共 DoH）
+
+> 腾讯 DoH 端点说明：`https://doh.pub/dns-query` 与 `https://1.12.12.12/dns-query`
+> / `https://120.53.53.53/dns-query` 同源（DNSPod），前者走域名便于证书校验，
+> 后者走 IP 直连在 DNS 劫持环境更稳；按网络环境二选一或并存均可。
 
 ## HTTP-01 的现状
 
 HTTP-01 目前只有**材料计算**能力（token、`/.well-known/acme-challenge/<token>`
 路径、key authorization 响应体），没有投放通道。申请证书请使用 DNS-01。
+
+## 通配符与 CNAME 的排障
+
+### 泛解析（`*.<zone>`）不要把 `_acme-challenge` 也套进去
+
+最常见的误用：为了把 `*.example.com` 全指向一台服务器，配了
+
+```
+*.example.com.  CNAME  oversea.example.net.
+```
+
+`_acme-challenge.example.com` 上**没有显式节点**时，按 `RFC 4592` 它会被上面的通配 `CNAME` **合成**出来：
+
+```
+_acme-challenge.example.com.  CNAME  oversea.example.net.
+```
+
+此后对 `_acme-challenge.example.com` 查 `TXT`，权威 NS 回的是 `CNAME`，`DNS-01` 永远拿不到 `TXT`，日志可能是 `已在权威/公共解析器可见`（本机 DoH 命中 CNAME 的 `NOERROR`）但 CA `secondary validation: No TXT record found`。
+
+**修复：**
+
+1. 不要给 `_acme-challenge` 建显式的 `CNAME`，只保留 `*.example.com` 的那条。
+2. `acmecast` 往原区写入 `_acme-challenge.example.com TXT` 成功后，该名字上就有了**显式节点**，按 `RFC 4592` 它会**压掉通配**，再查 `TXT` 就只回 `TXT`、不回 `CNAME` 了。验证时请直查权威 NS：
+
+   ```
+   dig @权威NS TXT _acme-challenge.example.com
+   ```
+
+   确认只回 `TXT` 不回 `CNAME` 后再触发流水线。
+3. 若想彻底不纠结，把泛解析从 `CNAME` 改成 `A` 到目标 IP，业务效果等同，且 `_acme-challenge` 天然不受影响。
+
+### `CNAME` 与 `TXT` 同名互斥
+
+`CNAME` 的语义是“此名别处定”（RFC 1034），同名处**不允许**再有 `TXT`。已有 `CNAME` 时，往同名写 `TXT` 要么被 `DNS` 服务商拒绝，要么写入成功但递归查询时 `CNAME` 会**遮蔽** `TXT` —— `acmecast` 的权威直查会同时取 `TXT + CNAME`，`CNAME` 存在时按 `CA` 的跟随语义跟到目标区（[authoritative.rs:104](../crates/acmecast-dns/src/authoritative.rs#L104)），原区 `TXT` 对验证者不可见。
+
+**规则：** 挑战委托（`_acme-challenge.x CNAME _acme-challenge.y.`）是允许的，但它要求**目标区**上能查到 `TXT`；**业务泛 `CNAME` 与挑战 `TXT` 混在同名上是不允许的**。[故障排查](15-troubleshooting.md)有 `CNAME` 遮蔽的最小复现与 `dig` 排查步骤。

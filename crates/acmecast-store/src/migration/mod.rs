@@ -12,6 +12,11 @@ pub mod m20250102_000001_create_deployment;
 pub mod m20250103_000001_add_deployment_details;
 pub mod m20250104_000001_schedule_renewal_and_trigger_log;
 pub mod m20250105_000001_pg_timestamptz;
+pub mod m20250106_000001_add_credential_remark;
+pub mod m20250107_000001_add_cert_description;
+pub mod m20250108_000001_add_schedule_renewal_threshold;
+pub mod m20250109_000001_add_history_log_output;
+pub mod m20250110_000001_add_pipeline_name_unique;
 
 use sea_orm::DatabaseConnection;
 use sea_orm_migration::prelude::*;
@@ -27,6 +32,11 @@ pub use m20250102_000001_create_deployment::Migration as CreateDeployment;
 pub use m20250103_000001_add_deployment_details::Migration as AddDeploymentDetails;
 pub use m20250104_000001_schedule_renewal_and_trigger_log::Migration as ScheduleRenewalAndTriggerLog;
 pub use m20250105_000001_pg_timestamptz::Migration as PgTimestamptz;
+pub use m20250106_000001_add_credential_remark::Migration as AddCredentialRemark;
+pub use m20250107_000001_add_cert_description::Migration as AddCertDescription;
+pub use m20250108_000001_add_schedule_renewal_threshold::Migration as AddScheduleRenewalThreshold;
+pub use m20250109_000001_add_history_log_output::Migration as AddHistoryLogOutput;
+pub use m20250110_000001_add_pipeline_name_unique::Migration as AddPipelineNameUnique;
 
 #[async_trait::async_trait]
 impl MigratorTrait for Migrator {
@@ -37,6 +47,11 @@ impl MigratorTrait for Migrator {
             Box::new(AddDeploymentDetails),
             Box::new(ScheduleRenewalAndTriggerLog),
             Box::new(PgTimestamptz),
+            Box::new(AddCredentialRemark),
+            Box::new(AddCertDescription),
+            Box::new(AddScheduleRenewalThreshold),
+            Box::new(AddHistoryLogOutput),
+            Box::new(AddPipelineNameUnique),
         ]
     }
 }

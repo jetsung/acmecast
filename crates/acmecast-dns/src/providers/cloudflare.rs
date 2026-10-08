@@ -2,6 +2,11 @@
 //!
 //! 用的是 API Token 方式（而非早已不推荐的 Global API Key）：Token 可以
 //! 限定到具体域名与权限，泄漏的爆炸半径小得多。
+//!
+//! # API 文档
+//!
+//! - 创建 DNS 记录：
+//!   <https://developers.cloudflare.com/api/resources/dns/subresources/records/methods/create/>
 
 use std::sync::Arc;
 
@@ -42,6 +47,29 @@ impl CloudflareProvider {
     #[must_use]
     pub fn with_transport(http: Arc<dyn HttpTransport>) -> Self {
         Self { http }
+    }
+
+    /// 探测凭据是否可用：调 Cloudflare 的 token 自检端点。
+    ///
+    /// 这是凭据页「测试」按钮的探测动作——用轻量身份接口验证令牌本身，
+    /// 不要求它对任何域名具备 DNS 编辑权限。
+    pub async fn verify_credentials(&self, credentials: &Value) -> Result<()> {
+        let credentials: CloudflareCredentials = parse_credentials(credentials)?;
+        let request = HttpRequest::new("GET", format!("{API_BASE}/user/tokens/verify"))
+            .with_header("Authorization", format!("Bearer {}", credentials.api_token));
+
+        let response = self.http.send(request).await?;
+        let body = ensure_success(response, "验证令牌")?;
+
+        // 自检端点对无效令牌也可能回 200（`success: false` + errors），
+        // 所以「HTTP 成功」之外还要看令牌状态是不是 active。
+        let status = body["result"]["status"].as_str().unwrap_or("");
+        if status == "active" {
+            return Ok(());
+        }
+        Err(Error::provider(format!(
+            "Cloudflare 令牌未激活（status: {status}）"
+        )))
     }
 
     /// 按域名换 zone_id。
@@ -183,13 +211,16 @@ impl DnsProvider for CloudflareProvider {
 /// 校验响应成功，并解析出 JSON。
 ///
 /// 失败时摘出 Cloudflare 的 `errors[].message`：它的报错比一个光秃秃的 403
-/// 有用得多（比如「token 缺少 DNS:Edit 权限」）。
+/// 有用得多（比如「token 缺少 DNS:Edit 权限」）。出错一般伴随 4xx，但
+/// `success: false` 也可能出现在 200 响应里（如 token 自检对无效令牌），
+/// 两处都判断才不会把业务失败误判成成功。
 fn ensure_success(response: HttpResponse, what: &str) -> Result<Value> {
     let body = response
         .json()
         .unwrap_or_else(|_| json!({ "raw": &response.body }));
 
-    if response.is_success() {
+    let business_failed = body["success"].as_bool() == Some(false);
+    if response.is_success() && !business_failed {
         return Ok(body);
     }
 

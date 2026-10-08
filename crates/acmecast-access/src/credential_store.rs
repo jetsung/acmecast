@@ -66,6 +66,8 @@ pub struct ResolvedCredential {
     pub name: String,
     /// 类型标识，如 `acme.account`。
     pub type_id: String,
+    /// 人类可读的备注（用途/归属/环境说明），可为空。
+    pub remark: String,
     /// 解密后的字段值。
     pub fields: serde_json::Value,
 }
@@ -76,6 +78,7 @@ impl std::fmt::Debug for ResolvedCredential {
             .field("id", &self.id)
             .field("name", &self.name)
             .field("type_id", &self.type_id)
+            .field("remark", &self.remark)
             .field("fields", &acmecast_core::REDACTED)
             .finish()
     }
@@ -144,6 +147,7 @@ impl<'db> CredentialStore<'db> {
             id: record.id,
             name: record.name,
             type_id: record.type_id,
+            remark: record.remark,
             fields,
         })
     }

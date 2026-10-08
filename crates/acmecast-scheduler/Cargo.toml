@@ -3,7 +3,10 @@ name = "acmecast-scheduler"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
 publish.workspace = true
+description = "定时调度引擎：cron 触发与证书到期扫描，触发判定、去重与启动委派"
 
 [dependencies]
 acmecast-core.workspace = true

@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Input, Select, Space, Table, Tag } from "antd";
+import { Input, Select, Space, Table, Tag, Typography } from "antd";
 import type { TableColumnsType } from "antd";
 import type { components } from "@/api/schema";
 import { useState } from "react";
@@ -18,9 +18,10 @@ export function CertificateListPage() {
   const [domain, setDomain] = useState("");
   const [sort, setSort] = useState<"ascending" | "descending">("descending");
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(15);
 
   const { data, isFetching } = useQuery({
-    queryKey: ["certificates", domain, sort, page],
+    queryKey: ["certificates", domain, sort, page, pageSize],
     queryFn: async () => {
       const result = await client.GET("/api/certificates", {
         params: {
@@ -28,7 +29,7 @@ export function CertificateListPage() {
             domain: domain || undefined,
             sort,
             page,
-            page_size: 20,
+            page_size: pageSize,
           },
         },
       });
@@ -72,6 +73,19 @@ export function CertificateListPage() {
       width: 100,
       render: (revoked: string | null) =>
         revoked ? <Tag color="default">已吊销</Tag> : <Tag color="processing">有效</Tag>,
+    },
+    {
+      title: "描述",
+      dataIndex: "description",
+      ellipsis: true,
+      render: (value: string | null | undefined) =>
+        value && value.trim() !== "" ? (
+          <Typography.Text ellipsis style={{ maxWidth: 320 }} title={value}>
+            {value}
+          </Typography.Text>
+        ) : (
+          <Typography.Text type="secondary">—</Typography.Text>
+        ),
     },
     {
       title: "更新时间",
@@ -119,9 +133,18 @@ export function CertificateListPage() {
           onRow={(row) => ({ onClick: () => navigate(`/certificates/${row.id}`), style: { cursor: "pointer" } })}
           pagination={{
             current: page,
-            pageSize: 20,
+            pageSize,
             total: data?.total ?? 0,
-            onChange: setPage,
+            onChange: (newPage, newPageSize) => {
+              if (newPageSize !== pageSize) {
+                setPage(1);
+                setPageSize(newPageSize);
+              } else {
+                setPage(newPage);
+              }
+            },
+            showSizeChanger: true,
+            pageSizeOptions: [15, 20, 50, 100],
             showTotal: (total) => `共 ${total} 条`,
           }}
         />

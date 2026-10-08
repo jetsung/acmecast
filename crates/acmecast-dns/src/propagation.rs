@@ -226,6 +226,56 @@ pub fn resolvers_for_zone(http: Arc<dyn HttpTransport>, zone: &str) -> Vec<Box<d
     ))]
 }
 
+/// 按 `dns_provider` 选择 DoH 解析器。
+///
+/// - `aliyun` → 仅阿里 DoH（`DohResolver::aliyun`）
+/// - `cloudflare` → 仅 Cloudflare DoH（`DohResolver::cloudflare`）
+/// - `tencent` / `tencent-eo` → 仅腾讯 DoH（`DohResolver::tencent`）
+/// - 其他 / 未传参 → `aliyun + cloudflare` 兜底两条
+///
+/// 已显式设置 `ACMECAST_DOH_RESOLVERS`（含 `none`）时短路返回
+/// `default_resolvers(http)`，不叠加厂商端点，保持环境变量最高优先级。
+#[must_use]
+pub fn doh_resolvers_for_provider(
+    http: Arc<dyn HttpTransport>,
+    provider_id: Option<&str>,
+) -> Vec<Box<dyn DnsResolver>> {
+    // 环境变量显式设置时短路：与 `resolvers_for_zone` 保持一致的优先级。
+    if std::env::var(RESOLVERS_ENV_KEY).is_ok_and(|value| !value.trim().is_empty()) {
+        return default_resolvers(http);
+    }
+    let normalized = provider_id
+        .map(|value| value.trim().to_ascii_lowercase())
+        .unwrap_or_default();
+    match normalized.as_str() {
+        "aliyun" => vec![Box::new(DohResolver::aliyun(http))],
+        "cloudflare" => vec![Box::new(DohResolver::cloudflare(http))],
+        "tencent" | "tencent-eo" => vec![Box::new(DohResolver::tencent(http))],
+        _ => vec![
+            Box::new(DohResolver::aliyun(Arc::clone(&http))),
+            Box::new(DohResolver::cloudflare(http)),
+        ],
+    }
+}
+
+/// 按 `dns_provider` 与 `zone` 选择传播等待解析器。
+///
+/// 已设置 `ACMECAST_DOH_RESOLVERS` 时与 `resolvers_for_zone` 一致返回
+/// 环境变量语义的结果；否则返回提供商感知的 DoH 集合（1 或 2 条）。
+/// 不改动 `resolvers_for_zone` 的权威直查默认路径——旧入口保持不变。
+#[must_use]
+pub fn resolvers_for_provider(
+    http: Arc<dyn HttpTransport>,
+    zone: &str,
+    provider_id: Option<&str>,
+) -> Vec<Box<dyn DnsResolver>> {
+    if std::env::var(RESOLVERS_ENV_KEY).is_ok_and(|value| !value.trim().is_empty()) {
+        return default_resolvers(http);
+    }
+    let _ = zone;
+    doh_resolvers_for_provider(http, provider_id)
+}
+
 /// 内置解析器集合：腾讯/阿里（国内可达）+ Google/Cloudflare（国际可达）。
 fn builtin_resolvers(http: Arc<dyn HttpTransport>) -> Vec<Box<dyn DnsResolver>> {
     vec![
@@ -257,11 +307,13 @@ pub struct PropagationPolicy {
 
 impl Default for PropagationPolicy {
     fn default() -> Self {
-        // ACME 的 DNS-01 常见传播是几十秒；两分钟足够覆盖慢解析器，
-        // 又不至于让一次失败的挑战挂太久。
+        // ACME 的 DNS-01 常见传播是几十秒，但商有 DNS（EdgeOne 等）从
+        // 控制面到权威 NS 的同步延迟实测可达数分钟且波动大。等待期挑战
+        // 记录始终存在、退出路径保证清理，偏大没有残留副作用，五分钟
+        // 覆盖慢同步长尾；需要收紧的环境走 [propagation] 配置。
         Self {
             interval: Duration::from_secs(5),
-            timeout: Duration::from_secs(120),
+            timeout: Duration::from_secs(300),
         }
     }
 }
@@ -1050,5 +1102,105 @@ mod tests {
             .expect_err("非 2xx 应报错");
         assert!(err.to_string().contains("Cloudflare DNS"), "{err}");
         assert!(err.to_string().contains("503"), "{err}");
+    }
+
+    #[test]
+    fn provider_aware_doh_resolvers_aliyun_is_single_aliyun() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let http: Arc<dyn HttpTransport> =
+            Arc::new(crate::http::ReqwestTransport::default());
+        let v = doh_resolvers_for_provider(http, Some("aliyun"));
+        assert_eq!(v.len(), 1, "aliyun 仅一条");
+        assert_eq!(v[0].name(), "阿里 DNS");
+    }
+
+    #[test]
+    fn provider_aware_doh_resolvers_cloudflare_is_single_cloudflare() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let http: Arc<dyn HttpTransport> =
+            Arc::new(crate::http::ReqwestTransport::default());
+        let v = doh_resolvers_for_provider(http, Some("cloudflare"));
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].name(), "Cloudflare DNS");
+    }
+
+    #[test]
+    fn provider_aware_doh_resolvers_tencent_variants_are_single_tencent() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let http: Arc<dyn HttpTransport> =
+            Arc::new(crate::http::ReqwestTransport::default());
+        for id in ["tencent", "tencent-eo", "TENCENT", "  tencent-eo  "] {
+            let v = doh_resolvers_for_provider(Arc::clone(&http), Some(id));
+            assert_eq!(v.len(), 1, "provider={id}");
+            assert_eq!(v[0].name(), "腾讯 DNSPod", "provider={id}");
+        }
+    }
+
+    #[test]
+    fn provider_aware_doh_resolvers_unknown_falls_back_to_two() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let http: Arc<dyn HttpTransport> =
+            Arc::new(crate::http::ReqwestTransport::default());
+        for id in [None, Some(""), Some("  "), Some("custom"), Some("unknown")] {
+            let v = doh_resolvers_for_provider(Arc::clone(&http), id);
+            assert_eq!(v.len(), 2, "provider={id:?}");
+            let names: Vec<_> = v.iter().map(|r| r.name().to_owned()).collect();
+            assert!(names.contains(&"阿里 DNS".to_owned()), "provider={id:?} {names:?}");
+            assert!(
+                names.contains(&"Cloudflare DNS".to_owned()),
+                "provider={id:?} {names:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn provider_aware_doh_resolvers_env_overrides_provider() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = EnvGuard::set("ACMECAST_DOH_RESOLVERS", "my=https://dns.example.com/resolve");
+        let http: Arc<dyn HttpTransport> =
+            Arc::new(crate::http::ReqwestTransport::default());
+        let v = doh_resolvers_for_provider(http, Some("aliyun"));
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].name(), "my", "环境变量应覆盖提供商感知");
+    }
+
+    #[test]
+    fn provider_aware_doh_resolvers_env_none_short_circuits() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _env = EnvGuard::set("ACMECAST_DOH_RESOLVERS", "none");
+        let http: Arc<dyn HttpTransport> =
+            Arc::new(crate::http::ReqwestTransport::default());
+        let v = doh_resolvers_for_provider(http, Some("tencent"));
+        assert!(v.is_empty(), "none 时应为空集");
+    }
+
+    #[test]
+    fn resolvers_for_provider_mirrors_doh_provider_when_no_env() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let http: Arc<dyn HttpTransport> =
+            Arc::new(crate::http::ReqwestTransport::default());
+        for id in [Some("aliyun"), Some("cloudflare"), Some("tencent"), None] {
+            let a = doh_resolvers_for_provider(Arc::clone(&http), id);
+            let b = resolvers_for_provider(Arc::clone(&http), "example.com", id);
+            assert_eq!(a.len(), b.len(), "provider={id:?}");
+            for (x, y) in a.iter().zip(b.iter()) {
+                assert_eq!(x.name(), y.name(), "provider={id:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn provider_aware_names_are_directly_diagnosable() {
+        // 超时错误中 `missing` / `unreachable` 的名称应与提供商感知的解析器名称一致，
+        // 便于排查。至少保证三家厂商名可被直接引用。
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let http: Arc<dyn HttpTransport> =
+            Arc::new(crate::http::ReqwestTransport::default());
+        let aliyun = doh_resolvers_for_provider(Arc::clone(&http), Some("aliyun"));
+        assert_eq!(aliyun[0].name(), "阿里 DNS");
+        let cf = doh_resolvers_for_provider(Arc::clone(&http), Some("cloudflare"));
+        assert_eq!(cf[0].name(), "Cloudflare DNS");
+        let qq = doh_resolvers_for_provider(http, Some("tencent"));
+        assert_eq!(qq[0].name(), "腾讯 DNSPod");
     }
 }

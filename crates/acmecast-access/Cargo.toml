@@ -3,6 +3,8 @@ name = "acmecast-access"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
 publish.workspace = true
 description = "凭据体系：类型化的凭据定义、注册表与按标识注入"
 

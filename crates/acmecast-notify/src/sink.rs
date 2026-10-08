@@ -59,6 +59,10 @@ impl WebhookEventSink {
     }
 
     /// 显式注入适配器注册表（测试用）。
+    ///
+    /// 未启用的渠道在此剔除；渠道缺省不启用（配置层 `enabled` 缺省
+    /// `false`），被剔除时逐个记 info——「配了但没投递」最常见的原因
+    /// 就是忘了显式开启，启动日志要能直接回答它。
     #[must_use]
     pub fn with_registry(
         db: DatabaseConnection,
@@ -66,11 +70,18 @@ impl WebhookEventSink {
         channels: Vec<ChannelConfig>,
         options: DeliveryOptions,
     ) -> Self {
-        let channels = channels.into_iter().filter(|c| c.enabled).collect();
+        let (active, disabled): (Vec<_>, Vec<_>) =
+            channels.into_iter().partition(|c| c.enabled);
+        for channel in &disabled {
+            tracing::info!(
+                channel = %channel.name,
+                "通知渠道未启用（enabled = false 或缺省），配置保留但不投递"
+            );
+        }
         Self {
             db,
             registry,
-            channels: Arc::new(channels),
+            channels: Arc::new(active),
             options,
             client: http_client(),
         }
@@ -241,6 +252,7 @@ mod tests {
             method: "POST".to_owned(),
             headers: std::collections::BTreeMap::new(),
             body_template: None,
+            smtp: None,
         }
     }
 

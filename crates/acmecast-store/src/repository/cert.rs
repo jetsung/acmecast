@@ -21,7 +21,7 @@ use crate::error::{Error, Result};
 use crate::filestore::CertFilePaths;
 
 /// 默认每页条数。
-pub const DEFAULT_PAGE_SIZE: u64 = 20;
+pub const DEFAULT_PAGE_SIZE: u64 = 15;
 
 /// 每页条数上限。防止一次请求把整张表拉走。
 pub const MAX_PAGE_SIZE: u64 = 100;
@@ -47,6 +47,8 @@ pub struct CertInput {
     pub not_after: DateTime<Utc>,
     /// 签发所用的 ACME 账号凭据标识；手动上传时为 `None`。
     pub acme_account_access_id: Option<i64>,
+    /// 管理员备注；空白归一为 `None`。
+    pub description: Option<String>,
 }
 
 /// 去重写入的结果。
@@ -404,6 +406,7 @@ impl<'db> CertRepository<'db> {
             not_after: Set(input.not_after),
             acme_account_access_id: Set(input.acme_account_access_id),
             revoked_at: Set(None),
+            description: Set(normalize_cert_description(input.description)),
             created_at: Set(now),
             updated_at: Set(now),
             ..Default::default()
@@ -429,6 +432,7 @@ impl<'db> CertRepository<'db> {
             // 新证书天然未被吊销。若旧记录处于已吊销状态而这里不清空，
             // 续期后的证书会被永久当成已吊销，从此不再触发续期。
             revoked_at: Set(None),
+            description: Set(normalize_cert_description(input.description)),
             updated_at: Set(Utc::now()),
             ..Default::default()
         }
@@ -475,4 +479,11 @@ mod tests {
         assert_eq!(page_of(10).total_pages(), 1);
         assert_eq!(page_of(11).total_pages(), 2, "有余数时应向上取整");
     }
+}
+
+/// 把描述里的空白归一成 `None`，免得库里出现「有值但是空的」描述。
+fn normalize_cert_description(description: Option<String>) -> Option<String> {
+    description
+        .map(|text| text.trim().to_owned())
+        .filter(|text| !text.is_empty())
 }

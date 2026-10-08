@@ -14,6 +14,8 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
  * `Option<T>`（`anyOf: [T, null]`）解包出内层并标记可空；internally tagged 枚举
  * （oneOf 每支是对象，如 SSH 认证的 `kind`）合并成普通对象渲染成表单；
  * 显隐联动遵循后端扩展：`x-visible-when: {"Equals": {field, values}}`、`x-hidden: bool`；
+ * 必填联动同理（`x-required-when`，支持 `Equals` 与数组长度下限 `MinItems`，
+ * 后者用于 cert.apply 的「多域名时 dns_zone 必填」）；
  * 另有调用方注入的 `x-options`，把「资源 ID」字段渲染成按名称选择的下拉；
  * `x-multiline`（后端 schema 注入，如 SSH 档案的私钥）：string 字段渲染成多行文本域；
  * `x-target-schemas`（cert.deploy 的 config）：按同级 `target` 的取值渲染成
@@ -58,6 +60,18 @@ interface Extension {
    */
   "x-options"?: Array<{ value: string | number; label: string }>;
   /**
+   * 凭据类型白名单（后端 schema 注入，如 tencent-ssl 的 credential_id）：
+   * 指定该字段可接受的凭据类型，调用方注入的 `x-options` 应按此过滤。
+   * 不带该扩展时不做类型过滤。
+   */
+  "x-credential-types"?: string[];
+  /**
+   * 枚举展示名（后端 schema 注入，如 cert.apply 的 key_algorithm）：`enum`
+   * 选项的 value 是 snake_case 配置串，下拉里按这里的映射显示可读名称，
+   * 缺失时回退显示原值。
+   */
+  "x-enum-labels"?: Record<string, string>;
+  /**
    * cert.deploy 的 `config`：结构随同级的 `target` 字段变化，后端把各部署
    * 目标的展示名、输入示例与 schema 按目标标识挂在这里。选中目标后按
    * schema 渲染成结构化子表单（见 {@link TargetConfigField}）。
@@ -96,6 +110,12 @@ type SchemaObject = JsonSchemaNode & Extension;
 
 interface Condition {
   Equals?: { field: string; values: unknown[] };
+  /**
+   * 数组字段的长度下限（后端 schema 注入，如 cert.apply 的 dns_zone）：
+   * `domains` 填了至少 `count` 个域名时命中——其余形态（非数组、字段缺失）
+   * 一律按「不满足」处理，不会误标必填。
+   */
+  MinItems?: { field: string; count: number };
 }
 
 export interface SchemaFormProps {
@@ -208,12 +228,19 @@ function deref(node: JsonSchemaNode, root: JsonSchemaNode): JsonSchemaNode {
   return resolveVariants(node, root);
 }
 
-/** 求值一条 `Equals` 条件；条件缺失或形态不认识时按「不满足」处理。 */
+/** 求值一条条件；条件缺失或形态不认识时按「不满足」处理。 */
 function conditionSatisfied(condition: Condition | undefined, values: Record<string, unknown>): boolean {
   const equals = condition?.Equals;
-  if (!equals) return false;
-  const actual = values[equals.field];
-  return actual !== undefined && equals.values.some((value) => value === actual);
+  if (equals) {
+    const actual = values[equals.field];
+    return actual !== undefined && equals.values.some((value) => value === actual);
+  }
+  const minItems = condition?.MinItems;
+  if (minItems) {
+    const actual = values[minItems.field];
+    return Array.isArray(actual) && actual.length >= minItems.count;
+  }
+  return false;
 }
 
 /**
@@ -286,7 +313,8 @@ export function SchemaForm({ schema, form, namePrefix = [], disabled }: SchemaFo
 
         const rules: Rule[] = [];
         // 必填来源有二：字段本身在 required 列表里；或带了 x-required-when 且
-        // 当前取值命中条件（如 directory_url 仅在 ca=custom 时必填）。
+        // 当前取值命中条件（如 directory_url 仅在 ca=custom 时必填、dns_zone
+        // 在 domains ≥ 2 时必填）。
         const conditionallyRequired = conditionSatisfied(
           node["x-required-when"],
           values as Record<string, unknown>,
@@ -303,33 +331,41 @@ export function SchemaForm({ schema, form, namePrefix = [], disabled }: SchemaFo
         const topType = Array.isArray(node.type) ? node.type[0] : node.type;
         const topIsScalar =
           topType === "integer" || topType === "number" || topType === "boolean" || topType === "string";
-        const span = node["x-target-schemas"] || node["x-multiline"] || !topIsScalar ? 24 : 12;
+        const span =
+          node["x-target-schemas"] || node["x-multiline"] || node["x-full-width"] || !topIsScalar
+            ? 24
+            : 12;
 
         return (
-          <Col span={span} key={path.join(".")}>
-            <SchemaDefault
-              value={(values as Record<string, unknown>)?.[name]}
-              node={node}
-              form={form}
-              path={path}
-            />
-            <Form.Item
-              name={path}
-              label={node["x-label"] ?? name}
-              tooltip={node.description}
-              rules={rules}
-              valuePropName={node.type === "boolean" ? "checked" : "value"}
-            >
-              <SchemaField
+          <Fragment key={path.join(".")}>
+            <Col span={span}>
+              <SchemaDefault
+                value={(values as Record<string, unknown>)?.[name]}
                 node={node}
                 form={form}
                 path={path}
-                root={root}
-                values={values as Record<string, unknown>}
-                disabled={disabled}
               />
-            </Form.Item>
-          </Col>
+              <Form.Item
+                name={path}
+                label={node["x-label"] ?? name}
+                tooltip={node.description}
+                rules={rules}
+                valuePropName={node.type === "boolean" ? "checked" : "value"}
+              >
+                <SchemaField
+                  node={node}
+                  form={form}
+                  path={path}
+                  root={root}
+                  values={values as Record<string, unknown>}
+                  disabled={disabled}
+                />
+              </Form.Item>
+            </Col>
+            {/* 行尾标记：补空列占满剩余宽度，下一个字段从新行开始——
+                独占一行但右侧留空，而不是让后面的字段补位上来。 */}
+            {node["x-end-row"] && span === 12 && <Col span={12} aria-hidden />}
+          </Fragment>
         );
       })}
     </Row>
@@ -378,13 +414,14 @@ function SchemaField({
   }
 
   if (node.enum && node.enum.length > 0) {
+    const labels = node["x-enum-labels"];
     return (
       <Select
         disabled={disabled}
-        options={node.enum.map((value) => ({
-          value: String(value),
-          label: String(value),
-        }))}
+        options={node.enum.map((value) => {
+          const key = String(value);
+          return { value: key, label: labels?.[key] ?? key };
+        })}
         {...control}
       />
     );

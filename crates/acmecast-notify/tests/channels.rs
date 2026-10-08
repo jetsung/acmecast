@@ -40,6 +40,7 @@ fn config(url: &str) -> ChannelConfig {
         method: "POST".to_owned(),
         headers: BTreeMap::new(),
         body_template: None,
+        smtp: None,
     }
 }
 

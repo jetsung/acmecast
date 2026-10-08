@@ -38,6 +38,8 @@ pub struct ChannelConfig {
     pub headers: BTreeMap<String, String>,
     /// 自定义请求体模板；`None` 时按适配器缺省格式构造。
     pub body_template: Option<String>,
+    /// 邮件渠道的 SMTP 连接设置；webhook 渠道为 `None`。
+    pub smtp: Option<crate::email::SmtpSettings>,
 }
 
 /// 渠道适配器：把统一消息翻译成某个平台的 webhook 请求。
@@ -108,6 +110,9 @@ pub fn default_registry() -> ChannelRegistry {
         .expect("内置适配器不应重复注册");
     registry
         .register(crate::generic::GenericChannel)
+        .expect("内置适配器不应重复注册");
+    registry
+        .register(crate::email::EmailChannel)
         .expect("内置适配器不应重复注册");
     registry
 }
@@ -257,7 +262,7 @@ mod tests {
     #[test]
     fn default_registry_has_builtin_providers() {
         let registry = default_registry();
-        for provider in ["feishu", "dingtalk", "generic"] {
+        for provider in ["feishu", "dingtalk", "generic", "email"] {
             assert!(
                 registry.get(provider).is_some(),
                 "缺少内置适配器 {provider}"

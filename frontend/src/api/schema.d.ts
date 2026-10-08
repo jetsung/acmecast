@@ -394,6 +394,8 @@ export interface components {
                  * @description 创建时间。
                  */
                 created_at: string;
+                /** @description 管理员备注；列表页展示用。 */
+                description?: string | null;
                 /** @description 规范化后的域名集合。 */
                 domains: string[];
                 /** @description SHA-256 指纹。 */
@@ -463,6 +465,8 @@ export interface components {
                 id: number;
                 /** @description 展示名称。 */
                 name: string;
+                /** @description 人类可读的备注，可为空。 */
+                remark: string;
                 /** @description 凭据类型。 */
                 type_id: string;
                 /**
@@ -488,6 +492,8 @@ export interface components {
                 id: number;
                 /** @description 展示名称。 */
                 name: string;
+                /** @description 人类可读的备注，可为空。 */
+                remark: string;
                 /** @description 凭据类型。 */
                 type_id: string;
                 /**
@@ -570,6 +576,8 @@ export interface components {
                      * @description 创建时间。
                      */
                     created_at: string;
+                    /** @description 管理员备注；列表页展示用。 */
+                    description?: string | null;
                     /** @description 规范化后的域名集合。 */
                     domains: string[];
                     /** @description SHA-256 指纹。 */
@@ -639,6 +647,8 @@ export interface components {
                     id: number;
                     /** @description 展示名称。 */
                     name: string;
+                    /** @description 人类可读的备注，可为空。 */
+                    remark: string;
                     /** @description 凭据类型。 */
                     type_id: string;
                     /**
@@ -826,6 +836,8 @@ export interface components {
                  * @description 更新时间。
                  */
                 updated_at: string;
+                /** @description 保存后产生的非阻断提示（如“需配置 cron 以完成自动关联”）。 */
+                warnings?: string[];
             };
         };
         /** @description 统一成功响应。 */
@@ -887,6 +899,11 @@ export interface components {
                 /** @description 负责续期的域名集合。 */
                 renewal_domains?: string[] | null;
                 /**
+                 * Format: int32
+                 * @description 调度级续期阈值（1-90 天）；None 表示回退全局阈值。
+                 */
+                renewal_threshold_days?: number | null;
+                /**
                  * Format: date-time
                  * @description 更新时间。
                  */
@@ -896,15 +913,17 @@ export interface components {
         /** @description 统一成功响应。 */
         ApiResponse_Vec_HistoryLogResponse: {
             data: {
-                /**
-                 * Format: date-time
-                 * @description 产生时间。
-                 */
+                /** Format: date-time */
                 created_at: string;
                 /** @description 日志级别。 */
                 level: string;
                 /** @description 日志消息。 */
                 message: string;
+                /**
+                 * @description 结构化输出；步骤产生可程序化读取的产物摘要时附带，
+                 *     如 `cert.deploy` 在 `tencent-ssl` 目标下返回的云端证书 ID 列表。
+                 */
+                output?: unknown;
                 /**
                  * Format: int32
                  * @description 步骤顺序。
@@ -939,6 +958,11 @@ export interface components {
                 /** @description 负责续期的域名集合。 */
                 renewal_domains?: string[] | null;
                 /**
+                 * Format: int32
+                 * @description 调度级续期阈值（1-90 天）；None 表示回退全局阈值。
+                 */
+                renewal_threshold_days?: number | null;
+                /**
                  * Format: date-time
                  * @description 更新时间。
                  */
@@ -961,6 +985,8 @@ export interface components {
             acme_account_access_id?: number | null;
             /** @description 证书 PEM 相对路径。 */
             cert_pem_path: string;
+            /** @description 管理员备注；可选，空白归一为 `None`。 */
+            description?: string | null;
             /** @description 证书覆盖的域名集合。 */
             domains: string[];
             /** @description SHA-256 指纹。 */
@@ -994,6 +1020,8 @@ export interface components {
              * @description 创建时间。
              */
             created_at: string;
+            /** @description 管理员备注；列表页展示用。 */
+            description?: string | null;
             /** @description 规范化后的域名集合。 */
             domains: string[];
             /** @description SHA-256 指纹。 */
@@ -1057,6 +1085,8 @@ export interface components {
             id: number;
             /** @description 展示名称。 */
             name: string;
+            /** @description 人类可读的备注，可为空。 */
+            remark: string;
             /** @description 凭据类型。 */
             type_id: string;
             /**
@@ -1071,6 +1101,8 @@ export interface components {
             fields: unknown;
             /** @description 展示名称。 */
             name: string;
+            /** @description 人类可读的备注（用途/归属/环境说明），可选；写入前 trim，缺省为空。 */
+            remark?: string | null;
             /** @description 已注册的凭据类型。 */
             type_id: string;
         };
@@ -1088,6 +1120,8 @@ export interface components {
             id: number;
             /** @description 展示名称。 */
             name: string;
+            /** @description 人类可读的备注，可为空。 */
+            remark: string;
             /** @description 凭据类型。 */
             type_id: string;
             /**
@@ -1107,15 +1141,17 @@ export interface components {
         };
         /** @description 步骤日志响应。 */
         HistoryLogResponse: {
-            /**
-             * Format: date-time
-             * @description 产生时间。
-             */
+            /** Format: date-time */
             created_at: string;
             /** @description 日志级别。 */
             level: string;
             /** @description 日志消息。 */
             message: string;
+            /**
+             * @description 结构化输出；步骤产生可程序化读取的产物摘要时附带，
+             *     如 `cert.deploy` 在 `tencent-ssl` 目标下返回的云端证书 ID 列表。
+             */
+            output?: unknown;
             /**
              * Format: int32
              * @description 步骤顺序。
@@ -1207,6 +1243,8 @@ export interface components {
                  * @description 创建时间。
                  */
                 created_at: string;
+                /** @description 管理员备注；列表页展示用。 */
+                description?: string | null;
                 /** @description 规范化后的域名集合。 */
                 domains: string[];
                 /** @description SHA-256 指纹。 */
@@ -1273,6 +1311,8 @@ export interface components {
                 id: number;
                 /** @description 展示名称。 */
                 name: string;
+                /** @description 人类可读的备注，可为空。 */
+                remark: string;
                 /** @description 凭据类型。 */
                 type_id: string;
                 /**
@@ -1459,6 +1499,8 @@ export interface components {
              * @description 更新时间。
              */
             updated_at: string;
+            /** @description 保存后产生的非阻断提示（如“需配置 cron 以完成自动关联”）。 */
+            warnings?: string[];
         };
         /** @description 流水线步骤输入 DTO。 */
         PipelineStepRequest: {
@@ -1557,6 +1599,11 @@ export interface components {
             pipeline_id: number;
             /** @description 负责续期的域名集合。 */
             renewal_domains?: string[] | null;
+            /**
+             * Format: int32
+             * @description 调度级续期阈值（1-90 天）；None 表示回退全局阈值。
+             */
+            renewal_threshold_days?: number | null;
         };
         /** @description 调度配置响应。 */
         ScheduleResponse: {
@@ -1583,6 +1630,11 @@ export interface components {
             pipeline_id: number;
             /** @description 负责续期的域名集合。 */
             renewal_domains?: string[] | null;
+            /**
+             * Format: int32
+             * @description 调度级续期阈值（1-90 天）；None 表示回退全局阈值。
+             */
+            renewal_threshold_days?: number | null;
             /**
              * Format: date-time
              * @description 更新时间。

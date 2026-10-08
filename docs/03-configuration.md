@@ -43,35 +43,51 @@ acmecast-server 的配置合并优先级为 **内置默认 < config.toml < 环�
 
 ## DNS 解析器扩展
 
-config.toml 支持 `[[resolvers]]` 段追加自定义解析器（模板内附阿里云/Cloudflare
-DoH 示例）：
+config.toml 支持 `[[resolvers]]` 段追加自定义解析器（模板内附阿里云/腾讯
+DNSPod/Cloudflare DoH 示例，`data/config.toml` 与 `acmecast-server config init`
+生成的模板已包含可直接取消注释的片段）：
 
 ```toml
 [[resolvers]]
-type = "doh"                      # doh / dot / dns
+type = "doh"
 endpoint = "https://dns.alidns.com/dns-query"
-name = "alidns"                   # 可选，缺省取主机名
+name = "阿里 DNS"                  # 可选，缺省取主机名
+
+[[resolvers]]
+type = "doh"
+endpoint = "https://doh.pub/dns-query"
+name = "腾讯 DNSPod"               # 腾讯公共 DoH（域名形式）
+
+[[resolvers]]
+type = "doh"
+endpoint = "https://1.12.12.12/dns-query"
+name = "腾讯 DNSPod（IP 直连）"    # 同上，IP 直连避免 SNI 劫持时更稳
 ```
 
-- `doh`：必须是 `https://`；
+- `doh`：必须是 `https://`；腾讯推荐 `https://doh.pub/dns-query`（域名）与
+  `https://1.12.12.12/dns-query` 二选一或并存，备用 `https://120.53.53.53/dns-query`（`dns/pod` 同源）；
 - `dot`：仅校验并告警跳过（传输层未实现）；
-- `dns`：必须是 IP 地址。
+- `dns`：必须是 IP 地址；腾讯传统 DNS `119.29.29.29` / `119.28.28.28`
+  （`dnsdata/dns_servers.txt` 亦有收录：`腾讯 DNS (DNSPod)|119.28.28.28`、`DNSPod DNS+|119.29.29.29`）
+  目前仅校验、传输层尚未实现，配置后会告警跳过、保留作清单备用。
 
-也可用环境变量 `ACMECAST_DOH_RESOLVERS`（逗号分隔的 `名称=端点`，或仅端点）；
+也可用环境变量 `ACMECAST_DOH_RESOLVERS`（逗号分隔的 `名称=端点`，或仅端点，例如
+`ACMECAST_DOH_RESOLVERS="腾讯 DoH=https://doh.pub/dns-query,https://1.12.12.12/dns-query"`）；
 设为 `none` 表示跳过传播等待（不推荐）。合并顺序：内置 → config 条目 →
 环境变量，按归一化端点去重。详见[DNS 提供商与传播检查](06-dns-providers.md)。
 
 ## webhook 通知
 
-config.toml 支持 `[[notifications]]` 段声明 webhook 通知渠道：`cert.apply`
-（证书申请成功）、`cert.deploy`（部署成功）后向 IM 群机器人推送文本消息。
-内置三种适配器：
+config.toml 支持 `[[notifications]]` 段声明通知渠道：`cert.apply`
+（证书申请成功）、`cert.deploy`（部署成功）后向 IM 群机器人推送文本消息，
+或以邮件方式送达指定收件人。内置四种适配器：
 
-| provider | 平台 | 消息格式 | 签名 |
+| provider | 平台 | 消息格式 | 签名/认证 |
 |---|---|---|---|
 | `feishu` | 飞书（Lark）自定义机器人 | text | 配置 `secret` 时启用（`timestamp` + `sign`） |
 | `dingtalk` | 钉钉自定义机器人 | text | 配置 `secret` 时启用官方加签（URL 查询参数） |
 | `generic` | 通用 webhook（统一请求方案） | 可自定义模板 | 可指定 `sign`（feishu / dingtalk） |
+| `email` | SMTP 邮件 | 纯文本邮件 | `username` + `password` 认证（可选） |
 
 ```toml
 [[notifications]]
@@ -80,7 +96,7 @@ provider = "feishu"          # feishu / dingtalk / generic
 url = "https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx"
 secret = "..."               # 可选；启用机器人签名校验时填写
 events = ["cert.apply", "cert.deploy"]   # 订阅事件，不能为空
-enabled = true               # 可选，缺省 true
+enabled = true               # 必须显式开启；缺省 false（不投递）
 ```
 
 ### generic 统一请求方案
@@ -145,9 +161,12 @@ events = ["cert.apply", "cert.deploy"]
 - **平台接入**：在飞书/钉钉群里添加「自定义机器人」（webhook），钉钉建议
   选择「加签」安全设置并把密钥填入 `secret`；飞书同理可开启签名校验。
 - **校验语义**：非法条目（`provider` 不在内置之列、`events` 含未知事件、
-  `url` 非 http(s)、重名，以及 `sign`/`method`/`headers`/`body_template`
-  不合法或专用适配器误配扩展字段）启动时跳过并 `warn`，其余渠道照常
-  加载；`enabled = false` 的渠道保留配置但不投递。
+  `url` 非 http(s)、重名、`sign`/`method`/`headers`/`body_template`
+  不合法或专用适配器误配扩展字段、渠道类型专属字段交叉配置）启动时
+  跳过并 `warn`，其余渠道照常加载；渠道缺省不启用——`enabled` 缺省
+  `false`，未显式写 `enabled = true` 的渠道保留配置但不投递（启动日志
+  会逐个提示未启用渠道）。从旧版本升级时注意：未写 `enabled` 的既有
+  渠道升级后将停止投递，需显式开启。
 - **投递行为**：事件触发后异步投递，10 秒超时，失败按 1s/2s 退避最多
   3 次尝试；投递成败不影响流水线运行结果。IM 平台有频控（如钉钉
   约 20 条/分钟），大量流水线同时运行时可能触发限流。
@@ -162,10 +181,40 @@ events = ["cert.apply", "cert.deploy"]
 
   响应逐渠道给出 `ok` 与失败原因。
 
+### email 邮件渠道
+
+`email` 渠道把事件以纯文本邮件送达每个收件人（主题含事件标题），连接
+参数与 webhook 渠道完全无关：
+
+```toml
+[[notifications]]
+name = "ops-email"
+provider = "email"
+host = "smtp.exmail.qq.com"      # SMTP 服务器，不含端口与协议前缀
+port = 465                       # 可选；缺省随 tls 模式（见下）
+tls = "implicit"                 # implicit（缺省）/ starttls / none
+from = "no-reply@example.com"
+to = ["ops@example.com"]         # 收件人列表，可为多个
+username = "no-reply@example.com"  # 与 password 同时配置才启用认证
+password = "xxx"
+enabled = true                   # 缺省 false，须显式开启
+events = ["cert.apply", "cert.deploy"]
+```
+
+- **TLS 模式**：`implicit` 连接建立即 TLS（典型端口 465）；`starttls`
+  先明文连接、服务器宣告后升级 TLS（典型端口 587）；`none` 不加密
+  （仅限内网调试）。`port` 缺省随模式取 465 / 587 / 25。
+- **认证可选**：`username` 与 `password` 同时配置才执行 SMTP 认证，都
+  缺省时匿名连接（内网 relay 场景）。
+- **收件人**：`to` 至少一项且必填，一次 SMTP 会话送达全部收件人。
+- **字段互斥**：`email` 渠道不支持 `url` / `sign` / `method` / `headers`
+  / `body_template`；webhook 渠道不支持 `host` / `port` / `from` / `to`
+  / `username` / `password` / `tls`——交叉配置按非法条目跳过并 `warn`。
+
 ### 多渠道配置示例
 
-一份脱敏自实际运行配置的三渠道示例，覆盖三种接入形态：飞书签名、
-钉钉加签、ntfy 自建实例走 generic 统一请求方案：
+一份脱敏自实际运行配置的四渠道示例，覆盖四种接入形态：飞书签名、
+钉钉加签、ntfy 自建实例走 generic 统一请求方案、SMTP 邮件：
 
 ```toml
 [[notifications]]
@@ -173,6 +222,7 @@ name = "lark"
 provider = "feishu"   # Lark（open.larksuite.com）与飞书同协议，适配器通用
 url = "https://open.larksuite.com/open-apis/bot/v2/hook/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
 secret = "机器人签名密钥"    # 机器人开启「签名校验」时填写；不填即无签名
+enabled = true                 # 缺省 false，须显式开启
 events = ["cert.apply", "cert.deploy"]
 
 [[notifications]]
@@ -180,6 +230,7 @@ name = "dingtalk"
 provider = "dingtalk"
 url = "https://oapi.dingtalk.com/robot/send?access_token=xxxxxxxx"
 secret = "SECxxxxxxxxxxxxxxxx"   # 钉钉「加签」安全设置给出的密钥（SEC 开头）
+enabled = true                 # 缺省 false，须显式开启
 events = ["cert.apply", "cert.deploy"]
 
 [[notifications]]
@@ -189,12 +240,25 @@ url = "https://ntfy.example.com/"   # ntfy 自建实例（根路径，topic 在�
 method = "POST"
 body_template = '{"topic": "acme", "title": "{{title}}", "message": "{{pipeline}}（{{trigger_label}}）\n域名：{{domains}}", "tags": ["white_check_mark"], "priority": 4}'
 headers = { "Authorization" = "Bearer tk_xxxx" }   # 实例开启访问控制时填写
+enabled = true                 # 缺省 false，须显式开启
+events = ["cert.apply", "cert.deploy"]
+
+[[notifications]]
+name = "email-ops"
+provider = "email"
+host = "smtp.exmail.qq.com"
+tls = "implicit"                     # 465 隐式 TLS；587 端口改用 starttls
+from = "no-reply@example.com"
+to = ["ops@example.com", "backup@example.com"]
+username = "no-reply@example.com"
+password = "****"
+enabled = true                 # 缺省 false，须显式开启
 events = ["cert.apply", "cert.deploy"]
 ```
 
-三者的签名方式各不相同但都写死在服务端代码中：`feishu` 把签名放进
-请求体、`dingtalk` 放进地址查询参数、`ntfy` 凭 `Authorization` 请求头
-鉴权（generic 渠道不配 `sign` 即不签名）。
+四者的接入凭据各不相同：`feishu` 把签名放进请求体、`dingtalk` 放进
+地址查询参数、`ntfy` 凭 `Authorization` 请求头鉴权（generic 渠道不配
+`sign` 即不签名）、`email` 以 `username` / `password` 做 SMTP 认证。
 
 `secret` 明文存于 config.toml（数据目录权限受限 `0700`），请勿把该文件
 提交进版本控制；泄露后果限于向对应群机器人发送消息，风险远低于 DNS /

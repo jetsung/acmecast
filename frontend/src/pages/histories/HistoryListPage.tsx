@@ -28,13 +28,14 @@ export function HistoryListPage() {
   const navigate = useNavigate();
   const [pipelineId, setPipelineId] = useState<number | undefined>();
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(15);
 
   const { data, isFetching, error } = useQuery({
-    queryKey: ["histories", pipelineId, page],
+    queryKey: ["histories", pipelineId, page, pageSize],
     queryFn: async () => {
       const result = await client.GET("/api/histories", {
         params: {
-          query: { pipeline_id: pipelineId, page, page_size: 20 },
+          query: { pipeline_id: pipelineId, page, page_size: pageSize },
         },
       });
       return unwrapData<{ items: HistoryRow[]; total: number }>(result);
@@ -127,9 +128,18 @@ export function HistoryListPage() {
           })}
           pagination={{
             current: page,
-            pageSize: 20,
+            pageSize,
             total: data?.total ?? 0,
-            onChange: setPage,
+            onChange: (newPage, newPageSize) => {
+              if (newPageSize !== pageSize) {
+                setPage(1);
+                setPageSize(newPageSize);
+              } else {
+                setPage(newPage);
+              }
+            },
+            showSizeChanger: true,
+            pageSizeOptions: [15, 20, 50, 100],
             showTotal: (total) => `共 ${total} 条`,
           }}
         />

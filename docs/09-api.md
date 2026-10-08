@@ -10,7 +10,7 @@
   `WWW-Authenticate: Bearer`。
 - **成功响应**：统一信封 `{"data": ...}`。
 - **错误响应**：统一信封 `{"error": {"code", "message", "field?"}}`。
-- **分页**：`page`（1 起）、`page_size`（默认 20，最大 100）。响应为
+- **分页**：`page`（1 起）、`page_size`（默认 15，最大 100）。响应为
   `{items, total, page, page_size}`。
 - **请求体上限**：默认 2 MiB，超出返回 413 `payload_too_large`；JSON 解析
   失败返回 400 `invalid_json`；查询参数解析失败返回 400 `invalid_query`。

@@ -231,9 +231,19 @@ impl From<acmecast_store::Error> for ApiError {
     fn from(error: acmecast_store::Error) -> Self {
         match error {
             acmecast_store::Error::Validation(message) => {
+                // 流水线相关校验带上字段，便于前端定位到 name 输入框。
+                if message.contains("流水线名称") {
+                    return Self::validation("name", message);
+                }
+                if message.contains("cert.apply") || message.contains("cert.store") {
+                    return Self::validation("steps", message);
+                }
                 Self::new(StatusCode::BAD_REQUEST, "validation_error", message)
             }
             acmecast_store::Error::Conflict(message) => {
+                if message.contains("流水线名称") {
+                    return Self::validation("name", message);
+                }
                 Self::new(StatusCode::CONFLICT, "conflict", message)
             }
             acmecast_store::Error::NotFound { entity, id } => Self::new(

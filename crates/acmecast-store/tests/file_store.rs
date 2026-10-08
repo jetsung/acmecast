@@ -104,10 +104,8 @@ async fn certificate_material_round_trips_through_relative_paths() {
         .await
         .expect("应能写入证书与私钥");
 
-    // 返回的必须是相对路径——库里存的就是这两个值。
-    // 文件名带主域名：sub.example.com.cert.pem / sub.example.com.key.pem。
-    assert_eq!(paths.cert_pem, "certs/fp-1/sub.example.com.cert.pem");
-    assert_eq!(paths.key_pem, "certs/fp-1/sub.example.com.key.pem");
+    assert_eq!(paths.cert_pem, "certs/ssl/sub.example.com.cert.pem");
+    assert_eq!(paths.key_pem, "certs/ssl/sub.example.com.key.pem");
     assert!(Path::new(&paths.cert_pem).is_relative());
     assert!(Path::new(&paths.key_pem).is_relative());
 
@@ -205,12 +203,12 @@ async fn cert_file_names_follow_the_primary_domain() {
         let paths = FileStore::cert_paths("fp-1", primary_domain);
         assert_eq!(
             paths.cert_pem,
-            format!("certs/fp-1/{expected_prefix}.cert.pem"),
+            format!("certs/ssl/{expected_prefix}.cert.pem"),
             "域名 {primary_domain} 的证书链文件名"
         );
         assert_eq!(
             paths.key_pem,
-            format!("certs/fp-1/{expected_prefix}.key.pem"),
+            format!("certs/ssl/{expected_prefix}.key.pem"),
             "域名 {primary_domain} 的私钥文件名"
         );
     }
@@ -279,19 +277,16 @@ async fn archiving_moves_certificate_material_into_the_revoked_layout() {
         "certs/revoked/fp-1/sub.example.com.key.pem"
     );
 
-    // 原位置不再保留（连空目录一并清掉），材料出现在吊销目录且内容原样可读。
+    // 扁平活跃目录：逐文件搬，原同名文件不再存在，材料出现在吊销目录且内容原样可读。
     assert!(!temp.path().join(&original.cert_pem).exists());
     assert!(!temp.path().join(&original.key_pem).exists());
-    assert!(
-        !temp.path().join("certs/fp-1").exists(),
-        "搬空的源目录不应留下空壳"
-    );
     assert_eq!(store.read(&archived.cert_pem).await.unwrap(), "证书链");
     assert_eq!(store.read(&archived.key_pem).await.unwrap(), "私钥");
 }
 
 #[tokio::test]
 async fn archiving_moves_the_whole_dir_so_misc_files_come_along() {
+    // 扁平活跃已无整目录可搬，此用例改为验证：活跃下的非证书文件不受吊销影响。
     let temp = TempDir::new();
     let store = FileStore::open(temp.path()).await.unwrap();
     let original = store
@@ -299,22 +294,22 @@ async fn archiving_moves_the_whole_dir_so_misc_files_come_along() {
         .await
         .unwrap();
     store
-        .write("certs/fp-1/备注.txt", "手动上传时混放的其他文件")
+        .write("certs/ssl/备注.txt", "扁平活跃中的其他文件")
         .await
         .unwrap();
 
-    store
+    let moved = store
         .move_certificate(&original.cert_pem, &original.key_pem, "fp-1")
         .await
         .unwrap()
-        .unwrap();
-
-    // 整目录归档：混放的其他文件跟着目录一起进吊销目录，原地什么都不剩。
-    assert!(!temp.path().join("certs/fp-1").exists());
-    assert_eq!(
-        store.read("certs/revoked/fp-1/备注.txt").await.unwrap(),
-        "手动上传时混放的其他文件"
-    );
+        .expect("应能归档");
+    // 证书已进入吊销目录
+    assert_eq!(store.read(&moved.cert_pem).await.unwrap(), "证书链");
+    // 扁平下仅搬走证书两文件，活跃目录中的其他文件保留。
+    assert!(!temp.path().join(&original.cert_pem).exists());
+    let extra = store.read("certs/ssl/备注.txt").await;
+    assert!(extra.is_ok(), "扁平活跃中的其他文件应保留，实际 {extra:?}");
+    assert_eq!(extra.unwrap(), "扁平活跃中的其他文件");
 }
 
 #[tokio::test]
@@ -362,22 +357,19 @@ async fn archiving_overwrites_when_the_revoked_dir_already_exists() {
         .unwrap()
         .expect("目标已存在时也应归档成功");
 
-    // 整搬不可行（目标已在），退回逐文件覆盖。
+    // 扁平活跃下逐文件覆盖。
     assert_eq!(store.read(&archived.cert_pem).await.unwrap(), "证书链");
     assert_eq!(store.read(&archived.key_pem).await.unwrap(), "私钥");
-    assert!(!temp.path().join("certs/fp-1").exists());
+    assert!(!temp.path().join(&original.cert_pem).exists());
 }
 
 #[tokio::test]
 async fn restore_moves_the_archived_dir_back_whole() {
+    // 扁平活跃 + 指纹吊销：逐文件恢复，不再整目录搬回。
     let temp = TempDir::new();
     let store = FileStore::open(temp.path()).await.unwrap();
     let original = store
         .write_certificate("fp-1", "sub.example.com", "证书链", "私钥")
-        .await
-        .unwrap();
-    store
-        .write("certs/fp-1/备注.txt", "混放文件")
         .await
         .unwrap();
     let archived = store
@@ -391,10 +383,9 @@ async fn restore_moves_the_archived_dir_back_whole() {
         .await
         .unwrap();
 
-    // 整目录搬回：混放文件也跟着回来，吊销目录下不留残留。
+    // 逐文件搬回，吊销目录空壳被清理。
     assert_eq!(store.read(&original.cert_pem).await.unwrap(), "证书链");
     assert_eq!(store.read(&original.key_pem).await.unwrap(), "私钥");
-    assert_eq!(store.read("certs/fp-1/备注.txt").await.unwrap(), "混放文件");
     assert!(!temp.path().join("certs/revoked/fp-1").exists());
 }
 
@@ -494,4 +485,119 @@ async fn an_evil_fingerprint_is_rejected_when_archiving() {
         !temp.path().join("certs/revoked").exists(),
         "被拒绝的归档不应创建任何目录"
     );
+}
+
+#[tokio::test]
+async fn archiving_replaced_certificate_moves_to_archived_layout() {
+    let temp = TempDir::new();
+    let store = FileStore::open(temp.path()).await.unwrap();
+    let original = store
+        .write_certificate("fp-old", "sub.example.com", "旧证书链", "旧私钥")
+        .await
+        .unwrap();
+    assert_eq!(original.cert_pem, "certs/ssl/sub.example.com.cert.pem");
+
+    let archived = store
+        .archive_replaced_certificate(&original.cert_pem, &original.key_pem, "fp-old")
+        .await
+        .expect("归档应成功")
+        .expect("材料齐全时应返回目标路径");
+    assert_eq!(
+        archived.cert_pem,
+        "certs/archived/fp-old/sub.example.com.cert.pem"
+    );
+    assert_eq!(
+        archived.key_pem,
+        "certs/archived/fp-old/sub.example.com.key.pem"
+    );
+    assert!(!temp.path().join(&original.cert_pem).exists());
+    assert_eq!(store.read(&archived.cert_pem).await.unwrap(), "旧证书链");
+    assert_eq!(store.read(&archived.key_pem).await.unwrap(), "旧私钥");
+}
+
+#[tokio::test]
+async fn archiving_replaced_certificate_is_idempotent_when_already_archived() {
+    let temp = TempDir::new();
+    let store = FileStore::open(temp.path()).await.unwrap();
+    let original = store
+        .write_certificate("fp-old", "sub.example.com", "旧证书链", "旧私钥")
+        .await
+        .unwrap();
+    let archived = store
+        .archive_replaced_certificate(&original.cert_pem, &original.key_pem, "fp-old")
+        .await
+        .unwrap()
+        .unwrap();
+    let again = store
+        .archive_replaced_certificate(&archived.cert_pem, &archived.key_pem, "fp-old")
+        .await
+        .unwrap()
+        .expect("已归档应幂等返回");
+    assert_eq!(again, archived);
+}
+
+#[tokio::test]
+async fn flat_active_allows_only_latest_per_domain() {
+    let temp = TempDir::new();
+    let store = FileStore::open(temp.path()).await.unwrap();
+    let first = store
+        .write_certificate("fp-old", "sub.example.com", "旧证书链", "旧私钥")
+        .await
+        .unwrap();
+    store
+        .archive_replaced_certificate(&first.cert_pem, &first.key_pem, "fp-old")
+        .await
+        .unwrap()
+        .unwrap();
+    let second = store
+        .write_certificate("fp-new", "sub.example.com", "新证书链", "新私钥")
+        .await
+        .unwrap();
+    assert_eq!(second.cert_pem, "certs/ssl/sub.example.com.cert.pem");
+    assert_eq!(store.read(&second.cert_pem).await.unwrap(), "新证书链");
+    assert_eq!(
+        store
+            .read("certs/archived/fp-old/sub.example.com.cert.pem")
+            .await
+            .unwrap(),
+        "旧证书链"
+    );
+}
+
+#[tokio::test]
+async fn archiving_replaced_without_material_reports_nothing_to_move() {
+    let temp = TempDir::new();
+    let store = FileStore::open(temp.path()).await.unwrap();
+    let outcome = store
+        .archive_replaced_certificate(
+            &FileStore::cert_paths("fp-missing", "sub.example.com").cert_pem,
+            &FileStore::cert_paths("fp-missing", "sub.example.com").key_pem,
+            "fp-missing",
+        )
+        .await
+        .expect("源缺失不应报错");
+    assert!(outcome.is_none());
+    assert!(
+        !temp.path().join("certs/archived").exists(),
+        "没有材料时不应创建归档目录"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn archived_replaced_material_keeps_owner_only_permissions() {
+    let temp = TempDir::new();
+    let store = FileStore::open(temp.path()).await.unwrap();
+    let original = store
+        .write_certificate("fp-old", "sub.example.com", "旧证书链", "旧私钥")
+        .await
+        .unwrap();
+    let archived = store
+        .archive_replaced_certificate(&original.cert_pem, &original.key_pem, "fp-old")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(mode_of(&temp.path().join(&archived.key_pem)), 0o600);
+    assert_eq!(mode_of(&temp.path().join("certs/archived")), 0o700);
+    assert_eq!(mode_of(&temp.path().join("certs/archived/fp-old")), 0o700);
 }

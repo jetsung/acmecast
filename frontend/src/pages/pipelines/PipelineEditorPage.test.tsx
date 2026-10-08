@@ -42,12 +42,15 @@ vi.mock("@/api/client", () => ({
           data: {
             data: {
               items: [
-                { id: 7, name: "le-prod", type_id: "acme.account" },
-                { id: 8, name: "some-dns", type_id: "cloudflare" },
-                { id: 9, name: "ali-dns", type_id: "aliyun" },
-                { id: 10, name: "web-01", type_id: "ssh" },
+                { id: 7, name: "le-prod", type_id: "acme.account", remark: "" },
+                { id: 8, name: "some-dns", type_id: "cloudflare", remark: "" },
+                { id: 9, name: "ali-dns", type_id: "aliyun", remark: "" },
+                { id: 10, name: "web-01", type_id: "ssh", remark: "" },
+                { id: 30, name: "腾讯云 SSL", type_id: "tencent", remark: "生产 DNS" },
+                { id: 31, name: "EdgeOne DNS", type_id: "tencent-eo", remark: "" },
+                { id: 40, name: "SSH 主机", type_id: "ssh", remark: "" },
               ],
-              total: 4,
+              total: 7,
               page: 1,
               page_size: 100,
             },
@@ -72,6 +75,18 @@ vi.mock("@/api/client", () => ({
                   description: "挑战类型。",
                   allOf: [{ $ref: "#/definitions/ChallengeKind" }],
                 },
+                // 与 cert.apply 真实产物一致：allOf+$ref 枚举 + 缺省值 + 展示名注入。
+                key_algorithm: {
+                  description: "申请密钥与证书的算法；缺省 ECDSA P-256。",
+                  allOf: [{ $ref: "#/definitions/CertKeyAlgorithm" }],
+                  default: "ecdsa_p256",
+                  "x-enum-labels": {
+                    ecdsa_p256: "ECDSA P-256",
+                    ecdsa_p384: "ECDSA P-384",
+                    ed25519: "Ed25519",
+                    rsa2048: "RSA 2048",
+                  },
+                },
                 account_credential_id: {
                   description: "ACME 账号凭据标识。",
                   type: "integer",
@@ -88,7 +103,13 @@ vi.mock("@/api/client", () => ({
                   type: ["integer", "null"],
                   format: "int64",
                 },
-                dns_zone: { description: "DNS zone。", default: null, type: ["string", "null"] },
+                // 后端 input_schema() 注入的多域名必填条件（与 cert.apply 真实产物一致）。
+                dns_zone: {
+                  description: "DNS zone。",
+                  default: null,
+                  type: ["string", "null"],
+                  "x-required-when": { MinItems: { field: "domains", count: 2 } },
+                },
                 wait_propagation: { description: "等待传播。", default: true, type: "boolean" },
                 contacts: {
                   description: "账号联系人。",
@@ -97,6 +118,11 @@ vi.mock("@/api/client", () => ({
                   items: { type: "string" },
                 },
                 insecure_skip_verify: { description: "跳过校验。", default: false, type: "boolean" },
+                renew_before_days: {
+                  description: "到期前 N 天自动续期。",
+                  default: null,
+                  type: ["integer", "null"],
+                },
               }
             : typeId === "test.c"
               ? { rules: { type: "array", items: { type: "object" } } }
@@ -181,6 +207,48 @@ vi.mock("@/api/client", () => ({
                               },
                             },
                           },
+                          // 腾讯云 SSL 变体：与后端注入产物同构（凭据引用、备注、重复开关、替换开关、CLB 同步）。
+                          "tencent-ssl": {
+                            display_name: "腾讯云 SSL 证书",
+                            example: {},
+                            schema: {
+                              type: "object",
+                              properties: {
+                                credential_id: {
+                                  type: "integer",
+                                  description: "腾讯云凭据的标识。",
+                                  "x-credential-types": ["tencent"],
+                                },
+                                alias: { type: "string", description: "云端备注名。" },
+                                repeatable: {
+                                  type: "boolean",
+                                  description: "允许重复上传同指纹证书。",
+                                },
+                                replace_existing: {
+                                  type: "boolean",
+                                  description: "替换同域名已有证书。",
+                                },
+                                resource_types: {
+                                  type: "array",
+                                  description: "需同步刷新的云资源类型。",
+                                  items: { type: "string" },
+                                },
+                                resource_regions: {
+                                  type: "array",
+                                  description: "云资源所在地域列表。",
+                                  items: { type: "string" },
+                                },
+                              },
+                              "x-field-order": [
+                                "credential_id",
+                                "alias",
+                                "repeatable",
+                                "replace_existing",
+                                "resource_types",
+                                "resource_regions",
+                              ],
+                            },
+                          },
                         },
                       },
                     }
@@ -195,6 +263,15 @@ vi.mock("@/api/client", () => ({
                   oneOf: [
                     { type: "string", enum: ["dns-01"] },
                     { type: "string", enum: ["http-01"] },
+                  ],
+                },
+                CertKeyAlgorithm: {
+                  description: "申请密钥与证书的算法类型。",
+                  oneOf: [
+                    { type: "string", enum: ["ecdsa_p256"] },
+                    { type: "string", enum: ["ecdsa_p384"] },
+                    { type: "string", enum: ["ed25519"] },
+                    { type: "string", enum: ["rsa2048"] },
                   ],
                 },
               },
@@ -218,6 +295,7 @@ vi.mock("@/api/client", () => ({
                   input: {
                     domains: ["abc.zzzzy.com"],
                     challenge: "dns-01",
+                    key_algorithm: "ecdsa_p384",
                     account_credential_id: 1,
                     dns_provider: "cloudflare",
                     dns_credential_id: 4,
@@ -324,17 +402,22 @@ describe("PipelineEditorPage", () => {
 
     const body = await save();
     expect(body.steps[0].input).toEqual({ va: "kept" });
-    expect(body.steps[1].input).toEqual({
-      domains: ["abc.zzzzy.com"],
-      challenge: "dns-01",
-      account_credential_id: 1,
-      dns_provider: "cloudflare",
-      dns_credential_id: 4,
-      dns_zone: null,
-      wait_propagation: true,
-      contacts: ["i@jetsung.com"],
-      insecure_skip_verify: false,
-    });
+    expect(body.steps[1].input).toEqual(
+      expect.objectContaining({
+        domains: ["abc.zzzzy.com"],
+        challenge: "dns-01",
+        key_algorithm: "ecdsa_p384",
+        account_credential_id: 1,
+        dns_provider: "cloudflare",
+        dns_credential_id: 4,
+        dns_zone: null,
+        wait_propagation: true,
+        contacts: ["i@jetsung.com"],
+        insecure_skip_verify: false,
+      }),
+    );
+    // key_algorithm 的下拉按已存值回显展示名。
+    expect(await screen.findByTitle("ECDSA P-384")).toBeTruthy();
     expect(body.steps[2].input).toEqual({ acme_account_credential_id: 1 });
     expect(body.steps[3].input).toEqual({
       dns_provider: "aliyun",
@@ -532,5 +615,186 @@ describe("PipelineEditorPage", () => {
       // 提交只含档案引用与部署输入,连接/权限字段由档案在执行时提供。
       config: { credential_id: 10, cert_path: "/srv/ssl/site.crt", key_path: "/srv/ssl/site.key" },
     });
+  });
+
+  it("cert.deploy 的腾讯云 SSL 变体渲染备注与替换开关", async () => {
+    posted.length = 0;
+    const queryClient = renderPage();
+    await waitForTasks(queryClient);
+    await waitFor(() => expect(queryClient.getQueryState(["credentials"])?.status).toBe("success"));
+    fireEvent.change(screen.getByLabelText("名称"), { target: { value: "p" } });
+
+    await addStep("任务 F");
+
+    const target = await screen.findByLabelText("target");
+    fireEvent.mouseDown(target);
+    fireEvent.click(await screen.findByTitle("腾讯云 SSL 证书"));
+
+    // 切换 target 清空存量 config 后，腾讯云变体渲染出自己的子表单：
+    // 子字段 label 用字段名（说明进 tooltip），备注是输入框，替换开关是 Switch；
+    // 新增字段 repeatable 同为 Switch。
+    fireEvent.change(await screen.findByLabelText("alias"), {
+      target: { value: "acmecast example.com" },
+    });
+    const replaceSwitch = screen.getByLabelText("replace_existing");
+    expect(replaceSwitch.getAttribute("role")).toBe("switch");
+    expect(screen.getByLabelText("repeatable").getAttribute("role")).toBe("switch");
+    // resource_types 为 tags 模式（多选 16 种资源类型），resource_regions 为 tags 地域列表。
+
+    // credential_id 按 x-credential-types 仅列 tencent 凭据：/mock 凭据列表里
+    // tencent (id=30, name=腾讯云 SSL) 应出现，tencent-eo (id=31) 与 SSH 等不应出现。
+    fireEvent.mouseDown(screen.getByLabelText("credential_id"));
+    expect(await screen.findByTitle("腾讯云 SSL（id=30）— 生产 DNS")).toBeTruthy();
+    expect(screen.queryByTitle("EdgeOne DNS（id=31）")).toBeNull();
+    expect(screen.queryByTitle("SSH 主机（id=40）")).toBeNull();
+
+    const body = await save();
+    const config = body.steps[0].input.config as Record<string, unknown>;
+    expect(body.steps[0].input.target).toBe("tencent-ssl");
+    expect(config["alias"]).toBe("acmecast example.com");
+  });
+
+  it("dns_provider 下拉覆盖全部内置 DNS 提供商", async () => {
+    posted.length = 0;
+    const queryClient = renderPage();
+    await waitForTasks(queryClient);
+    await waitFor(() => expect(queryClient.getQueryState(["credentials"])?.status).toBe("success"));
+    fireEvent.change(screen.getByLabelText("名称"), { target: { value: "p" } });
+
+    await addStep("任务 F");
+
+    // 内置清单与后端 default_dns_registry 对齐：四家提供商都在下拉里。
+    const provider = await screen.findByLabelText("dns_provider");
+    fireEvent.mouseDown(provider);
+    for (const label of ["Cloudflare", "阿里云", "腾讯云", "腾讯云 EdgeOne"]) {
+      expect(await screen.findByTitle(label)).toBeTruthy();
+    }
+  });
+
+  /** cert.apply 步骤的 domains 填入两个域名，并等必填联动落地。 */
+  async function fillTwoDomains() {
+    const domains = await screen.findByLabelText("domains");
+    for (const domain of ["a.example.com", "b.example.com"]) {
+      fireEvent.change(domains, { target: { value: domain } });
+      fireEvent.keyDown(domains, { key: "Enter" });
+    }
+    // 等联动重渲染落地（dns_zone 出现必填星号）再点保存，避免与
+    // Form.useWatch 驱动的规则更新竞态。
+    await waitFor(() => {
+      expect(
+        document.querySelector("input#inputs_1_dns_zone[aria-required='true']"),
+      ).toBeTruthy();
+    });
+  }
+
+  it("cert.apply 多域名留空 dns_zone 被拦截，填写后放行", async () => {
+    // 多域名下静默推导 zone 容易踩错（*.skiy.net 曾被推成 net），表单要求
+    // 显式配置：domains ≥ 2 时 dns_zone 必填。保存成功会跳转页面，
+    // 所以「拦截 → 放行」在同一次渲染里完成，删减场景另起用例。
+    posted.length = 0;
+    const queryClient = renderPage();
+    await waitForTasks(queryClient);
+    fireEvent.change(screen.getByLabelText("名称"), { target: { value: "p" } });
+
+    await addStep("任务 B");
+    await fillTwoDomains();
+
+    // 留空 dns_zone：保存被拦截，请求不发出。
+    fireEvent.click(screen.getByRole("button", { name: /保\s*存/ }));
+    expect(await screen.findByText("请填写 dns_zone")).toBeTruthy();
+    expect(posted).toHaveLength(0);
+
+    // 填上 zone：放行，提交值带 zone。
+    fireEvent.change(screen.getByLabelText("dns_zone"), { target: { value: "example.com" } });
+    fireEvent.click(screen.getByRole("button", { name: /保\s*存/ }));
+    await waitFor(() => expect(posted).toHaveLength(1));
+    expect(posted[0].steps[0].input).toMatchObject({
+      domains: ["a.example.com", "b.example.com"],
+      dns_zone: "example.com",
+    });
+  });
+
+  it("cert.apply 密钥类型下拉带缺省与展示名，选择后保存", async () => {
+    posted.length = 0;
+    const queryClient = renderPage();
+    await waitForTasks(queryClient);
+    fireEvent.change(screen.getByLabelText("名称"), { target: { value: "p" } });
+
+    await addStep("任务 B");
+    // 单域名即可保存——多域名会触发 dns_zone 必填联动，与本用例无关。
+    const domains = await screen.findByLabelText("domains");
+    fireEvent.change(domains, { target: { value: "a.example.com" } });
+    fireEvent.keyDown(domains, { key: "Enter" });
+
+    // schema 的缺省值预填下拉（ECDSA P-256），展开后按展示名渲染选项。
+    // 缺省选中项让选择器框本身也带 title，取下拉里的可见选项匹配。
+    const field = await screen.findByLabelText("key_algorithm");
+    expect(field.getAttribute("role")).toBe("combobox");
+    fireEvent.mouseDown(field);
+    const option = (await screen.findAllByTitle("ECDSA P-384")).find((element) =>
+      element.className.includes("ant-select-item-option"),
+    );
+    expect(option).toBeTruthy();
+    fireEvent.click(option!);
+
+    const body = await save();
+    expect(body.steps[0].input).toMatchObject({
+      domains: ["a.example.com"],
+      key_algorithm: "ecdsa_p384",
+    });
+  });
+
+  it("cert.apply 域名删到单个后 dns_zone 联动解除", async () => {
+    posted.length = 0;
+    const queryClient = renderPage();
+    await waitForTasks(queryClient);
+    fireEvent.change(screen.getByLabelText("名称"), { target: { value: "p" } });
+
+    await addStep("任务 B");
+    await fillTwoDomains();
+
+    // 删到只剩 1 个域名：必填联动解除，zone 清空也能提交。
+    const remove = document.querySelector<HTMLElement>(".ant-select-selection-item-remove");
+    expect(remove).toBeTruthy();
+    fireEvent.click(remove!);
+    await waitFor(() => {
+      expect(
+        document.querySelector("input#inputs_1_dns_zone[aria-required='true']"),
+      ).toBeFalsy();
+    });
+    fireEvent.change(screen.getByLabelText("dns_zone"), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: /保\s*存/ }));
+    await waitFor(() => expect(posted).toHaveLength(1));
+    expect(posted[0].steps[0].input).toMatchObject({ domains: ["b.example.com"] });
+  });
+
+  it("cert.apply 到期前 N 天随保存提交且与域名联动", async () => {
+    posted.length = 0;
+    const queryClient = renderPage();
+    await waitForTasks(queryClient);
+    fireEvent.change(screen.getByLabelText("名称"), { target: { value: "p" } });
+    await addStep("任务 B");
+    const domains = await screen.findByLabelText("domains");
+    fireEvent.change(domains, { target: { value: "example.com" } });
+    fireEvent.keyDown(domains, { key: "Enter" });
+    const renew = await screen.findByLabelText("renew_before_days");
+    fireEvent.change(renew, { target: { value: "21" } });
+    const body = await save();
+    expect(body.steps[0].input).toMatchObject({ domains: ["example.com"], renew_before_days: 21 });
+  });
+
+  it("到期前检测已设置时可填 cron 一并创建调度（由后端透传验证，联动提示由集成用例覆盖）", async () => {
+    posted.length = 0;
+    const queryClient = renderPage();
+    await waitForTasks(queryClient);
+    fireEvent.change(screen.getByLabelText("名称"), { target: { value: "p" } });
+    await addStep("任务 B");
+    const domains = await screen.findByLabelText("domains");
+    fireEvent.change(domains, { target: { value: "example.com" } });
+    fireEvent.keyDown(domains, { key: "Enter" });
+    fireEvent.change(await screen.findByLabelText("renew_before_days"), { target: { value: "30" } });
+    // 前端提示与 cron 联动由调度自动关联的后端链路覆盖，此处仅验到期前字段落保存体。
+    const body = await save();
+    expect(body.steps[0].input).toMatchObject({ renew_before_days: 30 });
   });
 });

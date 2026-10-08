@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { App, Button, Card, Form, Input, Select, Space, Switch, Typography } from "antd";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router";
+import { useLocation, useNavigate, useParams } from "react-router";
 import type { components } from "@/api/schema";
 import { client } from "@/api/client";
 import { unwrapData } from "@/api/helpers";
@@ -20,6 +20,8 @@ const SSH_HOST_TYPE_ID = "ssh";
 const DNS_PROVIDERS = [
   { value: "cloudflare", label: "Cloudflare" },
   { value: "aliyun", label: "阿里云" },
+  { value: "tencent", label: "腾讯云" },
+  { value: "tencent-eo", label: "腾讯云 EdgeOne" },
 ];
 const DNS_PROVIDER_TYPE_IDS = new Set(DNS_PROVIDERS.map((provider) => provider.value));
 
@@ -27,6 +29,7 @@ const DNS_PROVIDER_TYPE_IDS = new Set(DNS_PROVIDERS.map((provider) => provider.v
 const DEPLOY_TARGETS = [
   { value: "local", label: "本地文件系统" },
   { value: "ssh", label: "SSH 远程主机" },
+  { value: "tencent-ssl", label: "腾讯云 SSL 证书" },
 ];
 
 interface FieldOption {
@@ -76,11 +79,24 @@ interface TaskType {
   display_name: string;
 }
 
+interface CopyState {
+  name: string;
+  description: string | null;
+  enabled: boolean;
+  steps: Array<{ type_id: string; input: Record<string, unknown>; enabled: boolean }>;
+}
+
+const SINGLETON_STEP_TYPES: Record<string, true> = {
+  "cert.apply": true,
+  "cert.store": true,
+};
+
 /** 流水线编辑器（3.2）：步骤增删/排序，输入表单由任务 schema 动态渲染。 */
 export function PipelineEditorPage() {
   const { id } = useParams();
   const editingId = id === "new" ? null : Number(id);
   const navigate = useNavigate();
+  const location = useLocation();
   const { message } = App.useApp();
   const queryClient = useQueryClient();
   const [form] = Form.useForm();
@@ -107,8 +123,9 @@ export function PipelineEditorPage() {
       return unwrapData<{ items: components["schemas"]["CredentialResponse"][] }>(result);
     },
   });
+  const credentialItems = credentials?.items ?? [];
   const fieldOptions = useMemo<FieldOptions>(() => {
-    const items = credentials?.items ?? [];
+    const items = credentialItems;
     const resolved: FieldOptions = {};
     for (const [field, source] of Object.entries(FIELD_OPTIONS)) {
       resolved[field] =
@@ -118,11 +135,39 @@ export function PipelineEditorPage() {
               .filter((credential) => source.fromCredentials(credential.type_id))
               .map((credential) => ({
                 value: credential.id,
-                label: `${credential.name}（id=${credential.id}）`,
+                label: credential.remark
+                  ? `${credential.name}（id=${credential.id}）— ${credential.remark}`
+                  : `${credential.name}（id=${credential.id}）`,
               }));
     }
     return resolved;
-  }, [credentials]);
+  }, [credentialItems]);
+
+  // 复制预填：从列表页 navigate state 带入的新建模板
+  const copyFrom = (location.state as { copyFrom?: CopyState } | null)?.copyFrom;
+
+  // 复制进入新建：预填表单与步骤
+  useEffect(() => {
+    if (editingId !== null || copyFrom === undefined) return;
+    // 避免重复预填（React StrictMode 会双跑 effect）
+    if (steps.length > 0) return;
+    form.setFieldsValue({
+      name: copyFrom.name,
+      description: copyFrom.description ?? undefined,
+      enabled: copyFrom.enabled,
+    });
+    const loaded = copyFrom.steps.map((step) => ({
+      id: nextStepId.current++,
+      type_id: step.type_id,
+      enabled: step.enabled,
+    }));
+    setSteps(loaded);
+    form.setFieldsValue({
+      inputs: Object.fromEntries(
+        loaded.map((step, index) => [step.id, (copyFrom.steps[index].input ?? {}) as Record<string, unknown>]),
+      ),
+    });
+  }, [editingId, copyFrom, form, steps.length]);
 
   // 编辑模式：载入既有定义。
   useEffect(() => {
@@ -160,10 +205,14 @@ export function PipelineEditorPage() {
   }, [editingId, form, message, navigate]);
 
   const addStep = () => {
-    setSteps((current) => [
-      ...current,
-      { id: nextStepId.current++, type_id: tasks?.[0]?.type_id ?? "", enabled: true },
-    ]);
+    const pickable = (tasks ?? []).find((t) => canAddType(t.type_id));
+    const fallback = tasks?.[0]?.type_id ?? "";
+    const typeId = pickable?.type_id ?? fallback;
+    if (!canAddType(typeId)) {
+      message.warning(`${typeId} 仅允许添加一次`);
+      return;
+    }
+    setSteps((current) => [...current, { id: nextStepId.current++, type_id: typeId, enabled: true }]);
   };
 
   const removeStep = (id: number) => {
@@ -180,15 +229,42 @@ export function PipelineEditorPage() {
     });
   };
 
+  // renew_before_days 仍在 cert.apply 的 schema 中按表单展示（由后端 JsonSchema 渲染），
+  // 不再联动调度自动创建；到期跳过在步骤执行态中完成（0/负数=跳过检测）。
+
+  const stepTypeCount: Record<string, number> = {};
+  for (const s of steps) {
+    const key = s.type_id.trim();
+    if (key) stepTypeCount[key] = (stepTypeCount[key] ?? 0) + 1;
+  }
+  const hasApply = (stepTypeCount["cert.apply"] ?? 0) >= 1;
+  const hasStore = (stepTypeCount["cert.store"] ?? 0) >= 1;
+
+  const canAddType = (typeId: string) => {
+    const trimmed = typeId.trim();
+    if (SINGLETON_STEP_TYPES[trimmed]) {
+      return (stepTypeCount[trimmed] ?? 0) === 0;
+    }
+    return true;
+  };
   const onSave = async (values: PipelineForm) => {
+    // 前端即时拦截：cert.apply / cert.store 各至多一次
+    const applyCount = stepTypeCount["cert.apply"] ?? 0;
+    const storeCount = stepTypeCount["cert.store"] ?? 0;
+    if (applyCount > 1) {
+      message.error("cert.apply 仅允许添加一次");
+      return;
+    }
+    if (storeCount > 1) {
+      message.error("cert.store 仅允许添加一次");
+      return;
+    }
     setSaving(true);
     try {
-      const body = {
+      const body: Record<string, unknown> = {
         name: values.name,
         description: values.description ?? null,
         enabled: values.enabled,
-        // 任务输入的值由 SchemaForm 写进表单 store（路径 ["inputs", step.id]），
-        // 不在 steps 状态里，保存时按 id 取回。
         steps: steps.map((step) => ({
           type_id: step.type_id,
           input: (form.getFieldValue(["inputs", step.id]) ?? {}) as Record<string, unknown>,
@@ -197,10 +273,10 @@ export function PipelineEditorPage() {
       };
       const result =
         editingId === null
-          ? await client.POST("/api/pipelines", { body })
+          ? await client.POST("/api/pipelines", { body: body as never })
           : await client.PUT(`/api/pipelines/${editingId}`, {
               params: { path: { id: editingId } },
-              body,
+              body: body as never,
             });
       if (result.error !== undefined) {
         const errorBody = result.error as { error?: { message?: string; field?: string } };
@@ -272,11 +348,22 @@ export function PipelineEditorPage() {
               <Select
                 style={{ width: 240 }}
                 value={step.type_id}
-                options={(tasks ?? []).map((task) => ({
-                  value: task.type_id,
-                  label: task.display_name,
-                }))}
+                options={(tasks ?? []).map((task) => {
+                  const disabled =
+                    SINGLETON_STEP_TYPES[task.type_id] &&
+                    task.type_id !== step.type_id &&
+                    ((task.type_id === "cert.apply" && hasApply) || (task.type_id === "cert.store" && hasStore));
+                  return {
+                    value: task.type_id,
+                    label: task.display_name,
+                    disabled,
+                  };
+                })}
                 onChange={(value) => {
+                  if (!canAddType(value) && value !== step.type_id) {
+                    message.warning(`${value} 仅允许添加一次`);
+                    return;
+                  }
                   setSteps((current) =>
                     current.map((item) =>
                       item.id === step.id ? { ...item, type_id: value } : item,
@@ -286,7 +373,6 @@ export function PipelineEditorPage() {
                   form.setFieldValue(["inputs", step.id], {});
                 }}
               />
-              <span>启用：</span>
               <Switch
                 checked={step.enabled}
                 onChange={(value) => {
@@ -302,6 +388,7 @@ export function PipelineEditorPage() {
               typeId={step.type_id}
               stepId={step.id}
               fieldOptions={fieldOptions}
+              rawCredentials={credentialItems}
             />
           </Card>
         ))}
@@ -327,10 +414,12 @@ function TaskSchemaFields({
   typeId,
   stepId,
   fieldOptions,
+  rawCredentials,
 }: {
   typeId: string;
   stepId: number;
   fieldOptions: FieldOptions;
+  rawCredentials: components["schemas"]["CredentialResponse"][];
 }) {
   const { data: schema } = useQuery({
     queryKey: ["task-schema", typeId],
@@ -344,8 +433,8 @@ function TaskSchemaFields({
   });
 
   const decorated = useMemo(
-    () => withFieldOptions(schema, fieldOptions),
-    [schema, fieldOptions],
+    () => withFieldOptions(schema, fieldOptions, rawCredentials),
+    [schema, fieldOptions, rawCredentials],
   );
 
   if (!schema) {
@@ -422,7 +511,11 @@ const CERT_DEPLOY_FIELD_ORDER = ["target", "force", "config"];
  * 目标 schema 是后端动态给的，注入必须在这里递归进行。SSH 变体额外注入
  * `x-field-order`，保证 host/port 等成对字段相邻，不依赖后端 schema 键序。
  */
-function withFieldOptions(schema: unknown, options: FieldOptions): unknown {
+function withFieldOptions(
+  schema: unknown,
+  options: FieldOptions,
+  rawCredentials: components["schemas"]["CredentialResponse"][],
+): unknown {
   const root = schema as
     | { properties?: Record<string, Record<string, unknown>> }
     | undefined;
@@ -445,15 +538,51 @@ function withFieldOptions(schema: unknown, options: FieldOptions): unknown {
     if (!variants) continue;
     const injectedVariants: typeof variants = {};
     for (const [targetId, variant] of Object.entries(variants)) {
-      const injected = withFieldOptions(variant.schema, options) as Record<string, unknown>;
+      const injected = withFieldOptions(variant.schema, options, rawCredentials) as Record<
+        string,
+        unknown
+      >;
       // SSH 变体收紧为档案引用 + 部署输入（连接/认证/权限由档案提供）；
       // local 变体字段全部保留，仅声明成对相邻的渲染顺序。
-      const tightened =
+      let tightened: Record<string, unknown> =
         targetId === "ssh"
           ? tightenSshSchema(injected)
           : targetId === "local"
             ? { ...injected, "x-field-order": LOCAL_FIELD_ORDER }
             : injected;
+      // tencent-ssl 变体的 credential_id 后端注入了 x-credential-types 白名单
+      // （仅 tencent）：该变体的下拉需按白名单过滤，否则会用 FIELD_OPTIONS 的
+      // credential_id（仅 SSH）给 tencent-ssl 注入错误选项。
+      const props = tightened.properties as
+        | Record<string, Record<string, unknown>>
+        | undefined;
+      const credentialNode = props?.["credential_id"] as
+        | Record<string, unknown>
+        | undefined;
+      const allowlist = credentialNode?.["x-credential-types"] as
+        | string[]
+        | undefined;
+      if (Array.isArray(allowlist) && allowlist.length > 0) {
+        const allow = new Set(allowlist);
+        const filtered = rawCredentials
+          .filter((credential) => allow.has(credential.type_id))
+          .map((credential) => ({
+            value: credential.id,
+            label: credential.remark
+              ? `${credential.name}（id=${credential.id}）— ${credential.remark}`
+              : `${credential.name}（id=${credential.id}）`,
+          }));
+        tightened = {
+          ...tightened,
+          properties: {
+            ...props,
+            credential_id: {
+              ...credentialNode,
+              "x-options": filtered,
+            },
+          },
+        };
+      }
       injectedVariants[targetId] = { ...variant, schema: tightened };
     }
     next[field] = { ...node, "x-target-schemas": injectedVariants };

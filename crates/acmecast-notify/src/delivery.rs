@@ -119,6 +119,7 @@ mod tests {
             method: "POST".to_owned(),
             headers: std::collections::BTreeMap::new(),
             body_template: None,
+            smtp: None,
         }
     }
 

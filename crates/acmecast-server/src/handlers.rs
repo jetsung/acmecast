@@ -30,7 +30,10 @@ use utoipa::ToSchema;
 use crate::{
     HttpState,
     auth::{AuthMode, ClientIp, issue_token},
-    credentials::{AliyunCredentialType, CloudflareCredentialType, SshHostCredentialType},
+    credentials::{
+        AliyunCredentialType, CloudflareCredentialType, SshHostCredentialType,
+        TencentCredentialType, TencentEoCredentialType,
+    },
     response::{ApiError, ApiJson, ApiQuery, ApiResponse},
 };
 
@@ -574,6 +577,9 @@ pub(crate) struct PipelineResponse {
     pub created_at: DateTime<Utc>,
     /// 更新时间。
     pub updated_at: DateTime<Utc>,
+    /// 保存后产生的非阻断提示（如“需配置 cron 以完成自动关联”）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 /// 证书查询参数。
@@ -610,6 +616,9 @@ pub(crate) struct CertificateRequest {
     /// ACME 账号凭据标识。
     #[serde(default)]
     pub acme_account_access_id: Option<i64>,
+    /// 管理员备注；可选，空白归一为 `None`。
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 /// 证书响应。
@@ -635,6 +644,8 @@ pub(crate) struct CertificateResponse {
     pub acme_account_access_id: Option<i64>,
     /// 吊销时间。
     pub revoked_at: Option<DateTime<Utc>>,
+    /// 管理员备注；列表页展示用。
+    pub description: Option<String>,
     /// 创建时间。
     pub created_at: DateTime<Utc>,
     /// 更新时间。
@@ -650,6 +661,9 @@ pub(crate) struct CredentialRequest {
     pub type_id: String,
     /// 未加密字段值；仅在进程内短暂存在。
     pub fields: serde_json::Value,
+    /// 人类可读的备注（用途/归属/环境说明），可选；写入前 trim，缺省为空。
+    #[serde(default)]
+    pub remark: Option<String>,
 }
 
 /// 凭据列表查询参数。
@@ -674,6 +688,8 @@ pub(crate) struct CredentialResponse {
     pub name: String,
     /// 凭据类型。
     pub type_id: String,
+    /// 人类可读的备注，可为空。
+    pub remark: String,
     /// 创建时间。
     pub created_at: DateTime<Utc>,
     /// 更新时间。
@@ -695,6 +711,8 @@ pub(crate) struct CredentialDetailResponse {
     pub type_id: String,
     /// 解密后的字段值（编辑回填用）。
     pub fields: serde_json::Value,
+    /// 人类可读的备注，可为空。
+    pub remark: String,
     /// 创建时间。
     pub created_at: DateTime<Utc>,
     /// 更新时间。
@@ -775,7 +793,9 @@ pub(crate) struct HistoryLogResponse {
     pub level: String,
     /// 日志消息。
     pub message: String,
-    /// 产生时间。
+    /// 结构化输出；步骤产生可程序化读取的产物摘要时附带，
+    /// 如 `cert.deploy` 在 `tencent-ssl` 目标下返回的云端证书 ID 列表。
+    pub output: Option<serde_json::Value>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -900,6 +920,7 @@ async fn get_pipeline_by_id(state: &HttpState, id: i64) -> Result<PipelineRespon
             .collect(),
         created_at: pipeline.created_at,
         updated_at: pipeline.updated_at,
+        warnings: Vec::new(),
     })
 }
 
@@ -1110,6 +1131,7 @@ async fn create_certificate(
             not_before: request.not_before,
             not_after: request.not_after,
             acme_account_access_id: request.acme_account_access_id,
+            description: request.description,
         })
         .await
         .map_err(ApiError::from)?;
@@ -1232,6 +1254,7 @@ async fn get_credential(
         name: row.name,
         type_id: row.type_id,
         fields,
+        remark: row.remark,
         created_at: row.created_at,
         updated_at: row.updated_at,
     }))
@@ -1292,6 +1315,14 @@ async fn save_credential(
             )
         })?)
         .map_err(ApiError::from)?;
+    // 备注非敏感但同样去首尾空白：粘贴带换行会让列表显示错位。
+    let remark = request
+        .remark
+        .as_deref()
+        .map(str::trim)
+        .filter(|remark| !remark.is_empty())
+        .unwrap_or("")
+        .to_owned();
     let now = Utc::now();
     let row = match id {
         Some(id) => {
@@ -1311,6 +1342,7 @@ async fn save_credential(
                 name: Set(name.to_owned()),
                 type_id: Set(request.type_id.trim().to_owned()),
                 encrypted_fields: Set(encrypted_fields),
+                remark: Set(remark),
                 updated_at: Set(now),
                 ..Default::default()
             }
@@ -1322,6 +1354,7 @@ async fn save_credential(
             name: Set(name.to_owned()),
             type_id: Set(request.type_id.trim().to_owned()),
             encrypted_fields: Set(encrypted_fields),
+            remark: Set(remark),
             created_at: Set(now),
             updated_at: Set(now),
             ..Default::default()
@@ -1528,6 +1561,8 @@ pub(crate) struct ScheduleResponse {
     pub catch_up: bool,
     /// 负责续期的域名集合。
     pub renewal_domains: Option<Vec<String>>,
+    /// 调度级续期阈值（1-90 天）；None 表示回退全局阈值。
+    pub renewal_threshold_days: Option<i32>,
     /// 上次触发时间。
     pub last_triggered_at: Option<DateTime<Utc>>,
     /// 下次预计触发时间。
@@ -1553,6 +1588,9 @@ pub(crate) struct ScheduleCreateRequest {
     /// 负责续期的域名集合。
     #[serde(default)]
     pub renewal_domains: Option<Vec<String>>,
+    /// 调度级续期阈值（1-90 天）；None 表示回退全局阈值。
+    #[serde(default)]
+    pub renewal_threshold_days: Option<i32>,
 }
 
 fn default_true() -> bool {
@@ -1566,6 +1604,7 @@ fn schedule_response(config: acmecast_store::repository::ScheduleConfig) -> Sche
         enabled: config.enabled,
         catch_up: config.catch_up,
         renewal_domains: config.renewal_domains,
+        renewal_threshold_days: config.renewal_threshold_days,
         last_triggered_at: config.last_triggered_at,
         next_trigger_at: config.next_trigger_at,
         updated_at: config.updated_at,
@@ -1598,6 +1637,7 @@ async fn create_schedule(
                 enabled: request.enabled,
                 catch_up: request.catch_up,
                 renewal_domains: request.renewal_domains,
+                renewal_threshold_days: request.renewal_threshold_days,
             },
         )
         .await
@@ -1848,6 +1888,7 @@ async fn history_logs(
             step_index: log.step_index,
             level: log.level.as_str().to_owned(),
             message: log.message,
+            output: log.output,
             created_at: log.created_at,
         })
         .collect();
@@ -1916,6 +1957,7 @@ impl From<acmecast_store::entity::cert::Model> for CertificateResponse {
             not_after: model.not_after,
             acme_account_access_id: model.acme_account_access_id,
             revoked_at: model.revoked_at,
+            description: model.description,
             created_at: model.created_at,
             updated_at: model.updated_at,
         }
@@ -1928,6 +1970,7 @@ impl From<acmecast_store::entity::credential::Model> for CredentialResponse {
             id: model.id,
             name: model.name,
             type_id: model.type_id,
+            remark: model.remark,
             created_at: model.created_at,
             updated_at: model.updated_at,
         }
@@ -1944,11 +1987,17 @@ pub(crate) fn default_credential_registry() -> Arc<CredentialRegistry> {
     // DNS 提供商凭据：cert.apply 的 DNS-01 需要按类型创建它们，注册后
     // 前端凭据页与流水线的 dns_credential_id 下拉才有来源。
     registry
-        .register(CloudflareCredentialType)
+        .register(CloudflareCredentialType::default())
         .expect("内置 Cloudflare 凭据类型不应重复注册");
     registry
-        .register(AliyunCredentialType)
+        .register(AliyunCredentialType::default())
         .expect("内置阿里云凭据类型不应重复注册");
+    registry
+        .register(TencentCredentialType::default())
+        .expect("内置腾讯云凭据类型不应重复注册");
+    registry
+        .register(TencentEoCredentialType::default())
+        .expect("内置腾讯云 EdgeOne 凭据类型不应重复注册");
     // SSH 主机档案：cert.deploy 的 SSH 配置引用它，注册后凭据页才能
     // 创建/测试档案，部署配置也才能从「每次手抄」变成「选一份档案」。
     registry

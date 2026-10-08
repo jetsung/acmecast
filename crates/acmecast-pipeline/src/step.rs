@@ -25,6 +25,10 @@ pub struct StepLog {
     /// 逐条记录而不是落库时统一填运行结束时间：后者会让同一次运行的日志
     /// 时间戳完全相同，「这一步花了多久」就再也看不出来了。
     pub created_at: chrono::DateTime<chrono::Utc>,
+    /// 结构化输出；步骤产生可程序化读取的产物摘要时附带，
+    /// 如 `cert.deploy` 在 `tencent-ssl` 目标下返回的云端证书 ID 列表。
+    /// 无结构化输出时为 `None`。
+    pub output: Option<serde_json::Value>,
 }
 
 /// 步骤日志级别。
@@ -90,7 +94,15 @@ impl StepLog {
             level,
             message: message.into(),
             created_at: chrono::Utc::now(),
+            output: None,
         }
+    }
+
+    /// 附带结构化输出。
+    #[must_use]
+    pub fn with_output(mut self, output: serde_json::Value) -> Self {
+        self.output = Some(output);
+        self
     }
 }
 
@@ -320,6 +332,18 @@ impl<'a> StepContext<'a> {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         logs.push(StepLog::new(level, message));
+    }
+
+    /// 记一条信息级日志并附带结构化输出。
+    ///
+    /// 用于步骤需要向运行历史暴露可程序化读取的产物摘要时
+    /// （如部署步骤返回的云端证书 ID）。
+    pub fn log_info_with_output(&self, message: impl Into<String>, output: serde_json::Value) {
+        let mut logs = self
+            .logs
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        logs.push(StepLog::new(StepLogLevel::Info, message).with_output(output));
     }
 
     /// 记一条信息级日志。

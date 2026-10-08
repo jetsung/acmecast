@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { App, Button, Space, Switch, Table, Tag } from "antd";
+import { App, Button, Space, Switch, Table, Tag, Typography } from "antd";
 import type { TableColumnsType } from "antd";
 import { useState } from "react";
 import { useNavigate } from "react-router";
@@ -14,16 +14,17 @@ type PipelineSummary = components["schemas"]["PipelineSummaryResponse"];
 /** 流水线列表（3.1）：概要、启用开关、立即运行、删除确认。 */
 export function PipelineListPage() {
   const navigate = useNavigate();
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const queryClient = useQueryClient();
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(15);
   const [runningId, setRunningId] = useState<number | null>(null);
 
   const { data, isFetching } = useQuery({
-    queryKey: ["pipelines", page],
+    queryKey: ["pipelines", page, pageSize],
     queryFn: async () => {
       const result = await client.GET("/api/pipelines", {
-        params: { query: { page, page_size: 20 } },
+        params: { query: { page, page_size: pageSize } },
       });
       return unwrapData<{ items: PipelineSummary[]; total: number }>(result);
     },
@@ -86,8 +87,59 @@ export function PipelineListPage() {
     }
   };
 
+  const handleCopy = async (row: PipelineSummary) => {
+    const detail = await client.GET(`/api/pipelines/${row.id}`, {
+      params: { path: { id: row.id } },
+    });
+    if (detail.error !== undefined || detail.data?.data === undefined) {
+      message.error("读取流水线详情失败");
+      return;
+    }
+    // 计算可用名称：{name}_copy / _copy2 ...，基于现有名称集合
+    const listResult = await client.GET("/api/pipelines", {
+      params: { query: { page: 1, page_size: 100 } },
+    });
+    const existingNames: Record<string, true> = {};
+    if (listResult.data?.data !== undefined) {
+      const page = listResult.data.data as { items: PipelineSummary[] };
+      for (const item of page.items) existingNames[item.name.trim()] = true;
+    }
+    // 若分页恰好拉满，尝试更大分页兜底（流水线数量通常不大）
+    if (Object.keys(existingNames).length === 100) {
+      const big = await client.GET("/api/pipelines", {
+        params: { query: { page: 1, page_size: 500 } },
+      });
+      if (big.data?.data !== undefined) {
+        const page = big.data.data as { items: PipelineSummary[] };
+        for (const item of page.items) existingNames[item.name.trim()] = true;
+      }
+    }
+    const base = detail.data.data.name.trim();
+    let candidate = `${base}_copy`;
+    if (existingNames[candidate]) {
+      let n = 2;
+      while (existingNames[`${base}_copy${n}`]) n++;
+      candidate = `${base}_copy${n}`;
+    }
+    const full = detail.data.data;
+    navigate("/pipelines/new", {
+      state: {
+        copyFrom: {
+          name: candidate,
+          description: full.description ?? null,
+          enabled: full.enabled,
+          steps: full.steps.map((s) => ({
+            type_id: s.type_id,
+            input: s.input,
+            enabled: s.enabled,
+          })),
+        },
+      },
+    });
+  };
+
   const confirmDelete = (row: PipelineSummary) => {
-    App.useApp().modal.confirm({
+    modal.confirm({
       title: "删除流水线？",
       content: `${row.name} 及其步骤、调度将一并删除。`,
       okButtonProps: { danger: true },
@@ -114,6 +166,19 @@ export function PipelineListPage() {
         <a onClick={() => navigate(`/pipelines/${row.id}`)}>{name}</a>
       ),
     },
+    {
+      title: "描述",
+      dataIndex: "description",
+      ellipsis: true,
+      render: (value: string | null | undefined) =>
+        value && value.trim() !== "" ? (
+          <Typography.Text ellipsis style={{ maxWidth: 320 }} title={value}>
+            {value}
+          </Typography.Text>
+        ) : (
+          <Typography.Text type="secondary">—</Typography.Text>
+        ),
+    },
     { title: "步骤数", dataIndex: "step_count", width: 100 },
     {
       title: "启用",
@@ -131,7 +196,7 @@ export function PipelineListPage() {
     },
     {
       title: "操作",
-      width: 220,
+      width: 280,
       render: (_, row) => (
         <Space size={4}>
           <Button size="small" type="link" loading={runningId === row.id} onClick={() => runNow(row)}>
@@ -139,6 +204,9 @@ export function PipelineListPage() {
           </Button>
           <Button size="small" type="link" onClick={() => navigate(`/pipelines/${row.id}`)}>
             编辑
+          </Button>
+          <Button size="small" type="link" onClick={() => handleCopy(row)}>
+            复制
           </Button>
           <Button size="small" type="link" danger onClick={() => confirmDelete(row)}>
             删除
@@ -172,9 +240,18 @@ export function PipelineListPage() {
           dataSource={data?.items ?? []}
           pagination={{
             current: page,
-            pageSize: 20,
+            pageSize,
             total: data?.total ?? 0,
-            onChange: setPage,
+            onChange: (newPage, newPageSize) => {
+              if (newPageSize !== pageSize) {
+                setPage(1);
+                setPageSize(newPageSize);
+              } else {
+                setPage(newPage);
+              }
+            },
+            showSizeChanger: true,
+            pageSizeOptions: [15, 20, 50, 100],
             showTotal: (total) => `共 ${total} 条`,
           }}
         />

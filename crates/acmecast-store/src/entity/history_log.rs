@@ -61,6 +61,10 @@ pub struct Model {
     pub message: String,
     /// 产生时间。
     pub created_at: chrono::DateTime<chrono::Utc>,
+    /// 结构化输出（JSON）；步骤产生可程序化读取的产物摘要时写入，
+    /// 如 `cert.deploy` 在 `tencent-ssl` 目标下返回的云端证书 ID 列表。
+    /// 无结构化输出时为 `None`。
+    pub output: Option<Json>,
 }
 
 /// 日志的关系。

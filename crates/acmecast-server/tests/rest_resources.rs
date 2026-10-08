@@ -165,3 +165,71 @@ async fn credential_detail_returns_decrypted_fields_for_editing() {
     let list_body = json_body(list).await;
     assert!(list_body["data"]["items"][0].get("fields").is_none());
 }
+
+#[tokio::test]
+async fn credential_remark_round_trips_through_api() {
+    // 备注非敏感、列表与详情都要返回；创建不携带时缺省为空，更新可改写。
+    let app = app_with_cipher().await;
+
+    // 创建携带备注。
+    let create = Request::post("/api/credentials")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            r#"{"name":"cf","type_id":"cloudflare","fields":{"api_token":"tok"},"remark":"生产 DNS"}"#,
+        ))
+        .unwrap();
+    let response = app.clone().oneshot(create).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    let id = body["data"]["id"].as_i64().expect("应返回凭据 id");
+    assert_eq!(body["data"]["remark"], "生产 DNS");
+
+    // 详情返回备注。
+    let detail = app
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/credentials/{id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let detail_body = json_body(detail).await;
+    assert_eq!(detail_body["data"]["remark"], "生产 DNS");
+
+    // 列表返回备注。
+    let list = app
+        .clone()
+        .oneshot(
+            Request::get("/api/credentials?page=1&page_size=10")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let list_body = json_body(list).await;
+    assert_eq!(list_body["data"]["items"][0]["remark"], "生产 DNS");
+
+    // 创建不携带 remark：缺省为空串。
+    let create_no_remark = Request::post("/api/credentials")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            r#"{"name":"no-remark","type_id":"cloudflare","fields":{"api_token":"tok2"}}"#,
+        ))
+        .unwrap();
+    let response = app.clone().oneshot(create_no_remark).await.unwrap();
+    let body = json_body(response).await;
+    assert_eq!(body["data"]["remark"], "");
+
+    // 更新可改写备注。
+    let update = Request::put(format!("/api/credentials/{id}"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            r#"{"name":"cf","type_id":"cloudflare","fields":{"api_token":"tok"},"remark":"测试 DNS"}"#,
+        ))
+        .unwrap();
+    let response = app.oneshot(update).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    assert_eq!(body["data"]["remark"], "测试 DNS");
+}

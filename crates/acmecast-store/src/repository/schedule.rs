@@ -26,6 +26,8 @@ pub struct ScheduleInput {
     pub catch_up: bool,
     /// 该流水线负责续期的域名集合；`None` 或空表示不参与到期扫描触发。
     pub renewal_domains: Option<Vec<String>>,
+    /// 调度级续期阈值（1-90 天）；None 表示回退全局阈值。
+    pub renewal_threshold_days: Option<i32>,
 }
 
 /// 读出的一份调度配置。
@@ -41,6 +43,8 @@ pub struct ScheduleConfig {
     pub catch_up: bool,
     /// 负责续期的域名集合（已规范化）；`None` 表示不参与到期扫描触发。
     pub renewal_domains: Option<Vec<String>>,
+    /// 调度级续期阈值（1-90 天）；None 表示回退全局阈值。
+    pub renewal_threshold_days: Option<i32>,
     /// 上次触发时间。
     pub last_triggered_at: Option<DateTime<Utc>>,
     /// 下次预计触发时间。
@@ -123,6 +127,17 @@ impl<'db> ScheduleRepository<'db> {
             .as_ref()
             .map(|domains| serde_json::to_string(domains).expect("域名数组的序列化不会失败"));
 
+        let renewal_threshold_days = input.renewal_threshold_days;
+        if let Some(days) = renewal_threshold_days {
+            // 0/负数=跳过检测，回退到直接调度触发；>90 仍拒绝。
+            if days > 90 {
+                return Err(Error::Validation(format!(
+                    "字段 `renewal_threshold_days` 只能是 ≤0（跳过检测）或 1-90 之一，实际为 {days}"
+                )));
+            }
+        }
+        let renewal_threshold: Option<i16> = renewal_threshold_days.map(|days| days as i16);
+
         // 启用的调度没有任何触发途径就是一条永不自动触发的死配置——
         // 「配了却不触发」的困惑多半源于此，宁可保存时硬拒绝。
         if input.enabled && cron.is_none() && renewal_domains.is_none() {
@@ -149,6 +164,7 @@ impl<'db> ScheduleRepository<'db> {
                     enabled: Set(input.enabled),
                     catch_up: Set(input.catch_up),
                     renewal_domains: Set(renewal_json),
+                    renewal_threshold_days: Set(renewal_threshold),
                     next_trigger_at: Set(next_trigger_at),
                     updated_at: Set(now),
                     ..Default::default()
@@ -163,6 +179,7 @@ impl<'db> ScheduleRepository<'db> {
                     enabled: Set(input.enabled),
                     catch_up: Set(input.catch_up),
                     renewal_domains: Set(renewal_json),
+                    renewal_threshold_days: Set(renewal_threshold),
                     next_trigger_at: Set(next_trigger_at),
                     updated_at: Set(now),
                     ..Default::default()
@@ -238,6 +255,7 @@ fn config_from_row(row: schedule::Model) -> ScheduleConfig {
         renewal_domains: row
             .renewal_domains
             .and_then(|json| serde_json::from_str(&json).ok()),
+        renewal_threshold_days: row.renewal_threshold_days.map(|days| i32::from(days)),
         last_triggered_at: row.last_triggered_at,
         next_trigger_at: row.next_trigger_at,
         updated_at: row.updated_at,

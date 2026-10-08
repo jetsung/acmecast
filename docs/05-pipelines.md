@@ -4,6 +4,25 @@
 `order_index` 升序执行；每步声明 `type_id`（步骤类型）、`input`（JSON 输入）、
 `enabled`（可停用，停用的步骤跳过并记日志）。
 
+## 名称唯一
+
+流水线名称全局唯一（去空白后精确匹配）。新建与更新时冲突返回校验错误，
+数据库层以唯一索引兜底并发写入。
+
+## 复制
+
+列表页“复制”将源流水线数据预填到新建表单，名称自动置为 `{原名称}_copy`
+（已占用则递增为 `_copy2`、`_copy3` …），描述、启用状态与全部步骤原样带入，
+不复制运行历史/调度/存储。复制后可在表单中继续编辑，提交走正常新建校验。
+
+## 步骤次数约束
+
+- `cert.apply` 仅允许出现 1 次（避免重复签发）
+- `cert.store` 仅允许出现 1 次（避免重复入库）
+- `cert.deploy` 允许多次（同一证书部署到多个平台）
+
+超出时保存返回校验错误，前端在编辑页对已存在的单例类型置灰并在保存前拦截。
+
 ## 执行语义
 
 - **产物传递**：步骤产出具名产物（`cert_pem`、`fingerprint` 等），后续步骤按
@@ -31,6 +50,7 @@
 |---|---|---|---|
 | `domains` | string[] | 是 | 域名集合；通配符（`*.example.com`）强制走 DNS-01 |
 | `challenge` | string | 是 | 挑战类型，当前只支持 `dns-01`（HTTP-01 尚无投放通道） |
+| `key_algorithm` | string | 否（默认 `ecdsa_p256`） | 申请密钥与证书的算法：`ecdsa_p256` / `ecdsa_p384` / `ed25519` / `rsa2048`；密钥类型在签发时即固定，CA 是否接受所选算法以 CA 支持为准 |
 | `account_credential_id` | int | 是 | ACME 账号凭据标识（`acme.account` 类型） |
 | `dns_provider` | string | DNS-01 必填 | DNS 提供商标识：`cloudflare` / `aliyun` |
 | `dns_credential_id` | int | DNS-01 必填 | DNS 提供商凭据标识 |
@@ -38,6 +58,7 @@
 | `wait_propagation` | bool | 否（默认 `true`） | 等 TXT 记录可见后再让 CA 验证；内网 DNS（解析器查不到）应关闭 |
 | `contacts` | string[] | 否 | 账号联系人（裸邮箱或 `mailto:` URI），仅首次注册时用 |
 | `insecure_skip_verify` | bool | 否（默认 `false`） | 跳过 CA 的 TLS 校验，仅供自签测试 CA（pebble） |
+| `renew_before_days` | int (1-90) | 否 | 到期前 N 天自动续期；填后自动将流水线 `domains` 同步到调度 `renewal_domains` 并将阈值落调度 `renewal_threshold_days`，无调度时需另填 `auto_schedule_cron` 一并创建 |
 
 产物：`cert_pem`（证书链 PEM）、`key_pem`（私钥 PEM）、`domains`、
 `fingerprint`（SHA-256 指纹）。
@@ -46,6 +67,8 @@
 
 - ACME 交互重试为指数退避（初始 500ms、倍率 2.0、总上限 120s）；badNonce
   自动重试（上限 3 次）。
+- `key_algorithm` 决定本次申请的密钥对与 CSR 签名算法，CA 据此签发同类型
+  证书；CA 不支持所选算法时按 CA 返回的错误失败，不回退重试。
 - 通配符下单保留 `*.` 前缀（剥前缀会被 CA 在 finalize 时拒绝）。
 - DNS-01 写 TXT 记录前先查同值（幂等跳过）；发现**异值残留直接报错**——
   宁可失败也不让 CA 读到旧值。挑战结束无论成败都清理记录。

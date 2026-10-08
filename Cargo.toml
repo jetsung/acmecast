@@ -6,6 +6,8 @@ members = ["crates/*"]
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
+authors = ["Jetsung Chan <i@jetsung.com>"]
+repository = "https://github.com/jetsung/acmecast"
 # 全部为内部 crate，不发布到 crates.io。
 # 这也使 cargo-deny 认可 `foo.workspace = true` 形式的依赖（版本由根统一钉住）。
 # 将来若要把某个 crate（例如 acmecast-acme）单独发布，需为其显式指定版本依赖
@@ -89,7 +91,9 @@ nix = { version = "0.29", features = ["user", "fs"] }
 # SSH 远程部署：纯 Rust，避免依赖系统的 libssh2。
 russh = "0.63"
 # ACME 申请步骤的密钥对与 CSR 生成（证书解析 crate 同用此版本）。
-rcgen = "0.14.10"
+# aws_lc_rs：RSA 密钥生成只有该后端支持（ring 无 RSA keygen）；aws-lc-rs 已在
+# 依赖树（russh 默认后端），保留默认 ring 以免全量切换密码学后端。
+rcgen = { version = "0.14.10", features = ["aws_lc_rs"] }
 jsonwebtoken = "9"
 # default-features 关闭（默认的 native-tls 依赖系统 OpenSSL，musl 静态构建
 # 无法提供）；TLS 统一走 rustls，与项目其余部分一致。
@@ -101,6 +105,17 @@ reqwest = { version = "0.12", default-features = false, features = [
     "http2",
 ] }
 rustls-pemfile = "2"
+# 邮件通知渠道的 SMTP 客户端：异步传输 + rustls TLS（与项目 TLS 栈一致），
+# 关闭 default-features 以避免引入 native-tls（musl 静态构建不可用）；
+# ring 为 rustls 默认 provider、webpki-roots 内置根证书，均与 reqwest 同源。
+lettre = { version = "0.11", default-features = false, features = [
+    "builder",
+    "smtp-transport",
+    "tokio1",
+    "tokio1-rustls",
+    "ring",
+    "webpki-roots",
+] }
 
 # 测试：进程内 HTTP mock（webhook 渠道适配器的请求断言）。
 wiremock = "0.6"

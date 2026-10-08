@@ -263,6 +263,166 @@ async fn blank_descriptions_become_none() {
     );
 }
 
+// ---- 名称唯一 ----
+
+#[tokio::test]
+async fn duplicate_pipeline_name_is_rejected() {
+    let db = setup().await;
+    let repo = PipelineRepository::new(&db);
+
+    repo.save(None, pipeline("唯一名", vec![step("a", &[])]))
+        .await
+        .unwrap();
+
+    let err = repo
+        .save(None, pipeline("唯一名", vec![step("a", &[])]))
+        .await
+        .expect_err("同名应被拒绝");
+    assert!(matches!(err, Error::Conflict(_)), "{err:?}");
+    assert!(err.to_string().contains("已存在"), "{err}");
+}
+
+#[tokio::test]
+async fn pipeline_name_is_trimmed_for_uniqueness() {
+    let db = setup().await;
+    let repo = PipelineRepository::new(&db);
+
+    repo.save(None, pipeline("去空白", vec![step("a", &[])]))
+        .await
+        .unwrap();
+
+    let err = repo
+        .save(None, pipeline("  去空白  ", vec![step("a", &[])]))
+        .await
+        .expect_err("去空白后同名应被拒绝");
+    assert!(matches!(err, Error::Conflict(_)), "{err:?}");
+}
+
+#[tokio::test]
+async fn updating_to_an_existing_name_is_rejected() {
+    let db = setup().await;
+    let repo = PipelineRepository::new(&db);
+
+    let a = repo
+        .save(None, pipeline("A", vec![step("a", &[])]))
+        .await
+        .unwrap();
+    let b = repo
+        .save(None, pipeline("B", vec![step("a", &[])]))
+        .await
+        .unwrap();
+
+    let err = repo
+        .save(Some(b), pipeline("A", vec![step("a", &[])]))
+        .await
+        .expect_err("更新为已占用名称应被拒绝");
+    assert!(matches!(err, Error::Conflict(_)), "{err:?}");
+
+    // 被拒绝的更新不该改动原记录。
+    assert_eq!(repo.find(b).await.unwrap().unwrap().name, "B");
+    assert_eq!(repo.find(a).await.unwrap().unwrap().name, "A");
+}
+
+#[tokio::test]
+async fn updating_with_same_name_is_allowed() {
+    let db = setup().await;
+    let repo = PipelineRepository::new(&db);
+
+    let id = repo
+        .save(None, pipeline("自更", vec![step("a", &[])]))
+        .await
+        .unwrap();
+
+    // 自身更新保持同名应放行（排除自身判重）。
+    repo.save(Some(id), pipeline("自更", vec![step("b", &[])]))
+        .await
+        .expect("自身同名更新应成功");
+}
+
+// ---- 步骤次数约束 ----
+
+#[tokio::test]
+async fn cert_apply_is_limited_to_one() {
+    let db = setup().await;
+    let repo = PipelineRepository::new(&db);
+
+    let err = repo
+        .save(
+            None,
+            pipeline(
+                "双申请",
+                vec![step("cert.apply", &[]), step("cert.apply", &[])],
+            ),
+        )
+        .await
+        .expect_err("cert.apply 超限应被拒绝");
+    assert!(matches!(err, Error::Validation(_)), "{err:?}");
+    assert!(err.to_string().contains("cert.apply"), "{err}");
+}
+
+#[tokio::test]
+async fn cert_store_is_limited_to_one() {
+    let db = setup().await;
+    let repo = PipelineRepository::new(&db);
+
+    let err = repo
+        .save(
+            None,
+            pipeline(
+                "双入库",
+                vec![step("cert.store", &[]), step("cert.store", &[])],
+            ),
+        )
+        .await
+        .expect_err("cert.store 超限应被拒绝");
+    assert!(matches!(err, Error::Validation(_)), "{err:?}");
+    assert!(err.to_string().contains("cert.store"), "{err}");
+}
+
+#[tokio::test]
+async fn cert_deploy_can_appear_multiple_times() {
+    let db = setup().await;
+    let repo = PipelineRepository::new(&db);
+
+    let id = repo
+        .save(
+            None,
+            pipeline(
+                "多部署",
+                vec![step("cert.deploy", &[]), step("cert.deploy", &[])],
+            ),
+        )
+        .await
+        .expect("cert.deploy 多次应放行");
+
+    let found = repo.find(id).await.unwrap().unwrap();
+    assert_eq!(found.steps.len(), 2);
+}
+
+#[tokio::test]
+async fn pipeline_with_one_apply_one_store_and_two_deploys_is_allowed() {
+    let db = setup().await;
+    let repo = PipelineRepository::new(&db);
+
+    let id = repo
+        .save(
+            None,
+            pipeline(
+                "合规组合",
+                vec![
+                    step("cert.apply", &[]),
+                    step("cert.store", &[]),
+                    step("cert.deploy", &[]),
+                    step("cert.deploy", &[]),
+                ],
+            ),
+        )
+        .await
+        .expect("合规组合应成功");
+
+    assert_eq!(repo.find(id).await.unwrap().unwrap().steps.len(), 4);
+}
+
 // ---- 列表 ----
 
 #[tokio::test]

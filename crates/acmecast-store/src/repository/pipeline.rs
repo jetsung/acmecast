@@ -113,11 +113,27 @@ impl<'db> PipelineRepository<'db> {
         if name.is_empty() {
             return Err(Error::Validation("流水线名称不能为空".to_owned()));
         }
+        if name.chars().count() > 255 {
+            return Err(Error::Validation(
+                "流水线名称不能超过 255 个字符".to_owned(),
+            ));
+        }
         if input.steps.is_empty() {
             // 没有步骤的流水线跑起来什么也不做，多半是保存了个半成品。
             return Err(Error::Validation(
                 "流水线至少需要一个步骤；若想暂时停用请改 enabled 而不是删光步骤".to_owned(),
             ));
+        }
+        validate_step_limits(&input.steps)?;
+
+        // 名称唯一：去空白后精确匹配，更新时排除自身。
+        if let Some(conflict) = self.find_by_name(name).await? {
+            let is_self = id.is_some_and(|own| own == conflict.id);
+            if !is_self {
+                return Err(Error::Conflict(format!(
+                    "流水线名称已存在: {name}"
+                )));
+            }
         }
 
         // 整个定义（含步骤集合）在一个事务里落库：中途失败时不留下半个定义。
@@ -189,7 +205,14 @@ impl<'db> PipelineRepository<'db> {
             .await?;
         }
 
-        transaction.commit().await?;
+        if let Err(err) = transaction.commit().await {
+            // 并发下应用层判重与唯一索引之间有窗口，冲突时转为可诊断的 Conflict。
+            let msg = err.to_string();
+            if msg.contains("UNIQUE") || msg.contains("Duplicate") || msg.contains("unique") {
+                return Err(Error::Conflict(format!("流水线名称已存在: {name}")));
+            }
+            return Err(Error::Database(err));
+        }
         Ok(pipeline_id)
     }
 
@@ -260,6 +283,38 @@ impl<'db> PipelineRepository<'db> {
             })
             .collect())
     }
+
+    /// 按去空白后精确名称查找流水线（用于唯一性校验）。
+    async fn find_by_name(&self, name: &str) -> Result<Option<pipeline::Model>> {
+        let found = pipeline::Entity::find()
+            .filter(pipeline::Column::Name.eq(name))
+            .one(self.db)
+            .await?;
+        Ok(found)
+    }
+}
+
+/// 校验步骤次数：`cert.apply` 与 `cert.store` 各至多一次，`cert.deploy` 不限。
+fn validate_step_limits(steps: &[PipelineStepInput]) -> Result<()> {
+    let apply = steps
+        .iter()
+        .filter(|s| s.type_id.trim() == "cert.apply")
+        .count();
+    if apply > 1 {
+        return Err(Error::Validation(
+            "cert.apply 仅允许添加一次".to_owned(),
+        ));
+    }
+    let store = steps
+        .iter()
+        .filter(|s| s.type_id.trim() == "cert.store")
+        .count();
+    if store > 1 {
+        return Err(Error::Validation(
+            "cert.store 仅允许添加一次".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 /// 把描述里的空白归一成 `None`，免得库里出现「有值但是空的」描述。

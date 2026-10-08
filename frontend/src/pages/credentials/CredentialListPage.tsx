@@ -27,16 +27,17 @@ export function CredentialListPage() {
   const { message } = App.useApp();
   const queryClient = useQueryClient();
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(15);
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [selectedType, setSelectedType] = useState<string | null>(null);
   const [testing, setTesting] = useState<number | null>(null);
 
   const { data: credentials, isFetching } = useQuery({
-    queryKey: ["credentials", page],
+    queryKey: ["credentials", page, pageSize],
     queryFn: async () => {
       const result = await client.GET("/api/credentials", {
-        params: { query: { page, page_size: 20 } },
+        params: { query: { page, page_size: pageSize } },
       });
       return unwrapData<{ items: CredentialRow[]; total: number }>(result);
     },
@@ -122,8 +123,15 @@ export function CredentialListPage() {
   };
 
   const columns: TableColumnsType<CredentialRow> = [
+    { title: "ID", dataIndex: "id", width: 90, sorter: false },
     { title: "名称", dataIndex: "name" },
     { title: "类型", dataIndex: "type_id", render: (value: string) => <Tag>{value}</Tag> },
+    {
+      title: "备注",
+      dataIndex: "remark",
+      render: (value: string | null | undefined) =>
+        value && value.trim() !== "" ? value : <Typography.Text type="secondary">—</Typography.Text>,
+    },
     {
       title: "更新时间",
       dataIndex: "updated_at",
@@ -174,9 +182,18 @@ export function CredentialListPage() {
         dataSource={credentials?.items ?? []}
         pagination={{
           current: page,
-          pageSize: 20,
+          pageSize,
           total: credentials?.total ?? 0,
-          onChange: setPage,
+          onChange: (newPage, newPageSize) => {
+            if (newPageSize !== pageSize) {
+              setPage(1);
+              setPageSize(newPageSize);
+            } else {
+              setPage(newPage);
+            }
+          },
+          showSizeChanger: true,
+          pageSizeOptions: [15, 20, 50, 100],
           showTotal: (total) => `共 ${total} 条`,
         }}
       />
@@ -264,6 +281,7 @@ function CredentialEditorModal({
       form.setFieldsValue({
         name: detail.name,
         type_id: detail.type_id,
+        remark: (detail as { remark?: string }).remark ?? "",
         fields: detail.fields ?? {},
       });
     } else if (editingId === null) {
@@ -277,14 +295,22 @@ function CredentialEditorModal({
     form.setFieldsValue({ name: form.getFieldValue("name"), fields: {} });
   };
 
-  const onSave = async (values: { name: string; fields: Record<string, unknown> }) => {
+  const onSave = async (values: {
+    name: string;
+    remark?: string;
+    fields: Record<string, unknown>;
+  }) => {
     setSaving(true);
     try {
-      const body = {
+      const body: Record<string, unknown> = {
         name: values.name,
         type_id: selectedType ?? "",
         fields: values.fields ?? {},
       };
+      // 备注非敏感、可为空；空串与缺省归一为空。
+      if (values.remark && values.remark.trim() !== "") {
+        body["remark"] = values.remark.trim();
+      }
       const result =
         editingId === null
           ? await client.POST("/api/credentials", { body })
@@ -343,6 +369,9 @@ function CredentialEditorModal({
             }))}
             onChange={(value) => onTypeSelect(value)}
           />
+        </Form.Item>
+        <Form.Item name="remark" label="备注">
+          <Input placeholder="可选：如「生产 DNS」「测试 CLB」，用于区分多密钥场景" maxLength={255} />
         </Form.Item>
 
         {currentType && (

@@ -456,6 +456,185 @@ async fn the_full_pipeline_applies_stores_and_deploys_a_certificate() {
     assert_eq!(remaining, 0, "挑战 TXT 记录应在完成后清理：{snapshot:?}");
 }
 
+/// zone 推导失败必须早于任何 DNS 调用：注册域本身（`skiy.net`）剥第一段
+/// 只剩 TLD，历史上一度被推导成 `net` 拿去查 Cloudflare 才报错
+/// （histories/26）。现在要早失败并提示显式配置，错误里带上域名。
+#[tokio::test(flavor = "multi_thread")]
+async fn zone_derivation_failure_fails_before_any_dns_call() {
+    let pebble = match start_pebble() {
+        Ok(pebble) => pebble,
+        Err(reason) => {
+            eprintln!("跳过 zone 推导失败测试：{reason}");
+            return;
+        }
+    };
+
+    let db = a_database().await;
+    let cipher = Arc::new(
+        CredentialCipher::from_base64(&CredentialCipher::generate_key_base64())
+            .expect("密钥应可用"),
+    );
+    let mut credential_registry = CredentialRegistry::new();
+    credential_registry
+        .register(acmecast_access::AcmeAccountType::new())
+        .expect("ACME 账号类型不应重复");
+    credential_registry
+        .register(MemoryDnsType)
+        .expect("内存 DNS 类型不应重复");
+    let credentials = CredentialStore::new(
+        &db,
+        Arc::new(credential_registry),
+        Arc::clone(&cipher),
+    );
+
+    let account_id = an_acme_account_credential(&db, &cipher, &pebble.directory_url).await;
+    let dns_credential_id = a_memory_dns_credential(&db, &cipher).await;
+
+    let memory_dns = MemoryDns::default();
+    let mut dns_registry = DnsProviderRegistry::new();
+    dns_registry
+        .register(memory_dns.clone())
+        .expect("内存 DNS 提供商不应重复");
+    let dns_registry = Arc::new(dns_registry);
+
+    let mut steps = StepRegistry::new();
+    steps
+        .register(CertApplyStep::new(Arc::clone(&dns_registry)))
+        .expect("cert.apply 不应重复");
+
+    // 注册域本身不给 dns_zone：推导不出 zone，应在任何 DNS 调用前失败。
+    let definition = PipelineDefinition {
+        id: 1,
+        steps: vec![acmecast_pipeline::StepDefinition {
+            order_index: 0,
+            type_id: "cert.apply".to_owned(),
+            input: serde_json::json!({
+                "domains": ["skiy.net"],
+                "challenge": "dns-01",
+                "account_credential_id": account_id,
+                "dns_provider": "memory",
+                "dns_credential_id": dns_credential_id,
+                "wait_propagation": false,
+                "insecure_skip_verify": true
+            }),
+            enabled: true,
+        }],
+    };
+
+    let leaked: &'static DatabaseConnection = Box::leak(Box::new(db.clone()));
+    let state = acmecast_pipeline::DatabaseStateStore::new(leaked);
+    let runner = PipelineRunner::new(&steps, &credentials, &state);
+    let outcome = runner.run(&definition, 1).await.expect("流水线应能执行");
+
+    assert!(
+        !outcome.is_success(),
+        "无法推导 zone 的申请应失败：{:?}",
+        outcome.failure
+    );
+    let failure = outcome.failure.as_ref().expect("应有失败详情");
+    assert!(
+        failure.reason.contains("skiy.net"),
+        "失败原因应包含授权域名：{}",
+        failure.reason
+    );
+    assert!(
+        failure.reason.contains("请显式配置 dns_zone"),
+        "失败原因应提示显式配置：{}",
+        failure.reason
+    );
+    assert!(
+        memory_dns.snapshot().is_empty(),
+        "zone 推导失败不得触发任何 DNS 调用"
+    );
+}
+
+/// 密钥类型可选：`key_algorithm = "ecdsa_p384"` 时，pebble 按同一算法签发，
+/// 私钥识别为 ECDSA P-384，且与证书通过入库前的匹配校验（`detect_algorithm`
+/// 与 `verify_matches_pem` 与 cert.store 入库前校验同源）。
+#[tokio::test(flavor = "multi_thread")]
+async fn applies_with_ecdsa_p384_key_algorithm() {
+    let pebble = match start_pebble() {
+        Ok(pebble) => pebble,
+        Err(reason) => {
+            eprintln!("跳过 P-384 密钥算法测试：{reason}");
+            return;
+        }
+    };
+
+    let db = a_database().await;
+    let cipher = Arc::new(
+        CredentialCipher::from_base64(&CredentialCipher::generate_key_base64())
+            .expect("密钥应可用"),
+    );
+
+    let mut credential_registry = CredentialRegistry::new();
+    credential_registry
+        .register(acmecast_access::AcmeAccountType::new())
+        .expect("ACME 账号类型不应重复");
+    credential_registry
+        .register(MemoryDnsType)
+        .expect("内存 DNS 类型不应重复");
+    let credential_registry = Arc::new(credential_registry);
+    let credentials =
+        CredentialStore::new(&db, Arc::clone(&credential_registry), Arc::clone(&cipher));
+
+    let account_id = an_acme_account_credential(&db, &cipher, &pebble.directory_url).await;
+    let dns_credential_id = a_memory_dns_credential(&db, &cipher).await;
+
+    let memory_dns = MemoryDns::default();
+    let mut dns_registry = DnsProviderRegistry::new();
+    dns_registry
+        .register(memory_dns.clone())
+        .expect("内存 DNS 提供商不应重复");
+    let dns_registry = Arc::new(dns_registry);
+
+    let mut steps = StepRegistry::new();
+    steps
+        .register(CertApplyStep::new(Arc::clone(&dns_registry)))
+        .expect("cert.apply 不应重复");
+
+    let definition = PipelineDefinition {
+        id: 1,
+        steps: vec![acmecast_pipeline::StepDefinition {
+            order_index: 0,
+            type_id: "cert.apply".to_owned(),
+            input: serde_json::json!({
+                "domains": ["p384.acmecast.test"],
+                "challenge": "dns-01",
+                "key_algorithm": "ecdsa_p384",
+                "account_credential_id": account_id,
+                "dns_provider": "memory",
+                "dns_credential_id": dns_credential_id,
+                "wait_propagation": false,
+                "insecure_skip_verify": true
+            }),
+            enabled: true,
+        }],
+    };
+
+    let leaked: &'static DatabaseConnection = Box::leak(Box::new(db.clone()));
+    let state = acmecast_pipeline::DatabaseStateStore::new(leaked);
+    let runner = PipelineRunner::new(&steps, &credentials, &state);
+    let outcome = runner.run(&definition, 1).await.expect("流水线应能执行");
+    assert!(
+        outcome.is_success(),
+        "P-384 申请应成功，失败原因：{:?}",
+        outcome.failure
+    );
+
+    let key_pem: String = serde_json::from_value(outcome.artifacts.get("key_pem").cloned().expect("应有 key_pem 产物"))
+        .expect("key_pem 应是字符串");
+    let cert_pem: String =
+        serde_json::from_value(outcome.artifacts.get("cert_pem").cloned().expect("应有 cert_pem 产物"))
+            .expect("cert_pem 应是字符串");
+    assert_eq!(
+        acmecast_cert::detect_algorithm(&key_pem).expect("识别私钥算法"),
+        acmecast_cert::KeyAlgorithm::EcdsaP384,
+        "签发的私钥应是 ECDSA P-384"
+    );
+    acmecast_cert::verify_matches_pem(&key_pem, &cert_pem).expect("私钥与签发证书应匹配");
+}
+
 // ---- 11.2 定时续期闭环 ----
 //
 // 调度引擎扫描命中证书（到期阈值被调大）→ 经真实启动器重签 →
@@ -602,6 +781,7 @@ async fn renewal_scan_triggers_a_single_reissue() {
                 enabled: true,
                 catch_up: false,
                 renewal_domains: Some(vec!["e2e.acmecast.test".to_owned()]),
+                    renewal_threshold_days: None,
             },
         )
         .await
@@ -856,6 +1036,23 @@ async fn revocation_updates_ca_and_local_state() {
         "contacts 描述应说明前缀可省略并由服务端补全：{contacts_description}"
     );
 
+    // dns_zone 应携带「多域名必填」条件扩展：前端 SchemaForm 据此在
+    // domains ≥ 2 时联动必填（多 zone 语义要求用户显式配置）。
+    let dns_zone = &schema_body["data"]["properties"]["dns_zone"];
+    assert_eq!(
+        dns_zone["x-required-when"],
+        serde_json::json!({ "MinItems": { "field": "domains", "count": 2 } }),
+        "dns_zone 应携带多域名必填条件：{dns_zone}"
+    );
+    assert!(
+        dns_zone["description"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("多个域名"),
+        "dns_zone 描述应包含多域名指引：{}",
+        dns_zone["description"]
+    );
+
     // 吊销：CA 侧接受，本地状态更新。
     let response = send(
         &app,
@@ -899,19 +1096,14 @@ async fn revocation_updates_ca_and_local_state() {
     assert!(
         !data_dir
             .path()
-            .join(format!(
-                "certs/{}/revoke.acmecast.test.cert.pem",
-                stored.fingerprint
-            ))
+            .join("certs/ssl/revoke.acmecast.test.cert.pem")
             .exists(),
-        "原位置的证书链不应保留"
+        "扁平活跃中的原文件不应保留"
     );
+    // 扁平活跃为共享目录，搬空单条证书不应删除整个 certs/ssl 目录
     assert!(
-        !data_dir
-            .path()
-            .join(format!("certs/{}", stored.fingerprint))
-            .exists(),
-        "搬空的源目录不应留下空壳"
+        data_dir.path().join("certs/ssl").exists(),
+        "扁平活跃目录应保留（内含其他证书）"
     );
     assert!(
         data_dir.path().join(&stored.cert_pem_path).is_file(),
@@ -975,6 +1167,8 @@ async fn revocation_updates_ca_and_local_state() {
             not_before: chrono::Utc::now() - chrono::Duration::days(1),
             not_after: chrono::Utc::now() + chrono::Duration::days(90),
             acme_account_access_id: None,
+            key_algorithm: None,
+            description: None,
         })
         .await
         .expect("手动上传证书应能入库");

@@ -3,6 +3,8 @@ name = "acmecast-pipeline"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
 publish.workspace = true
 description = "流水线引擎：步骤契约、执行上下文与运行编排"
 

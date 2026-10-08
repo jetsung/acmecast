@@ -12,7 +12,8 @@ import { Outlet, useLocation, useNavigate } from "react-router";
 import { useAuthStore } from "@/auth/store";
 
 const { Sider, Header, Content } = Layout;
-
+/** 侧边栏宽度（px）：Sider width 与内容区 marginLeft 共用，避免两处漂移。 */
+const SIDER_WIDTH = 216;
 /** 导航项集中定义：侧栏菜单与顶栏标题共用，避免两处漂移。 */
 const NAV_ITEMS = [
   { key: "/", icon: <DashboardOutlined />, label: "仪表盘" },
@@ -73,7 +74,19 @@ export function AppLayout() {
 
   return (
     <Layout style={{ minHeight: "100vh" }}>
-      <Sider width={216} style={{ borderRight: "1px solid #edf0f7" }}>
+      <Sider
+        width={SIDER_WIDTH}
+        style={{
+          position: "fixed",
+          top: 0,
+          left: 0,
+          height: "100vh",
+          overflowY: "auto",
+          overflowX: "hidden",
+          zIndex: 9,
+          borderRight: "1px solid #edf0f7",
+        }}
+      >
         <Brand />
         <Menu
           mode="inline"
@@ -83,7 +96,7 @@ export function AppLayout() {
           style={{ borderInlineEnd: "none", paddingBlock: 4 }}
         />
       </Sider>
-      <Layout>
+      <Layout style={{ marginLeft: SIDER_WIDTH }}>
         <Header
           style={{
             display: "flex",

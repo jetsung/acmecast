@@ -8,11 +8,8 @@
 |---|---|
 | `ACMECAST_JWT_SECRET` 相关配置错误 | 必需，缺失拒绝启动 |
 | credential key 相关配置错误 | 必需；须为 base64 编码的 32 字节（`openssl rand -base64 32`） |
-| 口令哈希非法 PHC | `ACMECAST_ADMIN_PASSWORD_HASH` 必须形如 `$argon2id$...`，用 `hash-password` 子命令重新生成 |
-| 迁移失败（报版本号） | 数据库 schema 与迁移版本冲突；看日志中失败版本，切勿手工改已应用的迁移 |
-| 不支持的数据库方言 | 连接串 scheme 仅支持 sqlite/mysql(mariadb)/postgres(postgresql) |
-
-### 登录
+| 迁移失败（报版本号） | 数据库 schema 与迁移版本冲突；看日志中失败版本，切勿手工改已应用的迁移。若为 m20250110 唯一索引失败，说明存在同名流水线，需先重命名再重试 |
+| 流水线名称重名（迁移 m20250110） | 查询重名可用 SQL 按 name 分组统计，重名数大于 1 的即冲突；修复为逐条改名后重启（例如给重名记录名后追加 _dup） |
 
 - **401 `invalid_credentials`**：用户名或口令错误（统一文案，不区分哪种错）。
   注意 `ACMECAST_ADMIN_USERNAME` 是否被改过。
@@ -30,6 +27,7 @@
   请在 `cert.apply` 输入里设 `wait_propagation=false`。
 - **报「异值残留」**：`_acme-challenge` 下有上次失败留下的旧 TXT 记录。
   这是刻意的保护（防 CA 读到旧值）；手工删掉残留记录后重跑。
+- **`NXDOMAIN looking up TXT` 或 `During secondary validation: No TXT record found`**：最常见于 **`CNAME`/`*.CNAME` 把 `_acme-challenge` 盖住了**（见 [DNS 提供商](06-dns-providers.md#通配符与-cname-的排障)）。`*.example.com CNAME x` 会让 `_acme-challenge.example.com` 合成出 `CNAME`，同名 `TXT` 被遮蔽；`dig @权威NS TXT _acme-challenge.example.com` 若只回 `CNAME`，就是这个原因。只留 `*.example.com` 的泛条、不要建显式的 `_acme-challenge.example.com CNAME`，待 `acmecast` 写入显式 `TXT` 压掉通配后再验证，或把泛解析改 `A` 记录。
 - **`externalAccountRequired`**：该 CA（ZeroSSL/Google 等）要求 EAB，在
   `acme.account` 凭据里成对补 `eab_kid` / `eab_hmac_key`。
 - **通配符失败**：通配符只能 DNS-01，确认 `challenge` 为 `dns-01`。

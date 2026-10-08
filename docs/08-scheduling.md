@@ -9,8 +9,10 @@
 |---|---|---|
 | tick 间隔 | 30 秒 | 调度器醒一次检查到点的周期，即 cron 触发精度上界 |
 | 扫描间隔 | 1 小时 | 到期扫描节流（tick 再频繁扫描也不会更勤） |
-| 续期阈值 | 30 天 | 证书剩余有效期 ≤ 该值进入续期窗口 |
+| 续期阈值 | 30 天 | 证书剩余有效期 ≤ 该值进入续期窗口；调度级 `renewal_threshold_days`（1-90）可按流水线覆盖该全局值 |
 | 去重窗口 | 1 小时 | 同一流水线两次续期触发的最小间隔 |
+
+已设置 `renew_before_days` 的流水线自动与调度关联：保存时将流水线 `domains` 同步到调度的 `renewal_domains` 并将阈值落 `renewal_threshold_days`（无调度时带 `auto_schedule_cron` 一并创建，否则返回警告待补 cron；清空后同步清除阈值/域名）。
 
 ## cron 触发
 
@@ -52,9 +54,9 @@
 ## API 速查
 
 - `GET /api/schedules`：列出全部调度（含 `last_triggered_at`、
-  `next_trigger_at`）
+  `next_trigger_at`、`renewal_threshold_days`）
 - `POST /api/schedules`：创建/更新，字段：
-  `{pipeline_id, cron?, enabled=true, catch_up?, renewal_domains?}`
+  `{pipeline_id, cron?, enabled=true, catch_up?, renewal_domains?, renewal_threshold_days?}`（阈值 1-90，空跟随全局）
 - `GET /api/schedules/trigger-logs?pipeline_id=&page=&page_size=`：触发审计
 
 续期域名集合保存时规范化为小写、去重、排序（与证书域名同一套规则）。

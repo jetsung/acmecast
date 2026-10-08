@@ -246,6 +246,14 @@ impl CredentialType for AcmeAccountType {
     fn fields_schema(&self) -> RootSchema {
         let mut schema = schema_for!(AcmeAccountFields);
 
+        // serde_json 的 Map 会把 properties 按字母序重排：`eab_hmac_key` 会排到
+        // `eab_kid` 前面，把成对的 EAB 密钥拆得阅读不顺。用 `x-field-order` 钉住
+        // 渲染顺序——两个 EAB 字段相邻且 kid 在前，都是半宽标量，流式排成一行。
+        schema.schema.extensions.insert(
+            "x-field-order".to_owned(),
+            serde_json::json!(["ca", "directory_url", "eab_kid", "eab_hmac_key", "credentials"]),
+        );
+
         // schemars 只认类型不认语义：`ca: String` 出来是自由文本框。
         // 这里把 CA 别名的合法取值补成 enum（前端据此渲染下拉），
         // 并给 `directory_url` 挂上「仅 ca=custom 时必填」的条件——
@@ -263,6 +271,18 @@ impl CredentialType for AcmeAccountType {
                 "x-required-when".to_owned(),
                 serde_json::json!({ "Equals": { "field": "ca", "values": ["custom"] } }),
             );
+            // URL 是长文本，单独占整行，不和短字段挤在一行。
+            url.extensions
+                .insert("x-full-width".to_owned(), serde_json::Value::Bool(true));
+        }
+        // 账号凭据是一段含私钥的 JSON，单行框既放不下也难审阅——
+        // 渲染成多行文本域（与 SSH 私钥同机制）。
+        if let Some(schemars::schema::Schema::Object(credentials)) =
+            object.properties.get_mut("credentials")
+        {
+            credentials
+                .extensions
+                .insert("x-multiline".to_owned(), serde_json::Value::Bool(true));
         }
 
         schema
@@ -568,6 +588,68 @@ mod tests {
             "{:?}",
             object.required
         );
+    }
+
+    #[test]
+    fn the_layout_extensions_mark_the_long_fields() {
+        let schema = AcmeAccountType::new().fields_schema();
+        let object = schema.schema.object.as_ref().expect("应是对象 schema");
+
+        // serde_json Map 把 properties 重排成字母序（eab_hmac_key 会跑到
+        // eab_kid 前面），渲染顺序靠 x-field-order 钉住：EAB 密钥对相邻、
+        // kid 在前，两个半宽标量流式排成同一行。
+        let order = schema
+            .schema
+            .extensions
+            .get("x-field-order")
+            .and_then(|value| value.as_array())
+            .and_then(|items| {
+                items
+                    .iter()
+                    .map(|item| item.as_str())
+                    .collect::<Option<Vec<_>>>()
+            })
+            .expect("x-field-order 应是字符串数组");
+        assert_eq!(
+            order,
+            ["ca", "directory_url", "eab_kid", "eab_hmac_key", "credentials"],
+            "EAB 密钥对应按 kid 前、hmac 后相邻渲染"
+        );
+
+        // credentials 是含私钥的 JSON：渲染成多行文本域。
+        let schemars::schema::Schema::Object(credentials) = &object.properties["credentials"] else {
+            panic!("credentials 应是对象型 schema");
+        };
+        assert_eq!(
+            credentials.extensions.get("x-multiline"),
+            Some(&serde_json::Value::Bool(true)),
+            "credentials 应标注多行文本域: {:?}",
+            credentials.extensions
+        );
+
+        // directory_url 是长 URL：单独占整行。
+        let schemars::schema::Schema::Object(url) = &object.properties["directory_url"] else {
+            panic!("directory_url 应是对象型 schema");
+        };
+        assert_eq!(
+            url.extensions.get("x-full-width"),
+            Some(&serde_json::Value::Bool(true)),
+            "directory_url 应标注整行: {:?}",
+            url.extensions
+        );
+
+        // 成对短字段不标注：保持半宽、流式排成同一行。
+        for field in ["eab_kid", "eab_hmac_key"] {
+            let schemars::schema::Schema::Object(node) = &object.properties[field] else {
+                panic!("{field} 应是对象型 schema");
+            };
+            assert!(
+                !node.extensions.contains_key("x-full-width")
+                    && !node.extensions.contains_key("x-multiline"),
+                "{field} 应保持半宽: {:?}",
+                node.extensions
+            );
+        }
     }
 
     #[tokio::test]

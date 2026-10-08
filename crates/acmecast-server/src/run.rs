@@ -125,6 +125,7 @@ pub(crate) async fn execute_run(
                         level: log.level,
                         message: log.message.clone(),
                         created_at: log.created_at,
+                        output: log.output.clone(),
                     })
                 })
                 .collect(),

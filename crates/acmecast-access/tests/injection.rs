@@ -69,6 +69,7 @@ async fn insert_credential(
         name: Set("测试凭据".to_owned()),
         type_id: Set(type_id.to_owned()),
         encrypted_fields: Set(sealed),
+        remark: Set(String::new()),
         created_at: Set(now),
         updated_at: Set(now),
         ..Default::default()
@@ -115,6 +116,67 @@ async fn a_valid_credential_is_injected_decrypted() {
         fields.kid().as_deref(),
         Some("https://acme-v02.api.letsencrypt.org/acme/acct/424242")
     );
+}
+
+#[tokio::test]
+async fn resolve_carries_the_remark_field() {
+    // 备注非敏感、不参与认证，但要在 resolve 时透传，供流水线下拉区分多张凭据。
+    let db = setup().await;
+    let cipher = Arc::new(
+        CredentialCipher::from_base64(&CredentialCipher::generate_key_base64())
+            .expect("密钥应可用"),
+    );
+    let account = registered_account();
+    let sealed = cipher
+        .encrypt_string(&serde_json::to_value(&account).unwrap().to_string())
+        .expect("应能加密");
+    let now = Utc::now();
+
+    let with_remark = credential::ActiveModel {
+        name: Set("生产 DNS".to_owned()),
+        type_id: Set("acme.account".to_owned()),
+        encrypted_fields: Set(sealed),
+        remark: Set("生产环境主密钥".to_owned()),
+        created_at: Set(now),
+        updated_at: Set(now),
+        ..Default::default()
+    }
+    .insert(&db)
+    .await
+    .expect("应能插入带备注的凭据")
+    .id;
+
+    let empty_remark = credential::ActiveModel {
+        name: Set("测试 DNS".to_owned()),
+        type_id: Set("acme.account".to_owned()),
+        encrypted_fields: Set(
+            cipher
+                .encrypt_string(&serde_json::to_value(&account).unwrap().to_string())
+                .unwrap(),
+        ),
+        remark: Set(String::new()),
+        created_at: Set(now),
+        updated_at: Set(now),
+        ..Default::default()
+    }
+    .insert(&db)
+    .await
+    .expect("应能插入空备注的凭据")
+    .id;
+
+    let store = CredentialStore::new(&db, registry(), Arc::clone(&cipher));
+
+    let resolved_with = store
+        .resolve(with_remark)
+        .await
+        .expect("带备注的凭据应能取出");
+    assert_eq!(resolved_with.remark, "生产环境主密钥");
+
+    let resolved_empty = store
+        .resolve(empty_remark)
+        .await
+        .expect("空备注的凭据应能取出");
+    assert_eq!(resolved_empty.remark, "");
 }
 
 #[tokio::test]

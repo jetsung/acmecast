@@ -3,6 +3,8 @@ name = "acmecast-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+authors.workspace = true
+repository.workspace = true
 publish.workspace = true
 description = "acmecast 核心：错误类型、配置装载、凭据加密原语"
 

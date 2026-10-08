@@ -45,6 +45,8 @@ pub struct ServerConfig {
     /// 来自 `[[notifications]]` 段并已通过合并校验；`enabled = false` 的
     /// 渠道保留在列表里但不投递（装配与测试端点各自过滤）。
     pub notifications: Vec<ChannelConfig>,
+    /// DNS-01 传播等待策略；来自 `[propagation]` 段与环境变量的合并。
+    pub propagation: PropagationConfig,
 }
 
 impl Default for ServerConfig {
@@ -58,6 +60,10 @@ impl Default for ServerConfig {
             body_limit_bytes: DEFAULT_BODY_LIMIT_BYTES,
             accept_invalid_acme_certs: false,
             notifications: Vec::new(),
+            propagation: PropagationConfig {
+                timeout_secs: 300,
+                interval_secs: 5,
+            },
         }
     }
 }
@@ -89,6 +95,9 @@ pub struct AppConfig {
     /// 服务端字段。
     #[serde(default)]
     pub server: ServerSection,
+    /// DNS-01 传播等待策略；缺省字段经 serde 默认值填充。
+    #[serde(default)]
+    pub propagation: PropagationSection,
     /// 解析器扩展条目；与内置集合按 endpoint 去重。
     #[serde(default)]
     pub resolvers: Vec<ResolverEntry>,
@@ -97,19 +106,62 @@ pub struct AppConfig {
     pub notifications: Vec<NotificationEntry>,
 }
 
+/// `config.toml` 中 `[propagation]` 段的字段：DNS-01 传播等待策略。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PropagationSection {
+    /// 传播等待总超时（秒）。商有 DNS（EdgeOne 等）从控制面到权威 NS 的
+    /// 同步延迟可达数分钟，慢同步环境建议放宽到 600；配置过小（如 10）
+    /// 会让挑战几乎必然超时——等待期记录始终存在且退出时必清理，
+    /// 偏大没有残留风险，偏小只有失败风险。
+    #[serde(default = "default_propagation_timeout_secs")]
+    pub timeout_secs: u64,
+    /// 每轮查询之间的间隔（秒）。
+    #[serde(default = "default_propagation_interval_secs")]
+    pub interval_secs: u64,
+}
+
+impl Default for PropagationSection {
+    fn default() -> Self {
+        Self {
+            timeout_secs: default_propagation_timeout_secs(),
+            interval_secs: default_propagation_interval_secs(),
+        }
+    }
+}
+
+fn default_propagation_timeout_secs() -> u64 {
+    300
+}
+
+fn default_propagation_interval_secs() -> u64 {
+    5
+}
+
+/// 运行时的 DNS-01 传播等待策略（由 `[propagation]` 段与环境变量合并得出）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PropagationConfig {
+    /// 传播等待总超时（秒）。
+    pub timeout_secs: u64,
+    /// 每轮查询之间的间隔（秒）。
+    pub interval_secs: u64,
+}
+
 /// `config.toml` 中一条 `[[notifications]]` 通知渠道声明。
 ///
 /// 结构校验（缺字段/类型不符）在反序列化阶段报错；语义校验
-/// （provider 是否内置、事件是否可识别、url 形态）在合并阶段进行。
+/// （provider 是否内置、事件是否可识别、渠道类型专属字段）在合并阶段进行。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NotificationEntry {
     /// 渠道名，用于日志与测试端点定位，须在渠道列表中唯一。
     pub name: String,
-    /// 适配器类型标识：`feishu` / `dingtalk` / `generic`。
+    /// 适配器类型标识：`feishu` / `dingtalk` / `generic` / `email`。
     pub provider: String,
-    /// 机器人 webhook 地址。
-    pub url: String,
+    /// 机器人 webhook 地址。webhook 渠道（`feishu` / `dingtalk` / `generic`）
+    /// 必填；`email` 渠道不支持该字段。
+    #[serde(default)]
+    pub url: Option<String>,
     /// 签名密钥；平台支持签名校验时填写。
     #[serde(default)]
     pub secret: Option<String>,
@@ -134,6 +186,29 @@ pub struct NotificationEntry {
     /// 渠道可用；缺省按签名方式选平台 text 格式，无签名时为统一事件负载。
     #[serde(default)]
     pub body_template: Option<String>,
+    /// SMTP 服务器地址。仅 `email` 渠道必填。
+    #[serde(default)]
+    pub host: Option<String>,
+    /// SMTP 端口；缺省随 `tls` 模式（`implicit`→465、`starttls`→587、
+    /// `none`→25）。仅 `email` 渠道可用。
+    #[serde(default)]
+    pub port: Option<u16>,
+    /// 发件人地址。仅 `email` 渠道必填。
+    #[serde(default)]
+    pub from: Option<String>,
+    /// 收件人地址列表，至少一项。仅 `email` 渠道可用。
+    #[serde(default)]
+    pub to: Option<Vec<String>>,
+    /// SMTP 认证用户名；与 `password` 同时配置才启用认证。
+    #[serde(default)]
+    pub username: Option<String>,
+    /// SMTP 认证密码。
+    #[serde(default)]
+    pub password: Option<String>,
+    /// TLS 连接模式：`implicit`（隐式 TLS，缺省）/ `starttls` / `none`。
+    /// 仅 `email` 渠道可用。
+    #[serde(default)]
+    pub tls: Option<String>,
 }
 
 /// `config.toml` 中 `[server]` 段的字段，与 [`ServerConfig`] 一一对应。
@@ -279,6 +354,10 @@ fn apply_file(config: &mut ServerConfig, file: &AppConfig) {
     config.body_limit_bytes = s.body_limit_bytes;
     config.accept_invalid_acme_certs = s.accept_invalid_acme_certs;
     config.notifications = resolve_notifications(&file.notifications);
+    config.propagation = PropagationConfig {
+        timeout_secs: file.propagation.timeout_secs,
+        interval_secs: file.propagation.interval_secs,
+    };
 }
 
 /// 校验并转换 `[[notifications]]` 条目；非法条目跳过并告警。
@@ -324,10 +403,21 @@ fn validate_notification(
             registry.type_ids().join("、")
         ));
     }
-    let url = entry.url.trim();
-    if !(url.starts_with("https://") || url.starts_with("http://")) {
-        return Err("url 必须为 http(s) 地址".to_owned());
-    }
+    let is_email = entry.provider == "email";
+    let url = if is_email {
+        if entry.url.is_some() {
+            return Err("provider = email 不支持 url 字段（webhook 地址是 webhook 渠道专属）".to_owned());
+        }
+        String::new()
+    } else {
+        match entry.url.as_deref().map(str::trim) {
+            None => return Err("url 不能为空（webhook 渠道必填）".to_owned()),
+            Some(url) if url.starts_with("https://") || url.starts_with("http://") => {
+                url.to_owned()
+            }
+            Some(_) => return Err("url 必须为 http(s) 地址".to_owned()),
+        }
+    };
     if entry.events.is_empty() {
         return Err("events 不能为空（可订阅：cert.apply、cert.deploy）".to_owned());
     }
@@ -383,17 +473,60 @@ fn validate_notification(
         }
     };
 
+    // SMTP 字段仅 email 渠道可用；email 渠道的必填项（host/from/to）与
+    // 缺省值（端口随 tls 模式）由 SmtpSettings 统一校验，错误说明尽量
+    // 与配置文件字段名对应，管理员照着改就行。
+    let smtp = if is_email {
+        let tls = match &entry.tls {
+            None => acmecast_notify::TlsMode::Implicit,
+            Some(id) => acmecast_notify::TlsMode::from_id(id).ok_or_else(|| {
+                format!("未知 tls 模式: {id}（可用：implicit、starttls、none，缺省 implicit）")
+            })?,
+        };
+        let settings = acmecast_notify::SmtpSettings {
+            host: entry.host.clone().unwrap_or_default(),
+            port: entry.port,
+            from: entry.from.clone().unwrap_or_default(),
+            to: entry.to.clone().unwrap_or_default(),
+            username: entry.username.clone(),
+            password: entry.password.clone(),
+            tls,
+        };
+        settings.validate()?;
+        Some(settings)
+    } else {
+        let smtp_fields = [
+            ("host", entry.host.is_some()),
+            ("port", entry.port.is_some()),
+            ("from", entry.from.is_some()),
+            ("to", entry.to.is_some()),
+            ("username", entry.username.is_some()),
+            ("password", entry.password.is_some()),
+            ("tls", entry.tls.is_some()),
+        ];
+        if let Some((field, _)) = smtp_fields.iter().find(|(_, present)| *present) {
+            return Err(format!(
+                "provider = {provider} 不支持 {field} 字段（SMTP 字段仅 email 渠道可用）",
+                provider = entry.provider
+            ));
+        }
+        None
+    };
+
     let config = ChannelConfig {
         name: entry.name.clone(),
         provider: entry.provider.clone(),
-        url: url.to_owned(),
+        url,
         secret: entry.secret.clone(),
         events: entry.events.clone(),
-        enabled: entry.enabled.unwrap_or(true),
+        // 缺省不启用：渠道配置写好默认是「待命」，显式 enabled = true 才
+        // 开始对外投递——新增渠道不会在管理员确认前就往外发消息。
+        enabled: entry.enabled.unwrap_or(false),
         sign,
         method,
         headers: entry.headers.clone().unwrap_or_default(),
         body_template: entry.body_template.clone(),
+        smtp,
     };
     acmecast_notify::validate_channel(&config)?;
     Ok(config)
@@ -433,6 +566,18 @@ fn apply_env(config: &mut ServerConfig) {
     {
         config.body_limit_bytes = limit;
     }
+    if let Ok(value) = std::env::var("ACMECAST_PROPAGATION_TIMEOUT_SECS")
+        && let Ok(secs) = value.trim().parse::<u64>()
+        && secs > 0
+    {
+        config.propagation.timeout_secs = secs;
+    }
+    if let Ok(value) = std::env::var("ACMECAST_PROPAGATION_INTERVAL_SECS")
+        && let Ok(secs) = value.trim().parse::<u64>()
+        && secs > 0
+    {
+        config.propagation.interval_secs = secs;
+    }
 }
 
 /// 生成带注释的 `config.toml` 模板内容。
@@ -467,31 +612,52 @@ pub fn template_content() -> String {
     out.push_str("# 跳过 ACME CA 的 TLS 证书校验，仅为自建测试 CA（pebble 等）准备。\n");
     out.push_str("accept_invalid_acme_certs = false\n\n");
 
+    out.push_str("# DNS-01 传播等待策略（可选）。\n");
+    out.push_str("# timeout_secs：总超时。商有 DNS（EdgeOne 等）从控制面到权威 NS 的\n");
+    out.push_str("#   同步延迟可达数分钟，慢同步环境建议放宽到 600；偏大无残留风险\n");
+    out.push_str("#   （等待期记录始终存在、退出必清理），偏小只有失败风险。\n");
+    out.push_str("# interval_secs：每轮查询之间的间隔。\n");
+    out.push_str("# 环境变量 ACMECAST_PROPAGATION_TIMEOUT_SECS / ACMECAST_PROPAGATION_INTERVAL_SECS 可覆盖。\n");
+    out.push_str("[propagation]\n");
+    out.push_str("timeout_secs = 300\n");
+    out.push_str("interval_secs = 5\n\n");
+
     out.push_str("# DNS-01 传播检测解析器扩展（可选）。\n");
     out.push_str("# type: doh / dot / dns；dot/dns 目前仅校验，传输层尚未实现。\n");
     out.push_str("# 与内置集合按 endpoint 去重；ACMECAST_DOH_RESOLVERS=none 可跳过传播等待。\n");
+    out.push_str("# 腾讯云 DNSPod 在国内可达性优先，推荐与阿里/Cloudflare 组合使用。\n");
     out.push_str("[[resolvers]]\n");
     out.push_str("type = \"doh\"\n");
     out.push_str("endpoint = \"https://dns.alidns.com/dns-query\"\n");
     out.push_str("# name = \"阿里 DNS\"\n\n");
     out.push_str("[[resolvers]]\n");
     out.push_str("type = \"doh\"\n");
+    out.push_str("endpoint = \"https://doh.pub/dns-query\"\n");
+    out.push_str("# name = \"腾讯 DNSPod\"\n\n");
+    out.push_str("[[resolvers]]\n");
+    out.push_str("type = \"doh\"\n");
+    out.push_str("endpoint = \"https://1.12.12.12/dns-query\"\n");
+    out.push_str("# name = \"腾讯 DNSPod（IP 直连）\"\n\n");
+    out.push_str("[[resolvers]]\n");
+    out.push_str("type = \"doh\"\n");
     out.push_str("endpoint = \"https://cloudflare-dns.com/dns-query\"\n");
     out.push_str("# name = \"Cloudflare DNS\"\n\n");
 
-    out.push_str("# webhook 通知渠道（可选）：证书申请/部署成功后推送到 IM 群机器人。\n");
-    out.push_str("# provider: feishu（飞书）/ dingtalk（钉钉）/ generic（统一请求方案）。\n");
+    out.push_str("# 通知渠道（可选）：证书申请/部署成功后推送到 IM 群机器人或邮箱。\n");
+    out.push_str("# provider: feishu（飞书）/ dingtalk（钉钉）/ generic（统一请求方案）/\n");
+    out.push_str("#          email（SMTP 邮件）。\n");
     out.push_str("# generic 可配 sign（feishu/dingtalk 签名方式）、method、headers、\n");
     out.push_str("# body_template（占位符如 {{title}}、{{domains}}）。\n");
     out.push_str("# events 可订阅: cert.apply（申请成功）、cert.deploy（部署成功）。\n");
-    out.push_str("# 修改后需重启生效；整段注释表示默认不启用任何渠道。\n");
+    out.push_str("# 渠道缺省不启用（enabled 缺省 false）：确认配置无误后显式写\n");
+    out.push_str("# enabled = true 开始投递；修改后需重启生效。\n");
     out.push_str("# [[notifications]]\n");
     out.push_str("# name = \"ops-feishu\"\n");
     out.push_str("# provider = \"feishu\"\n");
     out.push_str("# url = \"https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx\"\n");
     out.push_str("# secret = \"机器人启用签名校验时填写（可选）\"\n");
     out.push_str("# events = [\"cert.apply\", \"cert.deploy\"]\n");
-    out.push_str("# enabled = true\n\n");
+    out.push_str("# enabled = true                      # 缺省 false，须显式开启\n\n");
     out.push_str("# 自定义 webhook 示例：指定签名方式与请求体模板。\n");
     out.push_str("# [[notifications]]\n");
     out.push_str("# name = \"ops-custom\"\n");
@@ -502,6 +668,20 @@ pub fn template_content() -> String {
     out.push_str("# method = \"POST\"                  # POST / PUT / PATCH\n");
     out.push_str("# headers = { \"X-API-Key\" = \"sk-xxx\" }\n");
     out.push_str("# body_template = '{\"text\": \"{{title}}｜{{pipeline}}｜{{domains}}\"}'\n");
+    out.push_str("# enabled = true                      # 缺省 false，须显式开启\n");
+    out.push_str("# events = [\"cert.apply\", \"cert.deploy\"]\n");
+    out.push_str("# 邮件通知示例：事件以纯文本邮件送达每个收件人（主题含事件标题）。\n");
+    out.push_str("# [[notifications]]\n");
+    out.push_str("# name = \"ops-email\"\n");
+    out.push_str("# provider = \"email\"\n");
+    out.push_str("# host = \"smtp.exmail.qq.com\"      # SMTP 服务器，不含端口\n");
+    out.push_str("# port = 465                        # 可选；缺省随 tls：implicit→465 / starttls→587 / none→25\n");
+    out.push_str("# tls = \"implicit\"                 # implicit（缺省）/ starttls / none\n");
+    out.push_str("# from = \"no-reply@example.com\"\n");
+    out.push_str("# to = [\"ops@example.com\"]         # 收件人列表，可为多个\n");
+    out.push_str("# username = \"no-reply@example.com\"  # 与 password 同时配置才启用认证\n");
+    out.push_str("# password = \"xxx\"\n");
+    out.push_str("# enabled = true                      # 缺省 false，须显式开启\n");
     out.push_str("# events = [\"cert.apply\", \"cert.deploy\"]\n");
     out
 }
@@ -580,6 +760,8 @@ mod tests {
             "ACMECAST_BODY_LIMIT_BYTES",
             "ACMECAST_INSECURE_SKIP_VERIFY",
             "ACMECAST_CONFIG",
+            "ACMECAST_PROPAGATION_TIMEOUT_SECS",
+            "ACMECAST_PROPAGATION_INTERVAL_SECS",
         ] {
             // SAFETY: 唯一调用者为标注 `#[serial]` 的测试用例。
             unsafe { std::env::remove_var(k) };
@@ -635,6 +817,42 @@ mod tests {
 
         unsafe { std::env::remove_var("ACMECAST_CONFIG") };
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[serial]
+    fn propagation_file_overrides_builtin_env_overrides_file() {
+        clear_server_env();
+        let dir = unique_dir("propagation");
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            "[propagation]\ntimeout_secs = 600\ninterval_secs = 10\n",
+        )
+        .unwrap();
+
+        unsafe { std::env::set_var("ACMECAST_CONFIG", &path) };
+        let config = ServerConfig::from_env_and_file().unwrap();
+        // 文件胜过内置
+        assert_eq!(config.propagation.timeout_secs, 600);
+        assert_eq!(config.propagation.interval_secs, 10);
+
+        // env 胜过文件
+        unsafe { std::env::set_var("ACMECAST_PROPAGATION_TIMEOUT_SECS", "900") };
+        let config = ServerConfig::from_env_and_file().unwrap();
+        assert_eq!(config.propagation.timeout_secs, 900);
+        assert_eq!(config.propagation.interval_secs, 10);
+
+        unsafe { std::env::remove_var("ACMECAST_CONFIG") };
+        unsafe { std::env::remove_var("ACMECAST_PROPAGATION_TIMEOUT_SECS") };
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn propagation_defaults_are_documented_values() {
+        let config = ServerConfig::default();
+        assert_eq!(config.propagation.timeout_secs, 300);
+        assert_eq!(config.propagation.interval_secs, 5);
     }
 
     #[test]
@@ -744,7 +962,7 @@ mod tests {
         merged.notifications = resolve_notifications(&file.notifications);
         assert_eq!(merged.notifications.len(), 1);
         assert_eq!(merged.notifications[0].provider, "feishu");
-        assert!(merged.notifications[0].enabled, "enabled 缺省应为 true");
+        assert!(!merged.notifications[0].enabled, "enabled 缺省应为 false");
         assert!(merged.notifications[0].secret.is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
@@ -839,6 +1057,166 @@ mod tests {
         );
     }
 
+    /// 构造一条可变的 email 渠道声明：缺省字段齐全，用例按需覆盖。
+    fn email_entry(mutate: impl FnOnce(&mut NotificationEntry)) -> NotificationEntry {
+        let mut entry = NotificationEntry {
+            name: "ops-email".to_owned(),
+            provider: "email".to_owned(),
+            url: None,
+            secret: None,
+            events: vec!["cert.apply".to_owned()],
+            enabled: None,
+            sign: None,
+            method: None,
+            headers: None,
+            body_template: None,
+            host: Some("smtp.example.com".to_owned()),
+            port: None,
+            from: Some("no-reply@example.com".to_owned()),
+            to: Some(vec!["ops@example.com".to_owned()]),
+            username: None,
+            password: None,
+            tls: None,
+        };
+        mutate(&mut entry);
+        entry
+    }
+
+    #[test]
+    fn email_channel_parses_and_resolves() {
+        let dir = unique_dir("notif-email");
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            concat!(
+                "[[notifications]]\n",
+                "name = \"ops-email\"\n",
+                "provider = \"email\"\n",
+                "host = \"smtp.exmail.qq.com\"\n",
+                "from = \"no-reply@example.com\"\n",
+                "to = [\"ops@example.com\", \"b@example.com\"]\n",
+                "username = \"no-reply@example.com\"\n",
+                "password = \"secret\"\n",
+                "events = [\"cert.apply\", \"cert.deploy\"]\n",
+            ),
+        )
+        .unwrap();
+        let file = AppConfig::load_from_file(&path).unwrap();
+        assert_eq!(file.notifications.len(), 1);
+
+        let channels = resolve_notifications(&file.notifications);
+        assert_eq!(channels.len(), 1);
+        let channel = &channels[0];
+        assert_eq!(channel.provider, "email");
+        assert!(channel.url.is_empty(), "email 渠道不携带 webhook 地址");
+        assert!(!channel.enabled, "enabled 缺省应为 false");
+        let smtp = channel.smtp.as_ref().expect("email 渠道应携带 SMTP 设置");
+        assert_eq!(smtp.host, "smtp.exmail.qq.com");
+        assert_eq!(smtp.tls, acmecast_notify::TlsMode::Implicit, "tls 缺省 implicit");
+        assert_eq!(smtp.effective_port(), 465, "端口缺省随 tls 模式");
+        assert_eq!(smtp.to.len(), 2, "收件人列表应完整保留");
+        assert!(smtp.has_credentials(), "username + password 应启用认证");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn email_channel_tls_mode_drives_default_port() {
+        for (tls, port) in [
+            (acmecast_notify::TlsMode::Implicit, 465),
+            (acmecast_notify::TlsMode::StartTls, 587),
+            (acmecast_notify::TlsMode::None, 25),
+        ] {
+            let entry = email_entry(|e| {
+                e.tls = Some(match tls {
+                    acmecast_notify::TlsMode::Implicit => "implicit",
+                    acmecast_notify::TlsMode::StartTls => "starttls",
+                    acmecast_notify::TlsMode::None => "none",
+                }
+                .to_owned());
+            });
+            let channel = validate_notification(&entry, &acmecast_notify::default_registry())
+                .expect("合法 email 条目应通过");
+            let smtp = channel.smtp.as_ref().expect("email 渠道应携带 SMTP 设置");
+            assert_eq!(smtp.tls, tls);
+            assert_eq!(smtp.effective_port(), port, "tls={tls:?} 缺省端口");
+        }
+    }
+
+    #[test]
+    fn invalid_email_entries_are_skipped() {
+        let entries = vec![
+            // 缺 host（email 渠道必填）。
+            email_entry(|e| e.host = None),
+            // 缺 from。
+            email_entry(|e| e.from = None),
+            // 收件人列表为空。
+            email_entry(|e| e.to = Some(vec![])),
+            // 收件人地址缺 @。
+            email_entry(|e| e.to = Some(vec!["not-an-email".to_owned()])),
+            // 未知 tls 模式。
+            email_entry(|e| e.tls = Some("ssl".to_owned())),
+            // 认证凭据只配了一半。
+            email_entry(|e| e.username = Some("no-reply@example.com".to_owned())),
+            // email 渠道不支持 webhook 地址。
+            email_entry(|e| e.url = Some("https://hooks.example.com/x".to_owned())),
+            // email 渠道不支持 generic 扩展字段。
+            email_entry(|e| e.body_template = Some("{{title}}".to_owned())),
+        ];
+        let channels = resolve_notifications(&entries);
+        assert!(channels.is_empty(), "非法 email 条目应全部跳过: {channels:?}");
+    }
+
+    #[test]
+    fn webhook_channel_rejects_smtp_fields() {
+        let entries = vec![NotificationEntry {
+            name: "feishu-with-host".to_owned(),
+            provider: "feishu".to_owned(),
+            url: Some("https://open.feishu.cn/hook/x".to_owned()),
+            secret: None,
+            events: vec!["cert.apply".to_owned()],
+            enabled: None,
+            sign: None,
+            method: None,
+            headers: None,
+            body_template: None,
+            host: Some("smtp.example.com".to_owned()),
+            port: None,
+            from: None,
+            to: None,
+            username: None,
+            password: None,
+            tls: None,
+        }];
+        let channels = resolve_notifications(&entries);
+        assert!(channels.is_empty(), "webhook 渠道配 SMTP 字段应跳过: {channels:?}");
+    }
+
+    #[test]
+    fn unknown_provider_hint_lists_email() {
+        let entry = NotificationEntry {
+            name: "x".to_owned(),
+            provider: "mail".to_owned(),
+            url: Some("https://hooks.example.com/x".to_owned()),
+            secret: None,
+            events: vec!["cert.apply".to_owned()],
+            enabled: None,
+            sign: None,
+            method: None,
+            headers: None,
+            body_template: None,
+            host: None,
+            port: None,
+            from: None,
+            to: None,
+            username: None,
+            password: None,
+            tls: None,
+        };
+        let error = validate_notification(&entry, &acmecast_notify::default_registry()).unwrap_err();
+        assert!(error.contains("email"), "未知 provider 提示应列出 email: {error}");
+    }
+
     #[test]
     fn invalid_notification_entries_are_skipped() {
         // 三类非法条目：缺 url 形态、未知 provider、未知事件——各自跳过并保留有效条目。
@@ -846,7 +1224,7 @@ mod tests {
             NotificationEntry {
                 name: "bad-url".to_owned(),
                 provider: "feishu".to_owned(),
-                url: "not-a-url".to_owned(),
+                url: Some("not-a-url".to_owned()),
                 secret: None,
                 events: vec!["cert.apply".to_owned()],
                 enabled: None,
@@ -854,11 +1232,18 @@ mod tests {
                 method: None,
                 headers: None,
                 body_template: None,
+                host: None,
+                port: None,
+                from: None,
+                to: None,
+                username: None,
+                password: None,
+                tls: None,
             },
             NotificationEntry {
                 name: "bad-provider".to_owned(),
                 provider: "slack".to_owned(),
-                url: "https://hooks.example.com/x".to_owned(),
+                url: Some("https://hooks.example.com/x".to_owned()),
                 secret: None,
                 events: vec!["cert.apply".to_owned()],
                 enabled: None,
@@ -866,11 +1251,18 @@ mod tests {
                 method: None,
                 headers: None,
                 body_template: None,
+                host: None,
+                port: None,
+                from: None,
+                to: None,
+                username: None,
+                password: None,
+                tls: None,
             },
             NotificationEntry {
                 name: "bad-event".to_owned(),
                 provider: "dingtalk".to_owned(),
-                url: "https://oapi.dingtalk.com/robot/send".to_owned(),
+                url: Some("https://oapi.dingtalk.com/robot/send".to_owned()),
                 secret: None,
                 events: vec!["pipeline.failed".to_owned()],
                 enabled: None,
@@ -878,11 +1270,18 @@ mod tests {
                 method: None,
                 headers: None,
                 body_template: None,
+                host: None,
+                port: None,
+                from: None,
+                to: None,
+                username: None,
+                password: None,
+                tls: None,
             },
             NotificationEntry {
                 name: "no-events".to_owned(),
                 provider: "generic".to_owned(),
-                url: "https://example.com/hook".to_owned(),
+                url: Some("https://example.com/hook".to_owned()),
                 secret: None,
                 events: vec![],
                 enabled: None,
@@ -890,11 +1289,18 @@ mod tests {
                 method: None,
                 headers: None,
                 body_template: None,
+                host: None,
+                port: None,
+                from: None,
+                to: None,
+                username: None,
+                password: None,
+                tls: None,
             },
             NotificationEntry {
                 name: "good".to_owned(),
                 provider: "dingtalk".to_owned(),
-                url: "https://oapi.dingtalk.com/robot/send?access_token=x".to_owned(),
+                url: Some("https://oapi.dingtalk.com/robot/send?access_token=x".to_owned()),
                 secret: Some("SECxxx".to_owned()),
                 events: vec!["cert.deploy".to_owned()],
                 enabled: Some(false),
@@ -902,6 +1308,13 @@ mod tests {
                 method: None,
                 headers: None,
                 body_template: None,
+                host: None,
+                port: None,
+                from: None,
+                to: None,
+                username: None,
+                password: None,
+                tls: None,
             },
         ];
         let channels = resolve_notifications(&entries);
@@ -917,7 +1330,7 @@ mod tests {
             NotificationEntry {
                 name: "same".to_owned(),
                 provider: "feishu".to_owned(),
-                url: "https://a.example.com/hook".to_owned(),
+                url: Some("https://a.example.com/hook".to_owned()),
                 secret: None,
                 events: vec!["cert.apply".to_owned()],
                 enabled: None,
@@ -925,11 +1338,18 @@ mod tests {
                 method: None,
                 headers: None,
                 body_template: None,
+                host: None,
+                port: None,
+                from: None,
+                to: None,
+                username: None,
+                password: None,
+                tls: None,
             },
             NotificationEntry {
                 name: "same".to_owned(),
                 provider: "generic".to_owned(),
-                url: "https://b.example.com/hook".to_owned(),
+                url: Some("https://b.example.com/hook".to_owned()),
                 secret: None,
                 events: vec!["cert.apply".to_owned()],
                 enabled: None,
@@ -937,6 +1357,13 @@ mod tests {
                 method: None,
                 headers: None,
                 body_template: None,
+                host: None,
+                port: None,
+                from: None,
+                to: None,
+                username: None,
+                password: None,
+                tls: None,
             },
         ];
         let channels = resolve_notifications(&entries);
@@ -980,21 +1407,29 @@ mod tests {
         assert!(content.contains("[server]"));
         assert!(content.contains("[[resolvers]]"));
         assert!(content.contains("listen_addr"));
-        // 模板不含真实敏感凭据：secret 之类字段只允许出现在注释示例行里。
-        assert!(!content.contains("password"));
+        // 模板不含真实敏感凭据：secret / password 之类字段只允许出现在
+        // 注释示例行里（email 渠道的注释示例用占位值）。
         for line in content.lines() {
             let trimmed = line.trim_start();
             if trimmed.starts_with('#') {
                 continue;
             }
             assert!(
-                !trimmed.contains("secret"),
-                "未注释行不应出现 secret 字段: {line}"
+                !trimmed.contains("secret") && !trimmed.contains("password"),
+                "未注释行不应出现敏感字段: {line}"
             );
         }
         assert!(!content.contains("token"));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn template_contains_propagation_section() {
+        let content = template_content();
+        assert!(content.contains("[propagation]"), "{content}");
+        assert!(content.contains("timeout_secs = 300"), "{content}");
+        assert!(content.contains("interval_secs = 5"), "{content}");
     }
 
     #[test]

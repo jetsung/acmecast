@@ -17,8 +17,10 @@ use tokio::io::AsyncWriteExt;
 
 use crate::error::{Error, Result};
 
-/// 证书文件在数据目录中的一级目录名。
-const CERT_DIR: &str = "certs";
+/// 活跃证书的扁平目录：`certs/ssl/`，扁平存放，不按指纹分子目录。
+const ACTIVE_CERT_DIR: &str = "certs/ssl";
+/// 已归档（被续期/重签替换）证书的目录：`certs/archived/<指纹>/`。
+const ARCHIVED_CERT_DIR: &str = "certs/archived";
 /// 已吊销证书的归档目录名：`certs/revoked/<指纹>/`。
 const REVOKED_CERT_DIR: &str = "certs/revoked";
 /// 证书链文件的固定后缀：`<主域名>.cert.pem`。
@@ -87,21 +89,30 @@ impl FileStore {
         &self.root
     }
 
-    /// 某条证书在数据目录中的位置。
+    /// 某条证书在数据目录中的位置（扁平活跃目录 `certs/ssl/`）。
     ///
     /// 路径规则集中定义在这里，避免各处自行拼接导致不一致。文件名带主域名：
     /// - 多域名取申请时的第一个（`sub1.example.com.cert.pem`）；
     /// - 通配符 `*` 换成 `_`（`*.hello.example.com` → `_.hello.example.com.cert.pem`）；
     /// - 其余字符原样（`sub.example.com.cert.pem`）。
     ///
-    /// `fingerprint` 会随其余路径一起做逃逸校验，因此含 `/` 或 `..` 的值会被拒绝。
+    /// 扁平存放，不再按指纹分子目录；`fingerprint` 参数保留以兼容调用方与归档推导，
+    /// 但不影响活跃路径本身。`fingerprint` 的逃逸校验由 `archived_cert_dir` / `revoked_cert_dir` 承担。
     #[must_use]
-    pub fn cert_paths(fingerprint: &str, primary_domain: &str) -> CertFilePaths {
+    pub fn cert_paths(_fingerprint: &str, primary_domain: &str) -> CertFilePaths {
         let prefix = domain_file_prefix(primary_domain);
         CertFilePaths {
-            cert_pem: format!("{CERT_DIR}/{fingerprint}/{prefix}.{CERT_PEM_SUFFIX}"),
-            key_pem: format!("{CERT_DIR}/{fingerprint}/{prefix}.{KEY_PEM_SUFFIX}"),
+            cert_pem: format!("{ACTIVE_CERT_DIR}/{prefix}.{CERT_PEM_SUFFIX}"),
+            key_pem: format!("{ACTIVE_CERT_DIR}/{prefix}.{KEY_PEM_SUFFIX}"),
         }
+    }
+
+    /// 某条**已归档**（被续期/重签替换）证书的归档目录：`certs/archived/<指纹>/`。
+    ///
+    /// 与 `revoked_cert_dir` 对称，按指纹分子目录、文件名不变。
+    #[must_use]
+    pub fn archived_cert_dir(fingerprint: &str) -> String {
+        format!("{ARCHIVED_CERT_DIR}/{fingerprint}")
     }
 
     /// 某条**已吊销**证书的归档目录：`certs/revoked/<指纹>/`。
@@ -111,6 +122,39 @@ impl FileStore {
     #[must_use]
     pub fn revoked_cert_dir(fingerprint: &str) -> String {
         format!("{REVOKED_CERT_DIR}/{fingerprint}")
+    }
+
+    /// 把被续期/重签替换的旧证书材料移动到归档目录 `certs/archived/<旧指纹>/`，返回归档后路径。
+    ///
+    /// 活跃目录扁平，无法整目录搬，只能逐文件 `rename`。目标指纹为**旧证书**的指纹。
+    /// - 已归档过（源即目标）直接返回目标；
+    /// - 任一源文件缺失返回 `None`；
+    /// - 归档目标目录逐层以受限权限创建。
+    pub async fn archive_replaced_certificate(
+        &self,
+        cert_pem_relative: &str,
+        key_pem_relative: &str,
+        old_fingerprint: &str,
+    ) -> Result<Option<CertFilePaths>> {
+        let archived_dir = Self::archived_cert_dir(old_fingerprint);
+        let target = CertFilePaths {
+            cert_pem: format!("{archived_dir}/{}", base_name_of(cert_pem_relative)),
+            key_pem: format!("{archived_dir}/{}", base_name_of(key_pem_relative)),
+        };
+        if cert_pem_relative == target.cert_pem && key_pem_relative == target.key_pem {
+            return Ok(Some(target));
+        }
+        let sources = [cert_pem_relative, key_pem_relative];
+        for source in sources {
+            if tokio::fs::metadata(self.resolve(source)?).await.is_err() {
+                return Ok(None);
+            }
+        }
+        self.ensure_archived_dir(old_fingerprint).await?;
+        for (source, target) in sources.iter().zip([&target.cert_pem, &target.key_pem]) {
+            self.move_within(source, target).await?;
+        }
+        Ok(Some(target))
     }
 
     /// 把一条证书的材料移动到吊销目录，返回归档后的相对路径。
@@ -157,7 +201,15 @@ impl FileStore {
         for (source, target) in sources.iter().zip([&target.cert_pem, &target.key_pem]) {
             self.move_within(source, target).await?;
         }
+        // 扁平活跃目录为共享目录，不应因单条证书归档而尝试删除。
+        let active_dir = self.resolve(ACTIVE_CERT_DIR)?;
         for source in sources {
+            let Ok(parent) = self.resolve(source).map(|p| p.parent().unwrap().to_path_buf()) else {
+                continue;
+            };
+            if parent == active_dir {
+                continue;
+            }
             if let Err(error) = self.remove_parent_dir_if_empty(source).await {
                 tracing::debug!(source, %error, "归档后清理源目录失败，忽略");
             }
@@ -202,6 +254,10 @@ impl FileStore {
         let Some(source_dir) = self.shared_parent_dir(cert_pem_relative, key_pem_relative)? else {
             return Ok(false);
         };
+        // 扁平活跃目录共享，不可整目录搬；否则会把其他证书一并移走。
+        if source_dir == self.resolve(ACTIVE_CERT_DIR)? {
+            return Ok(false);
+        }
         let target_dir = self.resolve(revoked_dir)?;
         if source_dir == target_dir || tokio::fs::metadata(&target_dir).await.is_ok() {
             return Ok(false);
@@ -272,6 +328,16 @@ impl FileStore {
         }
         tokio::fs::rename(from, to).await?;
         Ok(())
+    }
+
+    /// 确保归档目录整条链存在且受限，返回 `certs/archived/<指纹>/` 的绝对路径。
+    async fn ensure_archived_dir(&self, fingerprint: &str) -> Result<PathBuf> {
+        let leaf = self.resolve(&Self::archived_cert_dir(fingerprint))?;
+        if let Some(archived_root) = leaf.parent() {
+            ensure_restricted_dir(archived_root).await?;
+        }
+        ensure_restricted_dir(&leaf).await?;
+        Ok(leaf)
     }
 
     /// 确保吊销目录整条链存在且受限，返回 `certs/revoked/<指纹>/` 的绝对路径。

@@ -26,6 +26,7 @@ fn config_with_channel(name: &str, url: &str) -> ServerConfig {
             method: "POST".to_owned(),
             headers: std::collections::BTreeMap::new(),
             body_template: None,
+            smtp: None,
         }],
         ..ServerConfig::default()
     }

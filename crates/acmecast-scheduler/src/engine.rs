@@ -266,6 +266,23 @@ impl<'a> SchedulerEngine<'a> {
             return Ok(());
         };
 
+        if schedule
+            .renewal_threshold_days
+            .is_some_and(|days| days <= 0)
+        {
+            tracing::debug!(
+                pipeline_id = schedule.pipeline_id,
+                "该调度的阈值 ≤0，跳过到期窗口判定"
+            );
+        } else if cert.not_after > now + self.config.renewal_threshold {
+            tracing::debug!(
+                domains = %cert.domains,
+                threshold_days = self.config.renewal_threshold.num_days(),
+                "证书尚未进入全局续期窗口"
+            );
+            return Ok(());
+        }
+
         let detail = format!(
             "证书 {} 距到期不足 {} 天",
             cert.domains,

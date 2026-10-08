@@ -63,6 +63,34 @@ CA 账号，不会重复注册（也避免撞上 CA 的账号配额）。
 | `access_key_id` | AccessKey ID |
 | `access_key_secret` | AccessKey Secret |
 
+### `tencent` — 腾讯云（DNS、部署）
+
+腾讯云账号 API 密钥，同一套 `SecretId` / `SecretKey` 同时服务 DNS 提供商
+（云解析 DNSPod）与 SSL 证书部署（`cert.deploy` 的 `tencent-ssl` 目标）。
+字段与 `tencent-eo` 一致，仅类型标识独立。
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `secret_id` | — | 必填，API 密钥 ID |
+| `secret_key` | — | 必填，API 密钥 Key（TC3 签名派生密钥来源） |
+| `account_site` | `cn` | 账号站点：`cn`（国内站）/ `intl`（国际站）；决定请求端点 |
+
+`account_site` 选错站点的表现是执行期的 `AuthFailure.*`——同一对密钥只能
+登录其中一边。SSL 证书 API 国内版与国际版同构（Action 与参数一致）。
+
+### `tencent-eo` — 腾讯云 EdgeOne（DNS）
+
+EdgeOne（TEO）DNS 提供商凭据。字段与 `tencent` 完全一致（同为腾讯云账号
+密钥），类型标识独立以便区分用途。EdgeOne 仅服务 DNS、无 SSL 证书部署能力，
+`cert.deploy` 的 `tencent-ssl` 目标**不接受** `tencent-eo` 凭据（需使用
+`tencent` 类型）。
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `secret_id` | — | 必填，API 密钥 ID |
+| `secret_key` | — | 必填，API 密钥 Key |
+| `account_site` | `cn` | 账号站点：`cn` / `intl` |
+
 ### `ssh` — SSH 主机档案
 
 一份档案 = 一台主机的连接方式 + 文件权限缺省值；远端路径与重载命令

@@ -16,17 +16,68 @@ use acmecast_dns::{
     challenge_record_name, ensure_kind_covers, wait_until_visible,
 };
 use acmecast_pipeline::{PipelineStep, Result, StepContext, StepOutput};
-use chrono::Duration;
 use schemars::JsonSchema;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::domain_error;
+
+/// 申请密钥与证书的算法类型。
+///
+/// 显式 `rename` 而不靠 `rename_all`：`EcdsaP256` 这类带数字的变体在
+/// snake_case 下的分词结果不可靠（见 `DnsChallengeKind` 的先例）。
+/// CA 是否接受所选算法的 CSR 由 CA 决定，拒绝时按其错误如实上报。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub enum CertKeyAlgorithm {
+    /// ECDSA on NIST P-256（缺省，与旧版行为一致）。
+    #[default]
+    #[serde(rename = "ecdsa_p256")]
+    EcdsaP256,
+    /// ECDSA on NIST P-384。
+    #[serde(rename = "ecdsa_p384")]
+    EcdsaP384,
+    /// Ed25519。
+    #[serde(rename = "ed25519")]
+    Ed25519,
+    /// RSA 2048。
+    #[serde(rename = "rsa2048")]
+    Rsa2048,
+}
+
+impl CertKeyAlgorithm {
+    /// 对应的 rcgen 签名算法——决定密钥类型与 CSR 的签名算法，
+    /// CA 据此签发同类型的证书。
+    #[must_use]
+    pub fn signature_algorithm(self) -> &'static rcgen::SignatureAlgorithm {
+        match self {
+            Self::EcdsaP256 => &rcgen::PKCS_ECDSA_P256_SHA256,
+            Self::EcdsaP384 => &rcgen::PKCS_ECDSA_P384_SHA384,
+            Self::Ed25519 => &rcgen::PKCS_ED25519,
+            Self::Rsa2048 => &rcgen::PKCS_RSA_SHA256,
+        }
+    }
+
+    /// 日志里的展示名（与证书详情的算法文案一致）。
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::EcdsaP256 => "ECDSA P-256",
+            Self::EcdsaP384 => "ECDSA P-384",
+            Self::Ed25519 => "Ed25519",
+            Self::Rsa2048 => "RSA 2048",
+        }
+    }
+}
 
 /// `cert.apply` 的输入。
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct AcmeApplyInput {
     /// 要申请的域名集合；通配符（`*.example.com`）会被强制走 DNS-01。
     pub domains: Vec<String>,
+    /// 申请密钥与证书的算法；缺省 ECDSA P-256。密钥类型在签发时即固定，
+    /// 无法事后更改。
+    #[serde(default)]
+    #[schemars(default = "default_key_algorithm")]
+    pub key_algorithm: CertKeyAlgorithm,
     /// 挑战类型。当前只支持 DNS-01——HTTP-01 的投放通道尚未提供。
     pub challenge: DnsChallengeKind,
     /// ACME 账号凭据标识（`acme.account` 类型）。
@@ -37,7 +88,11 @@ pub struct AcmeApplyInput {
     /// DNS 提供商凭据标识；DNS-01 时必填。
     #[serde(default)]
     pub dns_credential_id: Option<i64>,
-    /// DNS zone；缺省时从主域名去掉第一段推导（`a.example.com` → `example.com`）。
+    /// DNS zone；显式配置优先。`domains` 配置多个域名时必须显式配置
+    /// （各域名需同属该 zone）。留空时仅当「去掉第一段后仍是合法 zone」
+    /// 才自动推导（`a.example.com` → `example.com`）；注册域本身
+    /// （`skiy.net`）与通配符注册域（`*.skiy.net`）无法可靠推导，
+    /// 会在执行时报错要求显式配置。
     #[serde(default)]
     pub dns_zone: Option<String>,
     /// 是否等待 TXT 记录在公共解析器可见后再让 CA 验证。
@@ -53,24 +108,112 @@ pub struct AcmeApplyInput {
     /// 生产 CA 保持默认 `false`，关闭校验等于放弃对 CA 身份的确认。
     #[serde(default)]
     pub insecure_skip_verify: bool,
+    /// 到期前 N 天自动续期；None 表示不参与到期前自动检测。
+    #[serde(default)]
+    pub renew_before_days: Option<i32>,
 }
 
 fn default_true() -> bool {
     true
 }
 
+/// `key_algorithm` 的 schema 缺省值：表单无值时预填，保存的配置显式携带
+/// `ecdsa_p256` 而不是靠运行时回退（schemars 不会为 enum 的 `#[default]`
+/// 变体生成 schema default）。
+fn default_key_algorithm() -> CertKeyAlgorithm {
+    CertKeyAlgorithm::EcdsaP256
+}
+
 /// ACME 申请步骤。
 #[derive(Debug)]
 pub struct CertApplyStep {
     dns: Arc<DnsProviderRegistry>,
+    /// DNS-01 传播等待策略；来自服务配置的 `[propagation]` 段，
+    /// 装配期注入——它是系统级调优，不属于步骤输入。
+    propagation: PropagationPolicy,
+    /// 证书库读取句柄：到期检测在调度触发的 `cert.apply` 步骤中
+    /// 按库中已存证书的 `not_after` 决定是否跳过。
+    db: Option<sea_orm::DatabaseConnection>,
 }
 
 impl CertApplyStep {
-    /// 用 DNS 提供商注册表装配。
+    /// 用 DNS 提供商注册表装配，传播等待取默认策略。
     #[must_use]
     pub fn new(dns: Arc<DnsProviderRegistry>) -> Self {
-        Self { dns }
+        Self::with_policy(dns, PropagationPolicy::default())
     }
+
+    /// 用 DNS 提供商注册表与显式传播等待策略装配。
+    #[must_use]
+    pub fn with_policy(dns: Arc<DnsProviderRegistry>, propagation: PropagationPolicy) -> Self {
+        Self {
+            dns,
+            propagation,
+            db: None,
+        }
+    }
+
+    /// 以证书库句柄装配（到期检测在步骤内可查库）。
+    #[must_use]
+    pub fn with_db(dns: Arc<DnsProviderRegistry>, db: sea_orm::DatabaseConnection) -> Self {
+        Self {
+            dns,
+            propagation: PropagationPolicy::default(),
+            db: Some(db),
+        }
+    }
+
+    /// 以传播策略与证书库句柄一并装配。
+    #[must_use]
+    pub fn with_policy_and_db(
+        dns: Arc<DnsProviderRegistry>,
+        propagation: PropagationPolicy,
+        db: sea_orm::DatabaseConnection,
+    ) -> Self {
+        Self { dns, propagation, db: Some(db) }
+    }
+}
+
+async fn resolve_cert_not_after_db(
+    db: &sea_orm::DatabaseConnection,
+    domains: &[String],
+) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+    use acmecast_store::repository::{CertQuery, CertRepository};
+    let normalized = acmecast_store::entity::cert::normalize_domains(domains);
+    let mut best: Option<chrono::DateTime<chrono::Utc>> = None;
+    for domain in normalized {
+        let mut page =
+            CertRepository::new(db)
+                .list(CertQuery {
+                    domain: Some(domain.clone()),
+                    ..Default::default()
+                })
+                .await
+                .map_err(|e| {
+                    acmecast_pipeline::Error::Core(acmecast_core::Error::Internal(format!(
+                        "查询证书库失败: {e}"
+                    )))
+                })?;
+        // 取到期最远的未吊销记录作为“最新可用证书”快照。
+        for cert in page.items.drain(..) {
+            if cert.revoked_at.is_some() {
+                continue;
+            }
+            match best {
+                None => best = Some(cert.not_after),
+                Some(prev) if cert.not_after > prev => best = Some(cert.not_after),
+                _ => {}
+            }
+        }
+    }
+    Ok(best)
+}
+
+async fn resolve_cert_not_after(
+    _ctx: &StepContext<'_>,
+    _domains: &[String],
+) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+    Ok(None)
 }
 
 #[async_trait::async_trait]
@@ -80,13 +223,128 @@ impl PipelineStep for CertApplyStep {
     }
 
     fn input_schema(&self) -> Option<schemars::schema::RootSchema> {
-        Some(schemars::schema_for!(AcmeApplyInput))
+        let mut schema = schemars::schema_for!(AcmeApplyInput);
+        // `domains` 配置多个域名时 `dns_zone` 必填：条件由前端 SchemaForm
+        // 求值（与 ACME 账号凭据 `directory_url` 的 Equals 同通道）。`dns_zone`
+        // 是 Option，schemars 出来是 anyOf 包裹的顶层节点——扩展挂在它上面，
+        // 前端解包 anyOf 时会原样保留。结构变化时宁可少注入也不丢 schema。
+        if let Some(schemars::schema::Schema::Object(zone)) = schema
+            .schema
+            .object
+            .as_mut()
+            .and_then(|object| object.properties.get_mut("dns_zone"))
+        {
+            zone.extensions.insert(
+                "x-required-when".to_owned(),
+                serde_json::json!({ "MinItems": { "field": "domains", "count": 2 } }),
+            );
+        }
+        // `key_algorithm` 的枚举值是 snake_case 配置串，下拉里直接显示可读性
+        // 差——展示名挂在字段节点上（schemars 会把带说明的字段包成
+        // `allOf: [$ref]`，前端解包时外层属性原样保留，与 dns_zone 同通道）。
+        if let Some(schemars::schema::Schema::Object(alg)) = schema
+            .schema
+            .object
+            .as_mut()
+            .and_then(|object| object.properties.get_mut("key_algorithm"))
+        {
+            alg.extensions.insert(
+                "x-enum-labels".to_owned(),
+                serde_json::json!({
+                    "ecdsa_p256": "ECDSA P-256",
+                    "ecdsa_p384": "ECDSA P-384",
+                    "ed25519": "Ed25519",
+                    "rsa2048": "RSA 2048",
+                }),
+            );
+        }
+        Some(schema)
+    }
+
+    fn validate_input(&self, input: &serde_json::Value) -> Result<()> {
+        if let Some(schema) = self.input_schema() {
+            let schema = serde_json::to_value(schema)
+                .map_err(|e| acmecast_pipeline::Error::Core(acmecast_core::Error::Serialization(e.to_string())))?;
+            acmecast_pipeline::input::validate(&schema, input)?;
+        }
+        if let Some(obj) = input.as_object() {
+            if let Some(raw) = obj.get("renew_before_days") {
+                if !raw.is_null() {
+                    let days = raw.as_i64().ok_or_else(|| acmecast_pipeline::Error::InvalidInput {
+                        field: "renew_before_days".to_owned(),
+                        reason: "应为整数（1-90 为到期检测，0/负数表示跳过检测）".to_owned(),
+                    })?;
+                    // 0/负数表示跳过检测，直接申请，不进入到期窗口判定。
+                    // 仅当阈值在 1-90 时才进入到期检测；非整数已在上一步拒绝。
+                    if days > 0 && !(1..=90).contains(&days) {
+                        return Err(acmecast_pipeline::Error::InvalidInput {
+                            field: "renew_before_days".to_owned(),
+                            reason: format!("只能是 0/负数（跳过检测）或 1-90 之一，实际为 {days}"),
+                        });
+                    }
+                    if days > 0 {
+                        let domains_empty = obj
+                            .get("domains")
+                            .and_then(|value| value.as_array())
+                            .is_none_or(|array| array.is_empty());
+                        if domains_empty {
+                            return Err(acmecast_pipeline::Error::InvalidInput {
+                                field: "renew_before_days".to_owned(),
+                                reason: "已设置到期前检测，需先配置 domains".to_owned(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     async fn execute(&self, ctx: &mut StepContext<'_>) -> Result<StepOutput> {
         let input: AcmeApplyInput = ctx
             .input_as()
             .map_err(|error| domain_error("cert.apply 输入不合法", error))?;
+        if let Some(days) = input.renew_before_days {
+            if days <= 0 {
+                ctx.log_info("到期检测已跳过（阈值 ≤0），直接申请");
+            } else if let Some(db) = &self.db {
+                let threshold_days = days;
+                if let Ok(Some(not_after)) =
+                    resolve_cert_not_after_db(db, &input.domains).await
+                {
+                    let now = chrono::Utc::now();
+                    let threshold = chrono::Duration::days(i64::from(threshold_days));
+                    if not_after > now + threshold {
+                        let remaining = (not_after - now).num_days();
+                        ctx.log_info(format!(
+                            "跳过 cert.apply：证书距到期 {remaining} 天，阈值 {threshold_days} 天，不在续期窗口"
+                        ));
+                        return Ok(StepOutput::empty().with_log(
+                            acmecast_pipeline::StepLog::info(format!(
+                                "跳过 cert.apply：到期检测判定不在续期窗口（剩余 {remaining} 天，阈值 {threshold_days} 天）"
+                            )),
+                        ));
+                    }
+                }
+            } else if let Ok(Some(not_after)) =
+                resolve_cert_not_after(ctx, &input.domains).await
+            {
+                let threshold_days = days;
+                let now = chrono::Utc::now();
+                let threshold = chrono::Duration::days(i64::from(threshold_days));
+                if not_after > now + threshold {
+                    let remaining = (not_after - now).num_days();
+                    ctx.log_info(format!(
+                        "跳过 cert.apply：证书距到期 {remaining} 天，阈值 {threshold_days} 天，不在续期窗口"
+                    ));
+                    return Ok(StepOutput::empty().with_log(
+                        acmecast_pipeline::StepLog::info(format!(
+                            "跳过 cert.apply：到期检测判定不在续期窗口（剩余 {remaining} 天，阈值 {threshold_days} 天）"
+                        )),
+                    ));
+                }
+            }
+        }
         ensure_kind_covers(&input.domains, input.challenge)
             .map_err(|e| domain_error("挑战类型", e))?;
 
@@ -111,7 +369,8 @@ impl PipelineStep for CertApplyStep {
         }
 
         // 密钥与 CSR 在本次运行中生成；私钥不落盘、不进日志，只随产物交给入库步骤。
-        let (key_pem, csr_der) = generate_key_and_csr(&input.domains)?;
+        ctx.log_info(format!("生成本次申请的密钥：{}", input.key_algorithm.as_str()));
+        let (key_pem, csr_der) = generate_key_and_csr(&input.domains, input.key_algorithm)?;
         wait_for_ready(&mut order).await?;
         ctx.log_info("提交 CSR 并等待签发");
         let cert_pem = order
@@ -242,10 +501,14 @@ impl CertApplyStep {
             .challenge_materials(&authorization.identifier, acme_kind)
             .await
             .map_err(|e| domain_error("读取挑战材料", e))?;
-        // 显式给了 zone 就用它；留空（未填或空串）则从主域名推导——
-        // 表单里“没填”很容易存成空串，不该让用户撞上「找不到域名 ``」这种错。
+        // 显式给了 zone 就用它；留空（未填或空串）则自动推导——
+        // 通配授权（`*.gcli.cn`）的 identifier 为 base domain（`gcli.cn`）+ wildcard 标记，
+        // 其 zone 即 base domain 本身；`*.x.idev.top` 则需在提供商中逐级探测父 zone。
         let zone = match input.dns_zone.as_deref().map(str::trim) {
             Some(zone) if !zone.is_empty() => zone.to_owned(),
+            _ if authorization.wildcard => {
+                resolve_wildcard_zone(provider, &credentials, &authorization.identifier).await?
+            }
             _ => zone_of(&authorization.identifier).ok_or_else(|| {
                 acmecast_pipeline::Error::Core(acmecast_core::Error::Internal(format!(
                     "无法从 {} 推导 DNS zone，请显式配置 dns_zone",
@@ -269,7 +532,9 @@ impl CertApplyStep {
                 let http = Arc::new(acmecast_dns::ReqwestTransport::new().map_err(|e| {
                     acmecast_dns::Error::provider(format!("构造解析器客户端: {e}"))
                 })?);
-                let resolvers = acmecast_dns::resolvers_for_zone(http, &zone);
+                let resolvers =
+                    acmecast_dns::resolvers_for_provider(http, &zone, Some(provider_id));
+                tracing::debug!(provider = provider_id, count = resolvers.len(), "使用提供商感知的 DoH 解析器");
                 let refs: Vec<&dyn acmecast_dns::DnsResolver> =
                     resolvers.iter().map(|resolver| resolver.as_ref()).collect();
                 wait_until_visible(
@@ -277,10 +542,7 @@ impl CertApplyStep {
                     &credentials,
                     &record,
                     &refs,
-                    &PropagationPolicy {
-                        interval: Duration::seconds(5).to_std().expect("间隔应为正"),
-                        timeout: Duration::minutes(2).to_std().expect("超时应为正"),
-                    },
+                    &self.propagation,
                 )
                 .await?;
                 ctx.log_info(format!("TXT 记录已在权威/公共解析器可见：{}", record.name));
@@ -343,8 +605,15 @@ fn transport_options(input: &AcmeApplyInput) -> acmecast_acme::ProxyConfig {
 }
 
 /// 生成本次申请的密钥对与 CSR（SAN 覆盖全部域名，通配符原样保留）。
-fn generate_key_and_csr(domains: &[String]) -> Result<(String, Vec<u8>)> {
-    let key = rcgen::KeyPair::generate().map_err(|e| domain_error("生成密钥", e))?;
+///
+/// 密钥类型由 `algorithm` 决定，CSR 的签名算法随之确定，CA 据此签发
+/// 同类型的证书。RSA 依赖 rcgen 的 aws-lc-rs 后端（ring 无 RSA keygen）。
+fn generate_key_and_csr(
+    domains: &[String],
+    algorithm: CertKeyAlgorithm,
+) -> Result<(String, Vec<u8>)> {
+    let key = rcgen::KeyPair::generate_for(algorithm.signature_algorithm())
+        .map_err(|e| domain_error("生成密钥", e))?;
     let mut params = rcgen::CertificateParams::default();
     // 必须清掉 rcgen 的默认 CN（「rcgen self signed cert」），且不放任何 CN：
     // LE 会把 CSR 的 CN 也并入标识符集合，与订单标识符做规范化后的完全相等
@@ -369,12 +638,91 @@ fn generate_key_and_csr(domains: &[String]) -> Result<(String, Vec<u8>)> {
     Ok((key.serialize_pem(), csr.der().to_vec()))
 }
 
-/// 从主域名推导 DNS zone：去掉第一段（`a.example.com` → `example.com`）。
+/// 从授权域名推导 DNS zone。
+///
+/// - 输入含 `*.` 前缀的通配符时（`*.gcli.cn`、`*.example.com`），zone 即剥前缀后的
+///   剩余部分（`gcli.cn`、`example.com`），不经「去掉第一段」推导——这是通配符
+///   场景的可靠语义：`*.gcli.cn` 的 zone 就是 `gcli.cn`。
+/// - 非通配符时仍按「去掉第一段且剩余仍含点」推导（`a.example.com` → `example.com`）；
+///   注册域本身（`skiy.net`、`example.com`）返回 `None`，由调用点要求显式配置。
+/// - 输入为单段或无点时返回 `None`。
 fn zone_of(domain: &str) -> Option<String> {
-    domain
-        .trim_start_matches("*.")
-        .split_once('.')
-        .map(|(_, rest)| rest.to_owned())
+    let trimmed = domain.trim();
+    if let Some(base) = trimmed.strip_prefix("*.") {
+        let base = base.trim();
+        // 通配符的 base 必须是合法 zone：至少含一个点且非首尾为空段
+        if base.is_empty() || base.starts_with('.') || base.ends_with('.') || !base.contains('.') {
+            return None;
+        }
+        return Some(base.to_owned());
+    }
+    let rest = trimmed.split_once('.')?.1;
+    rest.contains('.').then(|| rest.to_owned())
+}
+
+/// 通配授权的 zone 解析：对 `x.idev.top` 逐级探测提供商侧是否存在，
+/// 取最长匹配的已托管 zone；皆不存在时回退到原始 identifier 并让创建阶段
+/// 报可诊断错误，不在此处吞掉。
+async fn resolve_wildcard_zone(
+    provider: &dyn acmecast_dns::DnsProvider,
+    credentials: &serde_json::Value,
+    identifier: &str,
+) -> Result<String> {
+    // identifier 已是 base domain（`x.idev.top`），逐级剥首标签生成候选
+    let mut candidates: Vec<String> = Vec::new();
+    let mut cur = identifier.trim();
+    // 防御：identifier 可能含空白
+    if cur.is_empty() {
+        return Err(acmecast_pipeline::Error::Core(
+            acmecast_core::Error::Internal(format!(
+                "无法从 {} 推导 DNS zone，请显式配置 dns_zone",
+                identifier
+            )),
+        ));
+    }
+    loop {
+        candidates.push(cur.to_owned());
+        // 剩余不再含点则停止（至少保留两段）
+        let Some(dot) = cur.find('.') else { break };
+        let next = &cur[dot + 1..];
+        if !next.contains('.') {
+            // 如 `idev.top` 已入候选，`top` 不应作为 zone
+            break;
+        }
+        cur = next;
+    }
+    // 优先用 find_txt 探测：对阿里/腾讯/EO 均用 `zone` 作为 DomainName/Zone 参与查询，
+    // 若 zone 不存在，find_txt 会返回 Provider 错误且含 NoExist/找不到 zone 的特征串。
+    // 逐级尝试，首个不报“不存在”即命中。
+    let mut last_not_found: Option<String> = None;
+    for zone in &candidates {
+        let probe = acmecast_dns::TxtRecord::new(zone, format!("_acme-challenge.{zone}"), "probe", 60);
+        match provider.find_txt(credentials, &probe).await {
+            Ok(_) => return Ok(zone.clone()),
+            Err(e) => {
+                let msg = e.to_string();
+                // 视为“该 zone 未托管”的信号，继续回退父域
+                let not_found = msg.contains("NoExist")
+                    || msg.contains("找不到 zone")
+                    || msg.contains("not exist")
+                    || msg.contains("DomainName.NoExist")
+                    || msg.contains("InvalidDomainName");
+                if not_found {
+                    last_not_found = Some(msg);
+                    continue;
+                }
+                // 其他错误（鉴权、限流等）直接上抛，避免静默选错父域
+                return Err(acmecast_pipeline::Error::Core(acmecast_core::Error::Internal(
+                    format!("探测 DNS zone `{zone}` 失败: {msg}"),
+                )));
+            }
+        }
+    }
+    // 皆未命中，回退到最具体的 identifier，让 create 阶段报原始错误
+    if let Some(msg) = last_not_found {
+        tracing::warn!(identifier, candidates = ?candidates, error = %msg, "通配 zone 逐级探测均未命中，回退到 identifier 本身");
+    }
+    Ok(identifier.to_owned())
 }
 
 /// 把联系人统一补全为 `mailto:` URI 形式。
@@ -400,7 +748,136 @@ fn normalize_contacts(contacts: &[String]) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{generate_key_and_csr, normalize_contacts};
+    use super::{CertKeyAlgorithm, generate_key_and_csr, normalize_contacts, zone_of};
+
+    #[test]
+    fn schema_marks_dns_zone_required_for_multiple_domains() {
+        use std::sync::Arc;
+
+        use super::CertApplyStep;
+        use acmecast_dns::DnsProviderRegistry;
+        use acmecast_pipeline::PipelineStep as _;
+
+        let step = CertApplyStep::new(Arc::new(DnsProviderRegistry::new()));
+        let schema = step.input_schema().expect("cert.apply 应声明输入结构");
+        let zone = schema
+            .schema
+            .object
+            .as_ref()
+            .expect("顶层应是对象")
+            .properties
+            .get("dns_zone")
+            .expect("dns_zone 应在 properties 里");
+        let rendered = serde_json::to_value(zone).expect("dns_zone schema 应能序列化");
+        assert_eq!(
+            rendered["x-required-when"],
+            serde_json::json!({ "MinItems": { "field": "domains", "count": 2 } }),
+            "dns_zone 应携带多域名必填条件：{rendered}"
+        );
+        let description = rendered["description"].as_str().expect("dns_zone 应有说明");
+        assert!(
+            description.contains("多个域名"),
+            "说明应包含多域名指引：{description}"
+        );
+    }
+
+    #[test]
+    fn schema_marks_key_algorithm_with_display_labels() {
+        use std::sync::Arc;
+
+        use super::CertApplyStep;
+        use acmecast_dns::DnsProviderRegistry;
+        use acmecast_pipeline::PipelineStep as _;
+
+        let step = CertApplyStep::new(Arc::new(DnsProviderRegistry::new()));
+        let schema = step.input_schema().expect("cert.apply 应声明输入结构");
+        let algorithm = schema
+            .schema
+            .object
+            .as_ref()
+            .expect("顶层应是对象")
+            .properties
+            .get("key_algorithm")
+            .expect("key_algorithm 应在 properties 里");
+        let rendered = serde_json::to_value(algorithm).expect("key_algorithm schema 应能序列化");
+        let labels = rendered["x-enum-labels"]
+            .as_object()
+            .expect("key_algorithm 应携带展示名映射");
+        assert_eq!(
+            labels["ecdsa_p256"], "ECDSA P-256",
+            "四个选项都应有展示名：{rendered}"
+        );
+        assert_eq!(labels["rsa2048"], "RSA 2048");
+        assert_eq!(
+            rendered["default"], "ecdsa_p256",
+            "schema 应携带缺省值供表单预填：{rendered}"
+        );
+    }
+
+    #[test]
+    fn each_algorithm_generates_matching_key_and_csr() {
+        // RSA 位数由 rcgen（aws-lc-rs 后端）的 Rsa2048 档固定，不再重复断言。
+        for (algorithm, expected) in [
+            (CertKeyAlgorithm::EcdsaP256, acmecast_cert::KeyAlgorithm::EcdsaP256),
+            (CertKeyAlgorithm::EcdsaP384, acmecast_cert::KeyAlgorithm::EcdsaP384),
+            (CertKeyAlgorithm::Ed25519, acmecast_cert::KeyAlgorithm::Ed25519),
+            (CertKeyAlgorithm::Rsa2048, acmecast_cert::KeyAlgorithm::Rsa),
+        ] {
+            let (key_pem, csr_der) = generate_key_and_csr(&["example.com".to_owned()], algorithm)
+                .unwrap_or_else(|e| panic!("{algorithm:?} 生成应成功: {e}"));
+            assert!(!csr_der.is_empty(), "CSR 应非空");
+            assert_eq!(
+                acmecast_cert::detect_algorithm(&key_pem).expect("识别私钥算法"),
+                expected,
+                "{algorithm:?} 生成的私钥类型应一致"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_key_algorithm_is_rejected_and_default_is_p256() {
+        use super::AcmeApplyInput;
+
+        let input: AcmeApplyInput = serde_json::from_value(serde_json::json!({
+            "domains": ["example.com"],
+            "challenge": "dns-01",
+            "account_credential_id": 1,
+        }))
+        .expect("缺省 key_algorithm 应可反序列化");
+        assert_eq!(
+            input.key_algorithm,
+            CertKeyAlgorithm::EcdsaP256,
+            "缺省应回退 ECDSA P-256"
+        );
+
+        let rejected = serde_json::from_value::<AcmeApplyInput>(serde_json::json!({
+            "domains": ["example.com"],
+            "challenge": "dns-01",
+            "account_credential_id": 1,
+            "key_algorithm": "dsa",
+        }));
+        assert!(rejected.is_err(), "未知算法值应在输入校验时被拒绝");
+    }
+
+    #[test]
+    fn zone_of_only_trusts_multi_label_remainders() {
+        // 三级以上域名剥第一段后剩余部分仍是合法 zone，推导可信。
+        assert_eq!(zone_of("a.example.com").as_deref(), Some("example.com"));
+        assert_eq!(
+            zone_of("a.b.example.com").as_deref(),
+            Some("b.example.com")
+        );
+
+        // 通配符的两级域名：zone 即 base domain（`*.gcli.cn` → `gcli.cn`、`*.skiy.net` → `skiy.net`）。
+        assert_eq!(zone_of("*.gcli.cn").as_deref(), Some("gcli.cn"));
+        assert_eq!(zone_of("*.skiy.net").as_deref(), Some("skiy.net"));
+        assert_eq!(zone_of("*.example.com").as_deref(), Some("example.com"));
+
+        // 注册域本身（非通配符）仍不可推导
+        assert_eq!(zone_of("skiy.net"), None);
+        assert_eq!(zone_of("example.com"), None);
+        assert_eq!(zone_of("gcli.cn"), None);
+    }
 
     #[test]
     fn wildcard_csr_has_no_cn_and_keeps_wildcard_san() {
@@ -408,9 +885,11 @@ mod tests {
         // CN 会把 base domain 带进集合，通配订单的 finalize 会被判
         // 「CSR does not specify same identifiers as Order」。
         // 这里直接检查 DER 字节：subject 不得含 CN OID（2.5.4.3），SAN 原样保留 `*.`。
-        let (_key_pem, csr_der) =
-            generate_key_and_csr(&["example.com".to_owned(), "*.example.com".to_owned()])
-                .expect("生成 CSR 应成功");
+        let (_key_pem, csr_der) = generate_key_and_csr(
+            &["example.com".to_owned(), "*.example.com".to_owned()],
+            CertKeyAlgorithm::default(),
+        )
+        .expect("生成 CSR 应成功");
 
         let cn_oid: &[u8] = &[0x06, 0x03, 0x55, 0x04, 0x03];
         assert!(

@@ -281,6 +281,7 @@ mod tests {
             method: "POST".to_owned(),
             headers: BTreeMap::new(),
             body_template: template.map(str::to_owned),
+            smtp: None,
         }
     }
 

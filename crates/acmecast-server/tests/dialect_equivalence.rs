@@ -65,6 +65,8 @@ async fn run_suite(db: DatabaseConnection) {
             not_before: now - chrono::Duration::days(1),
             not_after: now + chrono::Duration::days(30),
             acme_account_access_id: None,
+            key_algorithm: None,
+            description: None,
         })
         .await
         .expect("证书应能写入");
@@ -81,6 +83,8 @@ async fn run_suite(db: DatabaseConnection) {
             not_before: now - chrono::Duration::days(1),
             not_after: now + chrono::Duration::days(40),
             acme_account_access_id: None,
+            key_algorithm: None,
+            description: None,
         })
         .await
         .expect("同域名集合应能更新");
@@ -185,6 +189,7 @@ async fn run_suite(db: DatabaseConnection) {
                 step_index: 0,
                 level: acmecast_pipeline::StepLogLevel::Info,
                 message: "等价性检查".to_owned(),
+                output: None,
                 created_at: now,
             }],
         )
@@ -213,6 +218,7 @@ async fn run_suite(db: DatabaseConnection) {
                 enabled: true,
                 catch_up: false,
                 renewal_domains: Some(vec![domain.clone()]),
+                    renewal_threshold_days: None,
             },
         )
         .await
@@ -227,6 +233,7 @@ async fn run_suite(db: DatabaseConnection) {
                 enabled: true,
                 catch_up: false,
                 renewal_domains: None,
+                    renewal_threshold_days: None,
             },
         )
         .await;

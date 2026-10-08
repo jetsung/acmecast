@@ -57,6 +57,46 @@
   打出 SHA-256 指纹。有中间人风险的环境请配合网络层隔离使用。
 - 凭据的「连通性测试」对 `ssh` 类型是真实探测（10 秒超时）。
 
+## `tencent-ssl` — 腾讯云 SSL 证书库
+
+把证书链与私钥上传到腾讯云 SSL 证书服务（API 3.0，服务 `ssl`），供 CLB /
+CDN / WAF 等云资源引用。**国内站与国际站同构**：凭据的 `account_site` 字段
+（`cn` / `intl`）决定请求端点（`ssl.tencentcloudapi.com` /
+`ssl.intl.tencentcloudapi.com`），两侧接口的 Action 与参数一致。
+
+| 字段 | 必需 | 默认 | 说明 |
+|---|---|---|---|
+| `credential_id` | 是 | — | 引用 `tencent` 类型凭据（`tencent-eo` 仅服务 DNS，无 SSL 部署能力，不接受） |
+| `alias` | 否 | — | 上传到云端的证书备注名；空白不提交 |
+| `repeatable` | 否 | `false` | 上传请求的 `Repeatable`：`false` 时同指纹已存在返回已有证书 ID、不产生重复；`true` 时允许重复上传 |
+| `replace_existing` | 否 | `true` | 云端已有同域名证书时是否替换 |
+| `resource_types` | 否 | `[]` | 替换时需同步刷新的云资源类型（`ResourceTypes`），空时仅更新云端证书本身；多选，可选：`clb`、`cdn`、`waf`、`live`、`ddos`、`teo`、`apigateway`、`vod`、`tke`、`tcb`、`tse`、`cos`、`mqtt`、`scf`、`tdmq`、`gaap` |
+| `resource_regions` | 否 | `[]` | `resource_types` 指定的云资源的地域列表，构造 `ResourceTypesRegions`（`{ Region, Type }`） |
+
+细节：
+
+- **`CertificateType` 固定为 `SVR`**：服务器证书，不暴露为可配置字段。
+- **上传幂等**：`Repeatable=false`（默认）时同指纹重复上传天然幂等、不产生重复证书；`Repeatable=true` 时允许同指纹重复上传（用于需要多张同指纹证书的场景）。
+
+替换语义（`replace_existing` 开启时）：
+
+- **存在性判断**：部署前查证书库，云端服务器证书的主域名（`Domain`）与本次
+  证书主域名**精确一致**即视为已存在（单域名匹配单域名、泛域名
+  `*.example.com` 匹配同形式泛域名）。泛域名覆盖关系（云端 `*.example.com`
+  而本次为 `a.example.com`）**不算**已存在——避免误删服务全部子域名的泛域名
+  证书。查询遍历全部分页，证书多于单页上限也不漏判。
+- **原证书 ID 不变、只更新内容**：查到存量后逐张调 `UploadUpdateCertificateInstance`（<https://cloud.tencent.com/document/api/400/119791>）原地更新，证书链与私钥刷新为新内容，原证书 ID 保持不变，引用该 ID 的云资源无需改绑。相比旧的「上传新 + 删除旧」，避免证书 ID 变化导致的云资源改绑成本。
+- **资源同步可选**：`resource_types` 非空时，更新调用携带 `ResourceTypes`（所选类型列表）与 `ResourceTypesRegions`（`resource_types × resource_regions` 的笛卡尔积，每项 `{ Region, Type }`）。多选 `clb` 时与地域联动可同步刷新绑定的 CLB 集群；默认空时仅更新云端证书本身，已绑定资源不自动刷新。
+- **多张匹配逐张更新**：云端存在多张同域名证书时，逐张调更新，单张失败记告警、不阻塞其他证书与整体部署——与原「删除失败不阻塞」语义对齐。
+- **关闭替换仅上传**：`replace_existing` 为 `false` 时，仅按上传流程处理，不发起更新调用。
+
+细节：
+
+- **`paths` 记云端证书 ID**：本目标的「部署产物」是证书库里那张证书，部署
+  记录的路径清单存证书 ID（`local`/`ssh` 目标存文件路径，语义随目标而异）。无存量时上传新证书、记录新 ID；有存量时更新原证书、记录原 ID（多张存量时记录全部原 ID）。
+- **跳过写入时零云端调用**：指纹一致且未 `force` 时不查询、不上传、不更新；
+  云端证书被人手动删除时，`force` 重跑一次即恢复。
+
 ## 部署记录
 
 每次部署（含跳过写入的）成功后落一条记录：目标键、指纹、是否跳过写入、

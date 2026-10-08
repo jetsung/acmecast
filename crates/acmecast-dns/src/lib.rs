@@ -17,10 +17,12 @@ pub use error::{Error, Result};
 pub use http::{HttpRequest, HttpResponse, HttpTransport, ReqwestTransport};
 pub use http01::Http01Answer;
 pub use propagation::{
-    DnsResolver, DohResolver, PropagationPolicy, default_resolvers, resolvers_for_zone,
-    wait_until_visible,
+    DnsResolver, DohResolver, PropagationPolicy, default_resolvers, doh_resolvers_for_provider,
+    resolvers_for_provider, resolvers_for_zone, wait_until_visible,
 };
 pub use provider::{DnsProvider, TxtRecord, parse_credentials};
-pub use providers::{AliyunProvider, CloudflareProvider};
+pub use providers::{
+    AliyunProvider, CloudflareProvider, TencentApiClient, TencentEoProvider, TencentProvider,
+};
 pub use registry::DnsProviderRegistry;
 pub use resolvers::{ResolverEntry, load_extended_resolvers};

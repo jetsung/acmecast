@@ -22,5 +22,6 @@ pub use state::{
 pub use target::{CertMaterials, DeployMode, DeployOutcome, DeploymentTarget, parse_input};
 pub use targets::{
     LocalInput, LocalTarget, ResolvedSshConfig, RusshConnector, SshAuth, SshAuthSource,
-    SshConnector, SshInput, SshTarget, SshTransport, probe_host,
+    SshConnector, SshInput, SshTarget, SshTransport, TencentSslInput, TencentSslTarget,
+    probe_host,
 };

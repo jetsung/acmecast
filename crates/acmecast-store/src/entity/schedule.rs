@@ -28,6 +28,8 @@ pub struct Model {
     /// 输入来推断关联——那会把调度行为绑死在步骤输入的具体字段结构上，
     /// 输入结构一变映射就悄悄失效。
     pub renewal_domains: Option<String>,
+    /// 调度级续期阈值（剩余天数 1-90）；None 表示回退全局阈值。
+    pub renewal_threshold_days: Option<i16>,
     /// 上次触发时间。
     pub last_triggered_at: Option<chrono::DateTime<chrono::Utc>>,
     /// 下次预计触发时间。

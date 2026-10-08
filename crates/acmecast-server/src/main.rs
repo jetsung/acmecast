@@ -117,12 +117,17 @@ async fn run(config_override: Option<&str>) -> Result<(), Box<dyn std::error::Er
 
     // 鉴权状态在启动时就要说清楚：关闭是显式选择，缺失配置是错误，
     // 两者都不该让人在第一次请求被拒时才发现。
+    let propagation = acmecast_dns::PropagationPolicy {
+        interval: std::time::Duration::from_secs(config.propagation.interval_secs),
+        timeout: std::time::Duration::from_secs(config.propagation.timeout_secs),
+    };
     let mut runtime = acmecast_server::RuntimeState::from_environment_with_steps(
         std::sync::Arc::new(acmecast_server::steps::default_steps(
             db.clone(),
             config.data_dir.clone(),
             acmecast_server::steps::default_dns_registry(),
             acmecast_server::steps::default_deploy_registry(),
+            propagation,
         )),
     )?;
     match &runtime.auth {

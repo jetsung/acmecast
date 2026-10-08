@@ -105,6 +105,7 @@ async fn sink(db: DatabaseConnection, server_uri: &str, events: &[&str]) -> Webh
             method: "POST".to_owned(),
             headers: std::collections::BTreeMap::new(),
             body_template: None,
+            smtp: None,
         }],
         DeliveryOptions::default(),
     )

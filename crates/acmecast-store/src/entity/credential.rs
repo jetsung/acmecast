@@ -19,6 +19,8 @@ pub struct Model {
     pub type_id: String,
     /// 加密后的字段集合：`{"字段名": "<base64 密文>"}`。
     pub encrypted_fields: String,
+    /// 人类可读的备注（用途/归属/环境说明），非敏感，可为空。
+    pub remark: String,
     /// 记录创建时间。
     pub created_at: chrono::DateTime<chrono::Utc>,
     /// 记录更新时间。
@@ -56,6 +58,7 @@ mod tests {
             Column::Name,
             Column::TypeId,
             Column::EncryptedFields,
+            Column::Remark,
             Column::CreatedAt,
             Column::UpdatedAt,
         ];

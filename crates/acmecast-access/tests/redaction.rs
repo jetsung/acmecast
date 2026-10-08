@@ -140,6 +140,7 @@ fn resolved_credential_hides_the_decrypted_fields() {
         id: 7,
         name: "生产 DNS".to_owned(),
         type_id: "acme.account".to_owned(),
+        remark: String::new(),
         fields: serde_json::json!({ "api_token": SECRET }),
     };
 
@@ -159,6 +160,7 @@ fn the_placeholder_is_shared_across_crates() {
         id: 1,
         name: "x".to_owned(),
         type_id: "y".to_owned(),
+        remark: String::new(),
         fields: serde_json::json!({ "secret": SECRET }),
     };
     assert!(

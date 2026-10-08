@@ -44,7 +44,7 @@ vi.mock("@/api/client", () => ({
               ],
               total: 1,
               page: 1,
-              page_size: 20,
+              page_size: 15,
             },
           },
           response: new Response(),
@@ -124,3 +124,13 @@ describe("证书列表默认排序", () => {
     });
   });
 });
+
+describe("证书列表描述列", () => {
+  it("表头包含描述列，无描述时显示占位", async () => {
+    const { container } = renderPage();
+    await waitFor(() => expect(mockedGet).toHaveBeenCalled());
+    expect(container.textContent).toContain("描述");
+    await waitFor(() => expect(container.textContent).toContain("—"));
+  });
+});
+

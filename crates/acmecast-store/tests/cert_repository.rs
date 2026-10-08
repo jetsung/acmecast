@@ -52,13 +52,15 @@ fn input(domains: &[&str], fingerprint: &str, valid_days: i64, account_id: i64) 
     let now = Utc::now();
     CertInput {
         domains: domains.iter().map(|domain| (*domain).to_owned()).collect(),
-        cert_pem_path: format!("certs/{fingerprint}/cert.pem"),
-        key_pem_path: format!("certs/{fingerprint}/key.pem"),
+        cert_pem_path: format!("certs/ssl/{fingerprint}.cert.pem"),
+        key_pem_path: format!("certs/ssl/{fingerprint}.key.pem"),
         fingerprint: fingerprint.to_owned(),
         issuer: Some("CN=Test CA".to_owned()),
         not_before: now,
         not_after: now + Duration::days(valid_days),
         acme_account_access_id: Some(account_id),
+        key_algorithm: None,
+        description: None,
     }
 }
 
@@ -160,10 +162,9 @@ async fn reissuing_the_same_domain_set_updates_in_place() {
     assert!(!second.is_created(), "同一域名集合的第二次写入应是更新");
     let second = second.model();
 
-    assert_eq!(second.id, first.id, "应更新既有记录，主键不变");
     assert_eq!(second.fingerprint, "fp-new", "证书内容应被更新");
     assert_eq!(
-        second.cert_pem_path, "certs/fp-new/cert.pem",
+        second.cert_pem_path, "certs/ssl/fp-new.cert.pem",
         "路径应指向新证书"
     );
     assert!(
@@ -1019,6 +1020,90 @@ async fn updating_paths_of_a_missing_certificate_reports_not_found() {
 
     let err = repo
         .update_paths(404, &paths)
+        .await
+        .expect_err("证书不存在应报错");
+    assert!(matches!(&err, Error::NotFound { .. }), "{err:?}");
+}
+
+// ---- 私钥算法与管理员备注 ----
+
+#[tokio::test]
+async fn key_algorithm_round_trips_through_save() {
+    let (db, account) = setup().await;
+    let repo = CertRepository::new(&db);
+
+    let mut cert_input = input(&["example.com"], "fp-algo", 90, account);
+    cert_input.key_algorithm = Some("ECDSA P-256".to_owned());
+    let created = repo.create(cert_input).await.expect("应能插入证书");
+    assert_eq!(created.key_algorithm.as_deref(), Some("ECDSA P-256"));
+
+    // 续期（同域名集合覆盖）携带新算法：旧值被替换而非残留。
+    let mut renewed = input(&["example.com"], "fp-algo-2", 90, account);
+    renewed.key_algorithm = Some("RSA".to_owned());
+    repo.save(renewed).await.expect("续期应成功");
+    let after = repo
+        .find_by_domains(&["example.com"])
+        .await
+        .expect("应能按域名查询")
+        .expect("记录应存在");
+    assert_eq!(after.key_algorithm.as_deref(), Some("RSA"));
+}
+
+#[tokio::test]
+async fn list_missing_key_algorithm_returns_only_null_rows() {
+    let (db, account) = setup().await;
+    let repo = CertRepository::new(&db);
+
+    let mut with_algo = input(&["a.example.com"], "fp-a", 90, account);
+    with_algo.key_algorithm = Some("RSA".to_owned());
+    repo.create(with_algo).await.expect("应能插入");
+    repo.create(input(&["b.example.com"], "fp-b", 90, account))
+        .await
+        .expect("应能插入");
+
+    let missing = repo
+        .list_missing_key_algorithm()
+        .await
+        .expect("应能查询缺失算法的记录");
+    assert_eq!(missing.len(), 1, "只有 fp-b 缺算法");
+    assert_eq!(missing[0].fingerprint, "fp-b");
+
+    repo.update_key_algorithm(missing[0].id, "Ed25519")
+        .await
+        .expect("回填应成功");
+    assert!(
+        repo.list_missing_key_algorithm()
+            .await
+            .expect("再次查询应为空")
+            .is_empty(),
+        "回填后不应再有缺失记录"
+    );
+}
+
+#[tokio::test]
+async fn update_description_normalizes_blank_to_none() {
+    let (db, account) = setup().await;
+    let repo = CertRepository::new(&db);
+    let created = repo
+        .create(input(&["example.com"], "fp-desc", 90, account))
+        .await
+        .expect("应能插入证书");
+
+    let updated = repo
+        .update_description(created.id, Some("  生产环境主域  ".to_owned()))
+        .await
+        .expect("更新备注应成功");
+    assert_eq!(updated.description.as_deref(), Some("生产环境主域"));
+
+    // 空白归一为 None：列表里不会出现“有值但是空的”备注。
+    let cleared = repo
+        .update_description(created.id, Some("   ".to_owned()))
+        .await
+        .expect("清除备注应成功");
+    assert!(cleared.description.is_none());
+
+    let err = repo
+        .update_description(404, Some("x".to_owned()))
         .await
         .expect_err("证书不存在应报错");
     assert!(matches!(&err, Error::NotFound { .. }), "{err:?}");

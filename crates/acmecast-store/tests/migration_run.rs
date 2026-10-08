@@ -146,6 +146,22 @@ async fn cert_table_after_migration_has_account_column() {
     assert!(rows.is_empty(), "仅验证列存在，不限定行数");
 }
 
+#[tokio::test]
+async fn credential_table_after_migration_has_remark_column() {
+    let (db, _guard) = fresh_sqlite().await;
+    Migrator::up(&db, None).await.unwrap();
+
+    // 凭据表的 remark 列由 m20250106 加入；存量行默认空串，读取端按 String 处理。
+    let rows = db
+        .query_all(Statement::from_string(
+            db.get_database_backend(),
+            "SELECT remark FROM acmecast_credential LIMIT 1".to_owned(),
+        ))
+        .await
+        .expect("remark 列必须存在");
+    assert!(rows.is_empty(), "仅验证列存在，不限定行数");
+}
+
 /// 一个极简的临时目录守卫，替代引入额外 dev-dependency。
 mod temp_dir {
     use std::path::{Path, PathBuf};
