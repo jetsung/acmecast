@@ -1,8 +1,9 @@
 //! `cert.store`：把申请到的证书写进数据目录并入库。
 //!
 //! 文件落盘走 [`FileStore`](acmecast_store::FileStore)（相对路径 + 受限权限），
-//! 记录入库走 [`CertRepository`](acmecast_store::CertRepository)（同一域名集合
-//! 去重更新）——证书续期后再次运行时是 `Updated` 而非新增记录。
+//! 记录入库走 [`CertRepository`](acmecast_store::CertRepository)。
+//! 只要本次成功签发新证书且存在同域名集合旧记录且指纹不同，即归档旧证书
+//! 到 `certs/archived/<旧指纹>/` 并新建记录；指纹相同幂等不新建。
 
 use std::path::PathBuf;
 
@@ -97,14 +98,19 @@ impl PipelineStep for CertStoreStep {
             .map(String::as_str)
             .or_else(|| leaf.primary_domain())
             .unwrap_or("certificate");
-        // 扁平活跃目录：同主域名仅保留最新。先检测既有记录，若指纹不同则将旧证书按旧指纹归档到 archived。
+        // 只要申请成功且存在同域名集合旧记录且指纹不同，即归档旧证书并新建记录。
+        // 指纹相同视为幂等不新建；归档失败不阻断新证书入库（仅 warn）。
         let repository = CertRepository::new(&self.db);
         let existing = repository
             .find_by_domains(&domains)
             .await
             .map_err(|e| domain_error("查询既有证书", e))?;
+        let mut should_archive = false;
+        let mut old_fingerprint: Option<String> = None;
         if let Some(old) = &existing {
             if old.fingerprint != fingerprint {
+                should_archive = true;
+                old_fingerprint = Some(old.fingerprint.clone());
                 match store
                     .archive_replaced_certificate(
                         &old.cert_pem_path,
@@ -113,7 +119,17 @@ impl PipelineStep for CertStoreStep {
                     )
                     .await
                 {
-                    Ok(Some(_)) => {
+                    Ok(Some(archived_paths)) => {
+                        // 归档成功需同步更新旧记录路径与 archived_at，否则旧记录仍指向活跃目录。
+                        if let Err(error) =
+                            repository.set_archived_paths(old.id, &archived_paths, chrono::Utc::now()).await
+                        {
+                            tracing::warn!(
+                                old_fingerprint = %old.fingerprint,
+                                %error,
+                                "旧证书归档后更新库路径失败，文件已归档但库路径未同步"
+                            );
+                        }
                         ctx.log_info(format!(
                             "旧证书已归档到 archived/{}（主域名 {}）",
                             old.fingerprint, primary_domain
@@ -122,7 +138,7 @@ impl PipelineStep for CertStoreStep {
                     Ok(None) => {
                         tracing::warn!(
                             old_fingerprint = %old.fingerprint,
-                            "旧证书材料缺失，跳过归档，直接覆盖活跃文件"
+                            "旧证书材料缺失，跳过归档，直接写入新证书"
                         );
                     }
                     Err(error) => {
@@ -148,6 +164,30 @@ impl PipelineStep for CertStoreStep {
         let key_algorithm = acmecast_cert::detect_algorithm(&key_pem)
             .ok()
             .map(|algo| algo.as_str().to_owned());
+        if should_archive {
+            // 指纹不同且已尝试归档：新建记录，不覆盖旧记录。
+            // 若指纹已存在（并发/重试导致冲突），返回 Conflict 交由调用方感知。
+            let cert = repository
+                .create(CertInput {
+                    domains: domains.clone(),
+                    cert_pem_path: paths.cert_pem,
+                    key_pem_path: paths.key_pem,
+                    fingerprint: fingerprint.clone(),
+                    issuer: (!leaf.issuer.is_empty()).then_some(leaf.issuer.clone()),
+                    not_before: leaf.not_before,
+                    not_after: leaf.not_after,
+                    acme_account_access_id: input.acme_account_credential_id,
+                    key_algorithm,
+                    description: None,
+                })
+                .await
+                .map_err(|e| domain_error("入库证书记录", e))?;
+            let cert_id = cert.id;
+            ctx.log_info(format!("新证书已入库：#{cert_id}（旧证书 {} 已归档）", old_fingerprint.unwrap_or_default()));
+            return Ok(StepOutput::empty()
+                .with_artifact("cert_id", serde_json::json!(cert_id))
+                .with_artifact("fingerprint", serde_json::json!(fingerprint)));
+        }
         let outcome = repository
             .save(CertInput {
                 domains: domains.clone(),

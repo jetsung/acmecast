@@ -108,9 +108,14 @@ pub struct AcmeApplyInput {
     /// 生产 CA 保持默认 `false`，关闭校验等于放弃对 CA 身份的确认。
     #[serde(default)]
     pub insecure_skip_verify: bool,
-    /// 到期前 N 天自动续期；None 表示不参与到期前自动检测。
-    #[serde(default)]
+    /// 到期前 N 天自动续期；缺省/空值时按 30 补齐，0 表示跳过过期校验，其余仅接受大于 0 的整数。
+    #[serde(default = "default_renew_before_days")]
+    #[schemars(default = "default_renew_before_days")]
     pub renew_before_days: Option<i32>,
+}
+
+fn default_renew_before_days() -> Option<i32> {
+    Some(30)
 }
 
 fn default_true() -> bool {
@@ -131,8 +136,9 @@ pub struct CertApplyStep {
     /// DNS-01 传播等待策略；来自服务配置的 `[propagation]` 段，
     /// 装配期注入——它是系统级调优，不属于步骤输入。
     propagation: PropagationPolicy,
-    /// 证书库读取句柄：到期检测在调度触发的 `cert.apply` 步骤中
-    /// 按库中已存证书的 `not_after` 决定是否跳过。
+    /// 证书库读取句柄：到期检测在任意触发来源的 `cert.apply` 步骤中
+    /// 按库中已存证书的 `not_after` 与 `renew_before_days` 决定是否跳过。
+    /// `renew_before_days=0` 视为强制更新，跳过到期检测。
     db: Option<sea_orm::DatabaseConnection>,
 }
 
@@ -178,35 +184,21 @@ async fn resolve_cert_not_after_db(
     db: &sea_orm::DatabaseConnection,
     domains: &[String],
 ) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
-    use acmecast_store::repository::{CertQuery, CertRepository};
-    let normalized = acmecast_store::entity::cert::normalize_domains(domains);
-    let mut best: Option<chrono::DateTime<chrono::Utc>> = None;
-    for domain in normalized {
-        let mut page =
-            CertRepository::new(db)
-                .list(CertQuery {
-                    domain: Some(domain.clone()),
-                    ..Default::default()
-                })
-                .await
-                .map_err(|e| {
-                    acmecast_pipeline::Error::Core(acmecast_core::Error::Internal(format!(
-                        "查询证书库失败: {e}"
-                    )))
-                })?;
-        // 取到期最远的未吊销记录作为“最新可用证书”快照。
-        for cert in page.items.drain(..) {
-            if cert.revoked_at.is_some() {
-                continue;
-            }
-            match best {
-                None => best = Some(cert.not_after),
-                Some(prev) if cert.not_after > prev => best = Some(cert.not_after),
-                _ => {}
-            }
-        }
+    let existing = acmecast_store::repository::CertRepository::new(db)
+        .find_by_domains(domains)
+        .await
+        .map_err(|e| {
+            acmecast_pipeline::Error::Core(acmecast_core::Error::Internal(format!(
+                "查询证书库失败: {e}"
+            )))
+        })?;
+    let Some(cert) = existing else {
+        return Ok(None);
+    };
+    if cert.revoked_at.is_some() {
+        return Ok(None);
     }
-    Ok(best)
+    Ok(Some(cert.not_after))
 }
 
 async fn resolve_cert_not_after(
@@ -269,30 +261,32 @@ impl PipelineStep for CertApplyStep {
         }
         if let Some(obj) = input.as_object() {
             if let Some(raw) = obj.get("renew_before_days") {
-                if !raw.is_null() {
-                    let days = raw.as_i64().ok_or_else(|| acmecast_pipeline::Error::InvalidInput {
+                if raw.is_null() {
+                    return Err(acmecast_pipeline::Error::InvalidInput {
                         field: "renew_before_days".to_owned(),
-                        reason: "应为整数（1-90 为到期检测，0/负数表示跳过检测）".to_owned(),
-                    })?;
-                    // 0/负数表示跳过检测，直接申请，不进入到期窗口判定。
-                    // 仅当阈值在 1-90 时才进入到期检测；非整数已在上一步拒绝。
-                    if days > 0 && !(1..=90).contains(&days) {
+                        reason: "必须为大于等于 0 的整数".to_owned(),
+                    });
+                }
+                let days = raw.as_i64().ok_or_else(|| acmecast_pipeline::Error::InvalidInput {
+                    field: "renew_before_days".to_owned(),
+                    reason: "必须为大于等于 0 的整数".to_owned(),
+                })?;
+                if days < 0 {
+                    return Err(acmecast_pipeline::Error::InvalidInput {
+                        field: "renew_before_days".to_owned(),
+                        reason: "必须为大于等于 0 的整数".to_owned(),
+                    });
+                }
+                if days > 0 {
+                    let domains_empty = obj
+                        .get("domains")
+                        .and_then(|value| value.as_array())
+                        .is_none_or(|array| array.is_empty());
+                    if domains_empty {
                         return Err(acmecast_pipeline::Error::InvalidInput {
                             field: "renew_before_days".to_owned(),
-                            reason: format!("只能是 0/负数（跳过检测）或 1-90 之一，实际为 {days}"),
+                            reason: "已设置到期前检测，需先配置 domains".to_owned(),
                         });
-                    }
-                    if days > 0 {
-                        let domains_empty = obj
-                            .get("domains")
-                            .and_then(|value| value.as_array())
-                            .is_none_or(|array| array.is_empty());
-                        if domains_empty {
-                            return Err(acmecast_pipeline::Error::InvalidInput {
-                                field: "renew_before_days".to_owned(),
-                                reason: "已设置到期前检测，需先配置 domains".to_owned(),
-                            });
-                        }
                     }
                 }
             }
@@ -305,8 +299,8 @@ impl PipelineStep for CertApplyStep {
             .input_as()
             .map_err(|error| domain_error("cert.apply 输入不合法", error))?;
         if let Some(days) = input.renew_before_days {
-            if days <= 0 {
-                ctx.log_info("到期检测已跳过（阈值 ≤0），直接申请");
+            if days == 0 {
+                ctx.log_info("到期检测已跳过（renew_before_days=0），直接申请");
             } else if let Some(db) = &self.db {
                 let threshold_days = days;
                 if let Ok(Some(not_after)) =
@@ -326,9 +320,7 @@ impl PipelineStep for CertApplyStep {
                         ));
                     }
                 }
-            } else if let Ok(Some(not_after)) =
-                resolve_cert_not_after(ctx, &input.domains).await
-            {
+            } else if let Ok(Some(not_after)) = resolve_cert_not_after(ctx, &input.domains).await {
                 let threshold_days = days;
                 let now = chrono::Utc::now();
                 let threshold = chrono::Duration::days(i64::from(threshold_days));
