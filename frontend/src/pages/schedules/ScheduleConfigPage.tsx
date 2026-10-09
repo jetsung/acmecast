@@ -132,9 +132,31 @@ export function ScheduleConfigPage() {
   const handleSaved = async () => {
     setEditorOpen(false);
     await queryClient.invalidateQueries({ queryKey: ["schedules"] });
-    await queryClient.invalidateQueries({ queryKey: ["trigger-logs"] });
   };
 
+  /** 删除调度：二次确认后 DELETE，成功刷新调度列表与触发记录。 */
+  const confirmDelete = (schedule: ScheduleRow) => {
+    Modal.confirm({
+      title: "删除调度？",
+      content: `流水线 #${schedule.pipeline_id} 的调度删除后无法恢复，关联的触发记录将一并清理。`,
+      okButtonProps: { danger: true },
+      okText: "删除",
+      cancelText: "取消",
+      onOk: async () => {
+        const result = await client.DELETE(`/api/schedules/${schedule.pipeline_id}`, {
+          params: { path: { pipeline_id: schedule.pipeline_id } },
+        });
+        if (result.error !== undefined) {
+          const errorBody = result.error as { error?: { message?: string } };
+          message.error(errorBody?.error?.message ?? "删除失败");
+          return;
+        }
+        message.success("调度已删除");
+        await queryClient.invalidateQueries({ queryKey: ["schedules"] });
+        await queryClient.invalidateQueries({ queryKey: ["trigger-logs"] });
+      },
+    });
+  };
   /** 快捷启停：以该行当前字段整体保存、仅翻转 enabled（保存即 upsert 覆盖）。 */
   const toggleEnabled = async (schedule: ScheduleRow, enabled: boolean) => {
     const result = await client.POST("/api/schedules", {
@@ -201,6 +223,9 @@ export function ScheduleConfigPage() {
                 />
                 <Button size="small" onClick={() => openEditor(schedule)}>
                   编辑
+                </Button>
+                <Button size="small" danger onClick={() => confirmDelete(schedule)}>
+                  删除
                 </Button>
                 <Typography.Text type="secondary">
                   更新于 {formatTime(schedule.updated_at)}

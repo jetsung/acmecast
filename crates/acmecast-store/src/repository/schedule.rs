@@ -202,6 +202,12 @@ impl<'db> ScheduleRepository<'db> {
         Ok(row.map(config_from_row))
     }
 
+    /// 判断某流水线是否存在调度绑定（调度表主键即 pipeline_id，存在即绑定）。
+    pub async fn exists_by_pipeline_id(&self, pipeline_id: i64) -> Result<bool> {
+        let existing = self.find(pipeline_id).await?;
+        Ok(existing.is_some())
+    }
+
     /// 读全部调度配置，供引擎装载。
     pub async fn list_all(&self) -> Result<Vec<ScheduleConfig>> {
         let rows = schedule::Entity::find().all(self.db).await?;
@@ -242,6 +248,18 @@ impl<'db> ScheduleRepository<'db> {
         update.update(self.db).await?;
 
         Ok(())
+    }
+
+    /// 删除指定流水线的调度配置，返回是否实际删除了一行。
+    ///
+    /// 不存在时返回 `false`（调用方据此回 404）。删除调度不联动清理触发
+    /// 记录——那由 HTTP 处理器编排，避免仓储层跨表依赖。
+    pub async fn delete(&self, pipeline_id: i64) -> Result<bool> {
+        let result = schedule::Entity::delete_many()
+            .filter(schedule::Column::PipelineId.eq(pipeline_id))
+            .exec(self.db)
+            .await?;
+        Ok(result.rows_affected > 0)
     }
 }
 

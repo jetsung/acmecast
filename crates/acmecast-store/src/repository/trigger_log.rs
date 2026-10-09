@@ -136,6 +136,18 @@ impl<'db> TriggerLogRepository<'db> {
             page_size,
         })
     }
+
+    /// 删除指定流水线的全部触发记录，返回实际删除行数。
+    ///
+    /// 由「删除调度」处理器在删完调度行后联动调用，避免孤儿审计数据
+    /// 残留（孤儿日志不影响功能，但会污染审计视图）。
+    pub async fn delete_by_pipeline(&self, pipeline_id: i64) -> Result<u64> {
+        let result = trigger_log::Entity::delete_many()
+            .filter(trigger_log::Column::PipelineId.eq(pipeline_id))
+            .exec(self.db)
+            .await?;
+        Ok(result.rows_affected)
+    }
 }
 
 /// 把一行记录转成领域类型。

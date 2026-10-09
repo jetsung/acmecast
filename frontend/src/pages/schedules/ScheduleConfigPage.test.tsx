@@ -54,6 +54,7 @@ const TRIGGER_LOGS = {
 const mocks = vi.hoisted(() => ({
   get: vi.fn(),
   post: vi.fn(),
+  delete: vi.fn(),
 }));
 
 vi.mock("@/api/client", () => ({
@@ -62,7 +63,7 @@ vi.mock("@/api/client", () => ({
     GET: (...args: unknown[]) => mocks.get(...(args as [])),
     POST: (...args: unknown[]) => mocks.post(...(args as [])),
     PUT: vi.fn(),
-    DELETE: vi.fn(),
+    DELETE: (...args: unknown[]) => mocks.delete(...(args as [])),
   },
 }));
 
@@ -97,11 +98,24 @@ function defaultGetImplementation(path: string) {
 }
 
 beforeEach(() => {
+  clearAntdPortals();
   mocks.get.mockReset();
   mocks.get.mockImplementation(async (path: string) => defaultGetImplementation(path));
   mocks.post.mockReset();
   mocks.post.mockImplementation(async () => ({ data: { data: {} }, response: new Response() }));
+  mocks.delete.mockReset();
+  mocks.delete.mockImplementation(async () => ({ data: { data: { deleted: true } }, response: new Response() }));
 });
+
+// Modal.confirm 与 message 是 antd 静态 API，经 portal 挂到 body；
+// cleanup() 只卸载组件不摘 portal，jsdom 下 confirm 退出动画不结束导致
+// 残留对话框串扰后续用例。这里在下个用例开始前显式清理（避开与
+// setup.ts 的 cleanup() 竞争同一批节点）。
+function clearAntdPortals() {
+  document.querySelectorAll(".ant-modal-root, .ant-message, .ant-notification").forEach((node) => {
+    node.remove();
+  });
+}
 
 function renderPage() {
   const queryClient = new QueryClient({
@@ -388,5 +402,85 @@ describe("触发字段留空语义", () => {
       ).toBeTruthy();
     });
     expect(mocks.post).not.toHaveBeenCalled();
+  });
+});
+
+describe("删除调度", () => {
+  it("点击删除并确认后发出 DELETE 请求并刷新列表", async () => {
+    renderPage();
+    await screen.findByText("流水线 #1");
+
+    const deleteButtons = screen.getAllByRole("button", { name: /删\s*除/ });
+    fireEvent.click(deleteButtons[0]);
+
+    // 确认对话框出现（用 getAllByText 避免 portal 重复匹配）。
+    await waitFor(() => {
+      expect(screen.getAllByText("删除调度？").length).toBeGreaterThan(0);
+    });
+    const confirmBtn = document.querySelector(
+      ".ant-modal-confirm-btns .ant-btn-primary",
+    ) as HTMLElement;
+    expect(confirmBtn, "确认按钮应存在").not.toBeNull();
+    fireEvent.click(confirmBtn);
+
+    await waitFor(() => {
+      expect(mocks.delete).toHaveBeenCalled();
+    });
+    const deletePath = mocks.delete.mock.calls[0][0] as string;
+    expect(deletePath).toBe("/api/schedules/1");
+
+    await waitFor(() => {
+      expect(screen.getByText("调度已删除")).toBeTruthy();
+    });
+    // 删除成功后刷新调度列表与触发记录。
+    expect(mocks.get).toHaveBeenCalledWith("/api/schedules", expect.anything());
+  });
+
+  it("取消确认不发出删除请求", async () => {
+    renderPage();
+    await screen.findByText("流水线 #1");
+
+    const deleteButtons = screen.getAllByRole("button", { name: /删\s*除/ });
+    fireEvent.click(deleteButtons[0]);
+
+    await waitFor(() => {
+      expect(screen.getAllByText("删除调度？").length).toBeGreaterThan(0);
+    });
+    // 点击取消按钮（default 类，antd 会加中文间距：文本为「取 消」）。
+    const cancelBtn = document.querySelector(
+      ".ant-modal-confirm-btns .ant-btn-default",
+    ) as HTMLElement | null;
+    expect(cancelBtn, "取消按钮应存在").not.toBeNull();
+    fireEvent.click(cancelBtn!);
+
+    // 取消路径不触发删除请求；jsdom 下 confirm 对话框退出动画不结束，
+    // 不等待其从 DOM 移除，仅断言请求未被发出。
+    await waitFor(() => {
+      expect(mocks.delete).not.toHaveBeenCalled();
+    });
+  });
+
+  it("删除失败时展示错误信息", async () => {
+    mocks.delete.mockImplementation(async () => ({
+      error: { error: { code: "not_found", message: "调度不存在" } },
+      response: new Response(),
+    }));
+    renderPage();
+    await screen.findByText("流水线 #1");
+
+    const deleteButtons = screen.getAllByRole("button", { name: /删\s*除/ });
+    fireEvent.click(deleteButtons[0]);
+
+    await waitFor(() => {
+      expect(screen.getAllByText("删除调度？").length).toBeGreaterThan(0);
+    });
+    const confirmBtn = document.querySelector(
+      ".ant-modal-confirm-btns .ant-btn-primary",
+    ) as HTMLElement;
+    fireEvent.click(confirmBtn);
+
+    await waitFor(() => {
+      expect(screen.getByText("调度不存在")).toBeTruthy();
+    });
   });
 });

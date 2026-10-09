@@ -79,6 +79,81 @@ async fn pipeline_crud_uses_uniform_data_envelope_and_returns_404() {
 }
 
 #[tokio::test]
+async fn deleting_a_schedule_bound_pipeline_is_rejected_with_409() {
+    let app = app().await;
+    // 创建两个流水线：一个绑定调度，一个不绑定。
+    let mut ids = Vec::new();
+    for name in ["bound", "unbound"] {
+        let create = Request::post("/api/pipelines")
+            .header("content-type", "application/json")
+            .body(Body::from(format!(
+                r#"{{"name":"{name}","steps":[{{"type_id":"test.step","input":{{"value":1}}}}]}}"#
+            )))
+            .unwrap();
+        let response = app.clone().oneshot(create).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_body(response).await;
+        ids.push(body["data"]["id"].as_i64().expect("应返回流水线 id"));
+    }
+    let (bound_id, unbound_id) = (ids[0], ids[1]);
+
+    // 给第一个流水线绑定调度。
+    let bind = Request::post("/api/schedules")
+        .header("content-type", "application/json")
+        .body(Body::from(format!(
+            r#"{{"pipeline_id":{bound_id},"cron":"0 3 * * *","enabled":true,"catch_up":false,"renewal_domains":null}}"#
+        )))
+        .unwrap();
+    let response = app.clone().oneshot(bind).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "调度应能保存");
+
+    // 已绑定时删除被拒：409 + schedule_bound + 中文消息。
+    let blocked = app
+        .clone()
+        .oneshot(
+            Request::delete(format!("/api/pipelines/{bound_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(blocked.status(), StatusCode::CONFLICT);
+    let blocked_body = json_body(blocked).await;
+    assert_eq!(blocked_body["error"]["code"], "schedule_bound");
+    assert!(
+        blocked_body["error"]["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("该流水线已被调度绑定"),
+        "应返回可诊断的中文提示"
+    );
+
+    // 无绑定时删除成功。
+    let ok = app
+        .clone()
+        .oneshot(
+            Request::delete(format!("/api/pipelines/{unbound_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ok.status(), StatusCode::OK);
+
+    // 已不存在的流水线删除返回 404。
+    let gone = app
+        .oneshot(
+            Request::delete(format!("/api/pipelines/{unbound_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(gone.status(), StatusCode::NOT_FOUND);
+    assert_eq!(json_body(gone).await["error"]["code"], "not_found");
+}
+
+#[tokio::test]
 async fn malformed_json_returns_uniform_validation_error() {
     let app = app().await;
     let response = app
@@ -233,3 +308,136 @@ async fn credential_remark_round_trips_through_api() {
     let body = json_body(response).await;
     assert_eq!(body["data"]["remark"], "测试 DNS");
 }
+
+#[tokio::test]
+async fn history_logs_expose_structured_output_with_tencent_cert_ids() {
+    use acmecast_pipeline::{HistoryRecord, StepLogRecord, StepLogLevel};
+    use acmecast_store::entity::history;
+
+    use chrono::Utc;
+    use sea_orm::ActiveModelTrait;
+
+    let db = Database::connect("sqlite::memory:")
+        .await
+        .expect("应能连接内存数据库");
+    acmecast_store::migrate(&db)
+        .await
+        .expect("迁移应成功");
+
+    // 先创建一条流水线以满足 history.pipeline_id 外键。
+    let pipeline_id = {
+        let app = assemble_router_with_runtime(
+            AppState {
+                db: db.clone(),
+                config: acmecast_server::config::ServerConfig::default(),
+            },
+            RuntimeState::new(
+                acmecast_server::dependencies::credential_registry(),
+                acmecast_server::dependencies::step_registry(),
+                None,
+                acmecast_server::auth::AuthMode::Disabled,
+            ),
+        );
+        let response = app
+            .oneshot(
+                Request::post("/api/pipelines")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"name":"tencent-echo","steps":[{"type_id":"test.echo","input":{}}]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_body(response).await;
+        body["data"]["id"].as_i64().expect("应返回流水线 id")
+    };
+
+    let with_output_id: i64 = {
+        let record = HistoryRecord {
+            pipeline_id,
+            trigger_source: acmecast_store::entity::pipeline::TriggerSource::Manual,
+            status: history::RunStatus::Success,
+            started_at: Utc::now(),
+            finished_at: Some(Utc::now()),
+            error_message: None,
+            logs: vec![StepLogRecord {
+                step_index: 1,
+                level: StepLogLevel::Info,
+                message: "腾讯云 SSL 部署结果".into(),
+                created_at: Utc::now(),
+                output: Some(serde_json::json!({
+                    "cert_ids": ["cert-abc123", "cert-xyz"],
+                    "skipped_write": false,
+                })),
+            }],
+        };
+        acmecast_pipeline::HistoryRepository::new(&db)
+            .record(record)
+            .await
+            .expect("应能落库带 output 的历史")
+    };
+
+    let without_output_id: i64 = history::ActiveModel {
+        pipeline_id: sea_orm::Set(pipeline_id),
+        trigger_source: sea_orm::Set(
+            acmecast_store::entity::pipeline::TriggerSource::Manual
+                .as_str()
+                .to_owned(),
+        ),
+        status: sea_orm::Set(history::RunStatus::Success.as_str().to_owned()),
+        started_at: sea_orm::Set(Utc::now()),
+        finished_at: sea_orm::Set(Some(Utc::now())),
+        ..Default::default()
+    }
+    .insert(&db)
+    .await
+    .expect("应能插入无日志的历史")
+    .id;
+
+    let app = assemble_router_with_runtime(
+        AppState {
+            db: db.clone(),
+            config: acmecast_server::config::ServerConfig::default(),
+        },
+        RuntimeState::new(
+            acmecast_server::dependencies::credential_registry(),
+            acmecast_server::dependencies::step_registry(),
+            None,
+            acmecast_server::auth::AuthMode::Disabled,
+        ),
+    );
+
+    // 带 output 的日志：API 原样透出 cert_ids 与 skipped_write。
+    let response = app
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/histories/{with_output_id}/logs"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    let logs = body["data"].as_array().expect("data 应为数组");
+    assert_eq!(logs.len(), 1);
+    assert_eq!(logs[0]["output"]["cert_ids"][0], "cert-abc123");
+    assert_eq!(logs[0]["output"]["cert_ids"][1], "cert-xyz");
+    assert_eq!(logs[0]["output"]["skipped_write"], false);
+
+    // 无 output 的历史：logs 为空数组，接口仍 200。
+    let response = app
+        .oneshot(
+            Request::get(format!("/api/histories/{without_output_id}/logs"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    assert_eq!(body["data"].as_array().unwrap().len(), 0);
+}
+
