@@ -1,7 +1,8 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { App, Button, Card, Form, Input, Select, Space, Switch, Table, Tag, Typography } from "antd";
+import { App, Button, Card, Form, Input, Modal, Select, Space, Switch, Table, Tag, Tooltip, Typography } from "antd";
 import { CronExpressionParser } from "cron-parser";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useNavigate } from "react-router";
 import type { components } from "@/api/schema";
 import { client } from "@/api/client";
 import { formatTime, unwrapData } from "@/api/helpers";
@@ -20,13 +21,9 @@ const TRIGGER_SOURCE_LABEL: Record<string, string> = {
 function cronPreview(expr: string): { error?: string; next?: string } {
   if (!expr.trim()) return {};
   try {
-    // cron-parser 5.x 的静态方法类型导出有误（解析为 0 参），运行时行为
-    // 是 parse(expr, options)——此处收敛类型断言，错误经 try/catch 呈现。
     const parse = (CronExpressionParser as unknown as {
       parse: (expression: string, options?: { tz?: string }) => { next(): Date };
     }).parse;
-    // 后端触发判定按 UTC，预览必须同口径（决策 1）：以 UTC 计算下一次
-    // 触发点，展示本地时间的同时明确标出 UTC 时刻。
     const next = parse(expr, { tz: "UTC" }).next();
     const local = next.toLocaleString("zh-CN", { hour12: false });
     const utc = next.toISOString().replace("T", " ").slice(0, 16);
@@ -39,11 +36,10 @@ function cronPreview(expr: string): { error?: string; next?: string } {
 /** 调度配置页（3.3）：按流水线新建/编辑调度，并查看运行态与触发记录。 */
 export function ScheduleConfigPage() {
   const { message } = App.useApp();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [form] = Form.useForm();
-  const [saving, setSaving] = useState(false);
-  /** 正在编辑的流水线 id；null 表示新建模式。 */
-  const [editingPipelineId, setEditingPipelineId] = useState<number | null>(null);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editingSchedule, setEditingSchedule] = useState<ScheduleRow | null>(null);
   const [triggerPage, setTriggerPage] = useState(1);
   const [triggerPageSize, setTriggerPageSize] = useState(15);
   const [triggerPipelineFilter, setTriggerPipelineFilter] = useState<number | null>(null);
@@ -87,64 +83,56 @@ export function ScheduleConfigPage() {
     },
   });
 
-  const cronValue = Form.useWatch("cron", form);
-  const enabledValue = Form.useWatch("enabled", form);
+  /** 流水线 id→name 映射：供悬浮名称与可点击跳转判定复用。 */
+  const pipelinesMap = new Map<number, string>();
+  for (const item of pipelines?.items ?? []) pipelinesMap.set(item.id, item.name);
 
-  const preview = cronPreview(cronValue ?? "");
-
-  const onSave = async (values: {
-    pipeline_id: number;
-    cron?: string;
-    enabled: boolean;
-    catch_up: boolean;
-    renewal_domains?: string[];
-  }) => {
-    // 与后端保存校验同口径的前置拦截：启用的调度两个触发字段都留空
-    // 只会得到一条永不自动触发的死配置，直接不发请求。
-    if (values.enabled && !values.cron?.trim() && !values.renewal_domains?.length) {
-      message.error("启用的调度必须至少配置 cron 或续期域名集合之一");
-      return;
+  /** 已有调度卡片头部的流水线编号：存在时可点击跳转，已删除时纯文本提示。 */
+  const renderPipelineBadge = (pipelineId: number) => {
+    const name = pipelinesMap.get(pipelineId);
+    if (name === undefined) {
+      return (
+        <Typography.Text strong title="流水线已删除">
+          流水线 #{pipelineId}（已删除/未知流水线）
+        </Typography.Text>
+      );
     }
-    setSaving(true);
-    try {
-      const result = await client.POST("/api/schedules", {
-        body: {
-          pipeline_id: values.pipeline_id,
-          cron: values.cron || null,
-          enabled: values.enabled,
-          catch_up: values.catch_up,
-          renewal_domains: values.renewal_domains?.length ? values.renewal_domains : null,
-        },
-      });
-      if (result.error !== undefined) {
-        const errorBody = result.error as { error?: { message?: string } };
-        message.error(errorBody?.error?.message ?? "保存失败");
-        return;
-      }
-      message.success("调度已保存");
-      exitEditMode();
-      await queryClient.invalidateQueries({ queryKey: ["schedules"] });
-      await queryClient.invalidateQueries({ queryKey: ["trigger-logs"] });
-    } finally {
-      setSaving(false);
-    }
+    return (
+      <Tooltip title={name}>
+        <Typography.Text
+          strong
+          onClick={() => navigate(`/pipelines/${pipelineId}`)}
+          style={{ cursor: "pointer" }}
+        >
+          流水线 #{pipelineId}
+        </Typography.Text>
+      </Tooltip>
+    );
   };
 
-  /** 把该流水线的调度现值回填进表单，进入编辑模式。 */
-  const startEdit = (schedule: ScheduleRow) => {
-    setEditingPipelineId(schedule.pipeline_id);
-    form.setFieldsValue({
-      pipeline_id: schedule.pipeline_id,
-      cron: schedule.cron ?? undefined,
-      enabled: schedule.enabled,
-      catch_up: schedule.catch_up,
-      renewal_domains: schedule.renewal_domains ?? [],
-    });
+  /** 触发记录表“流水线”列：悬浮显示名称，缺失时降级占位。 */
+  const renderTriggerPipeline = (pipelineId: number) => {
+    const name = pipelinesMap.get(pipelineId);
+    return (
+      <Tooltip title={name ?? "已删除/未知流水线"}>
+        <span>#{pipelineId}</span>
+      </Tooltip>
+    );
   };
 
-  const exitEditMode = () => {
-    setEditingPipelineId(null);
-    form.resetFields();
+  const openEditor = (schedule: ScheduleRow | null) => {
+    setEditingSchedule(schedule);
+    setEditorOpen(true);
+  };
+
+  const closeEditor = () => {
+    setEditorOpen(false);
+  };
+
+  const handleSaved = async () => {
+    setEditorOpen(false);
+    await queryClient.invalidateQueries({ queryKey: ["schedules"] });
+    await queryClient.invalidateQueries({ queryKey: ["trigger-logs"] });
   };
 
   /** 快捷启停：以该行当前字段整体保存、仅翻转 enabled（保存即 upsert 覆盖）。 */
@@ -161,7 +149,6 @@ export function ScheduleConfigPage() {
     if (result.error !== undefined) {
       const errorBody = result.error as { error?: { message?: string } };
       message.error(errorBody?.error?.message ?? "操作失败");
-      // 开关受控行数据渲染，刷新失败即回滚到原状态。
       await queryClient.invalidateQueries({ queryKey: ["schedules"] });
       return;
     }
@@ -174,68 +161,12 @@ export function ScheduleConfigPage() {
       <PageHeader
         title="调度配置"
         description="按 cron 或证书到期扫描自动触发流水线"
-      />
-      <Card
-        title={editingPipelineId === null ? "新建调度" : `编辑流水线 #${editingPipelineId} 的调度`}
-        style={{ marginBottom: 24 }}
         extra={
-          editingPipelineId === null ? undefined : (
-            <Button onClick={exitEditMode}>取消编辑</Button>
-          )
-        }
-      >
-        <Form form={form} layout="vertical" onFinish={onSave}>
-          <Space size={24} wrap align="start">
-            <Form.Item
-              name="pipeline_id"
-              label="流水线"
-              rules={[{ required: true, message: "请选择流水线" }]}
-            >
-              <Select
-                style={{ width: 240 }}
-                placeholder="选择流水线"
-                disabled={editingPipelineId !== null}
-                options={(pipelines?.items ?? []).map((item) => ({
-                  value: item.id,
-                  label: item.name,
-                }))}
-              />
-            </Form.Item>
-            <Form.Item name="cron" label="cron 表达式（留空则不按定时触发）">
-              <Input style={{ width: 200 }} placeholder="0 3 * * *" />
-            </Form.Item>
-            <Form.Item name="enabled" label="启用" valuePropName="checked" initialValue={true}>
-              <Switch />
-            </Form.Item>
-            <Form.Item name="catch_up" label="停机补跑" valuePropName="checked">
-              <Switch />
-            </Form.Item>
-          </Space>
-          {preview.error && (
-            <Typography.Text type="danger">cron 错误：{preview.error}</Typography.Text>
-          )}
-          {preview.next && (
-            <Typography.Text type="secondary" style={{ display: "block", marginBottom: 8 }}>
-              下一次触发（按 UTC 判定，与后端一致）：{preview.next}
-            </Typography.Text>
-          )}
-          <Form.Item
-            name="renewal_domains"
-            label="续期域名集合（非必填；留空则不参与证书到期自动续期）"
-            extra="证书剩余有效期不足 30 天进入续期窗口后，域名命中任一条即触发本流水线；扫描每小时一次。"
-          >
-            <Select mode="tags" open={false} placeholder="例如 example.com" tokenSeparators={[","]} />
-          </Form.Item>
-          {enabledValue && !preview.next && (
-            <Typography.Text type="warning" style={{ display: "block", marginBottom: 8 }}>
-              未填写 cron：该调度仅按证书到期扫描触发；若续期域名集合也留空则不会被保存。
-            </Typography.Text>
-          )}
-          <Button type="primary" htmlType="submit" loading={saving}>
-            保存调度
+          <Button type="primary" onClick={() => openEditor(null)}>
+            新建调度
           </Button>
-        </Form>
-      </Card>
+        }
+      />
 
       <Typography.Title level={5}>已有调度</Typography.Title>
       {schedules?.length ? (
@@ -243,7 +174,7 @@ export function ScheduleConfigPage() {
           {schedules.map((schedule) => (
             <Card key={schedule.pipeline_id} size="small">
               <Space wrap>
-                <Typography.Text strong>流水线 #{schedule.pipeline_id}</Typography.Text>
+                {renderPipelineBadge(schedule.pipeline_id)}
                 <Tag color={schedule.enabled ? "processing" : "default"}>
                   {schedule.enabled ? "启用" : "停用"}
                 </Tag>
@@ -268,7 +199,7 @@ export function ScheduleConfigPage() {
                   aria-label={`流水线 ${schedule.pipeline_id} 的调度启停开关`}
                   onChange={(checked) => void toggleEnabled(schedule, checked)}
                 />
-                <Button size="small" onClick={() => startEdit(schedule)}>
+                <Button size="small" onClick={() => openEditor(schedule)}>
                   编辑
                 </Button>
                 <Typography.Text type="secondary">
@@ -332,7 +263,7 @@ export function ScheduleConfigPage() {
             {
               title: "流水线",
               dataIndex: "pipeline_id",
-              render: (value: number) => `#${value}`,
+              render: (value: number) => renderTriggerPipeline(value),
             },
             {
               title: "来源",
@@ -347,6 +278,147 @@ export function ScheduleConfigPage() {
           ]}
         />
       </Card>
+
+      <ScheduleEditorModal
+        open={editorOpen}
+        editingSchedule={editingSchedule}
+        pipelines={pipelines?.items ?? []}
+        onClose={closeEditor}
+        onSaved={handleSaved}
+      />
     </div>
+  );
+}
+
+function ScheduleEditorModal({
+  open,
+  editingSchedule,
+  pipelines,
+  onClose,
+  onSaved,
+}: {
+  open: boolean;
+  editingSchedule: ScheduleRow | null;
+  pipelines: PipelineSummary[];
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const { message } = App.useApp();
+  const [form] = Form.useForm();
+  const [saving, setSaving] = useState(false);
+
+  const cronValue = Form.useWatch("cron", form);
+  const enabledValue = Form.useWatch("enabled", form);
+  const preview = cronPreview(cronValue ?? "");
+
+  useEffect(() => {
+    if (!open) return;
+    if (editingSchedule) {
+      form.setFieldsValue({
+        pipeline_id: editingSchedule.pipeline_id,
+        cron: editingSchedule.cron ?? undefined,
+        enabled: editingSchedule.enabled,
+        catch_up: editingSchedule.catch_up,
+        renewal_domains: editingSchedule.renewal_domains ?? [],
+      });
+    } else {
+      form.resetFields();
+    }
+  }, [open, editingSchedule, form]);
+
+  const onSave = async (values: {
+    pipeline_id: number;
+    cron?: string;
+    enabled: boolean;
+    catch_up: boolean;
+    renewal_domains?: string[];
+  }) => {
+    if (values.enabled && !values.cron?.trim() && !values.renewal_domains?.length) {
+      message.error("启用的调度必须至少配置 cron 或续期域名集合之一");
+      return;
+    }
+    setSaving(true);
+    try {
+      const result = await client.POST("/api/schedules", {
+        body: {
+          pipeline_id: values.pipeline_id,
+          cron: values.cron || null,
+          enabled: values.enabled,
+          catch_up: values.catch_up,
+          renewal_domains: values.renewal_domains?.length ? values.renewal_domains : null,
+        },
+      });
+      if (result.error !== undefined) {
+        const errorBody = result.error as { error?: { message?: string } };
+        message.error(errorBody?.error?.message ?? "保存失败");
+        return;
+      }
+      message.success("调度已保存");
+      await onSaved();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal
+      open={open}
+      title={editingSchedule === null ? "新建调度" : `编辑流水线 #${editingSchedule.pipeline_id} 的调度`}
+      onCancel={onClose}
+      onOk={() => form.submit()}
+      okText="保存调度"
+      cancelText="取消"
+      confirmLoading={saving}
+      destroyOnHidden
+      width={640}
+    >
+      <Form form={form} layout="vertical" onFinish={onSave} initialValues={{ enabled: true, catch_up: false }}>
+        <Form.Item
+          name="pipeline_id"
+          label="流水线"
+          rules={[{ required: true, message: "请选择流水线" }]}
+        >
+          <Select
+            placeholder="选择流水线"
+            disabled={editingSchedule !== null}
+            options={pipelines.map((item) => ({
+              value: item.id,
+              label: item.name,
+            }))}
+          />
+        </Form.Item>
+        <Form.Item name="cron" label="cron 表达式（留空则不按定时触发）">
+          <Input placeholder="0 3 * * *" />
+        </Form.Item>
+        {preview.error && (
+          <Typography.Text type="danger">cron 错误：{preview.error}</Typography.Text>
+        )}
+        {preview.next && (
+          <Typography.Text type="secondary" style={{ display: "block", marginBottom: 8 }}>
+            下一次触发（按 UTC 判定，与后端一致）：{preview.next}
+          </Typography.Text>
+        )}
+        <Space size={24} wrap>
+          <Form.Item name="enabled" label="启用" valuePropName="checked">
+            <Switch />
+          </Form.Item>
+          <Form.Item name="catch_up" label="停机补跑" valuePropName="checked">
+            <Switch />
+          </Form.Item>
+        </Space>
+        <Form.Item
+          name="renewal_domains"
+          label="续期域名集合（非必填；留空则不参与证书到期自动续期）"
+          extra="证书剩余有效期不足 30 天进入续期窗口后，域名命中任一条即触发本流水线；扫描每小时一次。"
+        >
+          <Select mode="tags" open={false} placeholder="例如 example.com" tokenSeparators={[","]} />
+        </Form.Item>
+        {enabledValue && !preview.next && (
+          <Typography.Text type="warning" style={{ display: "block", marginBottom: 8 }}>
+            未填写 cron：该调度仅按证书到期扫描触发；若续期域名集合也留空则不会被保存。
+          </Typography.Text>
+        )}
+      </Form>
+    </Modal>
   );
 }
