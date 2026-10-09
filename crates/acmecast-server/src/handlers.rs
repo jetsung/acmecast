@@ -62,10 +62,13 @@ pub(crate) fn routes() -> Router<HttpState> {
         )
         .route(
             "/api/certificates/{id}",
-            get(get_certificate).delete(delete_certificate),
+            get(get_certificate)
+                .patch(update_certificate_description)
+                .delete(delete_certificate),
         )
         .route("/api/certificates/{id}/download", get(download_certificate))
         .route("/api/certificates/{id}/revoke", post(revoke_certificate))
+        .route("/api/certificates/{id}/archive", post(archive_certificate))
         .route(
             "/api/credentials",
             get(list_credentials).post(create_credential),
@@ -163,7 +166,7 @@ async fn login(
 /// 证书下载查询参数。
 #[derive(Debug, Clone, Deserialize, Default, ToSchema)]
 pub(crate) struct CertificateDownloadQuery {
-    /// 目标格式：`pem`（默认）、`der`、`pfx`、`jks`、`p7b`。
+    /// 目标格式：`pem`（默认）、`der`、`pfx`、`jks`、`p7b`，以及 `key`（私钥 PEM）。
     pub format: Option<String>,
     /// PFX / JKS 的口令；未设置时使用约定默认值。
     pub password: Option<String>,
@@ -192,6 +195,43 @@ async fn download_certificate(
     let store = FileStore::open(&state.app.config.data_dir)
         .await
         .map_err(ApiError::from)?;
+
+    let format = query
+        .format
+        .as_deref()
+        .unwrap_or("pem")
+        .trim()
+        .to_ascii_lowercase();
+
+    // 私钥单独下载：原样返回 key_pem，不做任何格式转换。
+    if format == "key" || format == "private-key" || format == "key-pem" {
+        let key_pem = store
+            .read(&cert.key_pem_path)
+            .await
+            .map_err(|error| map_key_read_error(error, &cert.key_pem_path))?;
+        let leaf = cert
+            .domain_set()
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| "certificate".to_owned());
+        let filename = format!("{}.key.pem", sanitize_filename(&leaf));
+        let disposition =
+            HeaderValue::from_str(&format!("attachment; filename=\"{filename}\"")).map_err(
+                |error| {
+                    ApiError::new(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "internal_error",
+                        error.to_string(),
+                    )
+                },
+            )?;
+        let mut response = Response::new(Body::from(key_pem.into_bytes()));
+        let headers = response.headers_mut();
+        headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/x-pem-file"));
+        headers.insert(header::CONTENT_DISPOSITION, disposition);
+        return Ok(response);
+    }
+
     let cert_pem = store
         .read(&cert.cert_pem_path)
         .await
@@ -201,12 +241,6 @@ async fn download_certificate(
         .await
         .map_err(ApiError::from)?;
 
-    let format = query
-        .format
-        .as_deref()
-        .unwrap_or("pem")
-        .trim()
-        .to_ascii_lowercase();
     let password = query
         .password
         .filter(|value| !value.is_empty())
@@ -243,7 +277,7 @@ async fn download_certificate(
         other => {
             return Err(ApiError::validation(
                 "format",
-                format!("不支持的证书格式 `{other}`，可用：pem、der、pfx、jks、p7b"),
+                format!("不支持的证书格式 `{other}`，可用：pem、der、pfx、jks、p7b、key"),
             ));
         }
     };
@@ -288,6 +322,20 @@ pub(crate) struct RevokeResponse {
     /// 本地记录的吊销时间。
     pub revoked_at: DateTime<Utc>,
 }
+
+/// 手动归档结果。
+#[derive(Debug, Serialize, ToSchema)]
+pub(crate) struct ArchiveResponse {
+    /// 证书记录标识。
+    pub cert_id: i64,
+    /// 归档后的证书链相对路径（幂等或源缺失时为当前库中路径）。
+    pub cert_pem_path: String,
+    /// 归档后的私钥相对路径。
+    pub key_pem_path: String,
+    /// 是否本次调用完成了文件移动（`false` 表示已在归档/吊销目录或源缺失的幂等返回）。
+    pub archived_now: bool,
+}
+
 
 /// 吊销一条证书（11.3）。
 ///
@@ -466,6 +514,124 @@ async fn archive_revoked_material(
     }
 }
 
+/// 手动归档：把活跃目录 `certs/ssl/` 的证书材料移至 `certs/archived/<指纹>/`。
+///
+/// 已在 `archived`/`revoked` 的幂等返回成功；源缺失亦幂等返回成功并记 `warn!`；
+/// IO 失败记 `error!` 仍保持库路径不变返回成功——归档不影响吊销状态与 CA。
+async fn archive_certificate(
+    State(state): State<HttpState>,
+    Path(cert_id): Path<i64>,
+) -> Result<ApiResponse<ArchiveResponse>, ApiError> {
+    let repository = CertRepository::new(&state.app.db);
+    let cert = repository
+        .find(cert_id)
+        .await
+        .map_err(ApiError::from)?
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                format!("证书不存在: {cert_id}"),
+            )
+        })?;
+
+    if cert.archived_at.is_some() {
+        return Ok(ApiResponse::new(ArchiveResponse {
+            cert_id,
+            cert_pem_path: cert.cert_pem_path,
+            key_pem_path: cert.key_pem_path,
+            archived_now: false,
+        }));
+    }
+    if cert.revoked_at.is_some() {
+        return Ok(ApiResponse::new(ArchiveResponse {
+            cert_id,
+            cert_pem_path: cert.cert_pem_path,
+            key_pem_path: cert.key_pem_path,
+            archived_now: false,
+        }));
+    }
+
+    let store = FileStore::open(&state.app.config.data_dir)
+        .await
+        .map_err(ApiError::from)?;
+    let moved = match store
+        .move_to_archived(&cert.cert_pem_path, &cert.key_pem_path, &cert.fingerprint)
+        .await
+    {
+        Ok(Some(paths)) => Some(paths),
+        Ok(None) => {
+            tracing::warn!(
+                cert_id,
+                fingerprint = %cert.fingerprint,
+                "归档时证书材料缺失，保持库中路径不变"
+            );
+            None
+        }
+        Err(error) => {
+            tracing::error!(
+                cert_id,
+                fingerprint = %cert.fingerprint,
+                %error,
+                "归档证书失败，文件保留在原位"
+            );
+            return Err(ApiError::from(error));
+        }
+    };
+
+    let (cert_pem_path, key_pem_path, archived_now) = if let Some(paths) = moved {
+        let cert_pem = paths.cert_pem.clone();
+        let key_pem = paths.key_pem.clone();
+        let archived_at = Utc::now();
+        if let Err(error) = repository
+            .set_archived_paths(cert_id, &paths, archived_at)
+            .await
+        {
+            tracing::error!(
+                cert_id,
+                %error,
+                "归档后更新证书路径失败，尝试把文件移回原位"
+            );
+            let original = CertFilePaths {
+                cert_pem: cert.cert_pem_path.clone(),
+                key_pem: cert.key_pem_path.clone(),
+            };
+            if let Err(move_back) = store.restore_certificate(&paths, &original).await {
+                tracing::error!(
+                    cert_id,
+                    target = %cert.cert_pem_path,
+                    %move_back,
+                    "归档回退失败，请人工核对证书文件位置"
+                );
+            }
+            return Err(ApiError::from(error));
+        }
+        (cert_pem, key_pem, true)
+    } else {
+        (cert.cert_pem_path.clone(), cert.key_pem_path.clone(), false)
+    };
+
+    Ok(ApiResponse::new(ArchiveResponse {
+        cert_id,
+        cert_pem_path,
+        key_pem_path,
+        archived_now,
+    }))
+}
+
+
+/// 私钥读取失败时映射为面向用户的错误：缺失为 404，其余按通用 IO 映射，不回显绝对路径。
+fn map_key_read_error(error: acmecast_store::Error, _relative: &str) -> ApiError {
+    match &error {
+        acmecast_store::Error::Io(io) if io.kind() == std::io::ErrorKind::NotFound => ApiError::new(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "私钥文件不存在",
+        ),
+        _ => ApiError::from(error),
+    }
+}
+
 /// 把域名收敛为安全的文件名：只保留字母数字与 `.`、`-`、`_`。
 fn sanitize_filename(name: &str) -> String {
     let cleaned: String = name
@@ -621,6 +787,14 @@ pub(crate) struct CertificateRequest {
     pub description: Option<String>,
 }
 
+/// 证书备注更新 DTO（PATCH /api/certificates/{id}）。
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub(crate) struct CertificateDescriptionRequest {
+    /// 管理员备注；空白归一为 `None`，传 `null` 或空串即清除。
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
 /// 证书响应。
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub(crate) struct CertificateResponse {
@@ -644,6 +818,10 @@ pub(crate) struct CertificateResponse {
     pub acme_account_access_id: Option<i64>,
     /// 吊销时间。
     pub revoked_at: Option<DateTime<Utc>>,
+    /// 归档时间。
+    pub archived_at: Option<DateTime<Utc>>,
+    /// 私钥算法展示名（RSA / ECDSA P-256 等）；旧数据可为空。
+    pub key_algorithm: Option<String>,
     /// 管理员备注；列表页展示用。
     pub description: Option<String>,
     /// 创建时间。
@@ -793,8 +971,13 @@ pub(crate) struct HistoryLogResponse {
     pub level: String,
     /// 日志消息。
     pub message: String,
-    /// 结构化输出；步骤产生可程序化读取的产物摘要时附带，
-    /// 如 `cert.deploy` 在 `tencent-ssl` 目标下返回的云端证书 ID 列表。
+    /// 结构化输出；步骤产生可程序化读取的产物摘要时附带。
+    ///
+    /// `cert.deploy` 在 `tencent-ssl` 目标下的载荷为
+    /// `{ "cert_ids": string[], "skipped_write": boolean }`：
+    /// - `cert_ids` 为本次上传或更新涉及的腾讯云证书 ID 列表，跳过写入时为空数组；
+    /// - `skipped_write` 标识是否因指纹一致跳过写入。
+    /// 无结构化输出时为 `null`。
     pub output: Option<serde_json::Value>,
     pub created_at: DateTime<Utc>,
 }
@@ -940,6 +1123,18 @@ async fn delete_pipeline(
     State(state): State<HttpState>,
     Path(id): Path<i64>,
 ) -> Result<ApiResponse<serde_json::Value>, ApiError> {
+    // 已绑定调度的流水线拒绝删除，避免调度孤儿（先查绑定再删）。
+    if acmecast_store::repository::ScheduleRepository::new(&state.app.db)
+        .exists_by_pipeline_id(id)
+        .await
+        .map_err(ApiError::from)?
+    {
+        return Err(ApiError::new(
+            axum::http::StatusCode::CONFLICT,
+            "schedule_bound",
+            format!("该流水线已被调度绑定，请先解除调度后再删除（流水线 #{id}）"),
+        ));
+    }
     let deleted = PipelineRepository::new(&state.app.db)
         .delete(id)
         .await
@@ -1121,6 +1316,16 @@ async fn create_certificate(
     State(state): State<HttpState>,
     ApiJson(request): ApiJson<CertificateRequest>,
 ) -> Result<ApiResponse<CertificateResponse>, ApiError> {
+    // 从上传的私钥文件检测算法展示名；读取或解析失败不阻断上传，留空展示。
+    let key_algorithm = match FileStore::open(&state.app.config.data_dir).await {
+        Ok(store) => match store.read(&request.key_pem_path).await {
+            Ok(key_pem) => acmecast_cert::detect_algorithm(&key_pem)
+                .ok()
+                .map(|algo| algo.as_str().to_owned()),
+            Err(_) => None,
+        },
+        Err(_) => None,
+    };
     let result = CertRepository::new(&state.app.db)
         .create(CertInput {
             domains: request.domains,
@@ -1131,8 +1336,21 @@ async fn create_certificate(
             not_before: request.not_before,
             not_after: request.not_after,
             acme_account_access_id: request.acme_account_access_id,
+            key_algorithm,
             description: request.description,
         })
+        .await
+        .map_err(ApiError::from)?;
+    Ok(ApiResponse::new(result.into()))
+}
+
+async fn update_certificate_description(
+    State(state): State<HttpState>,
+    Path(id): Path<i64>,
+    ApiJson(request): ApiJson<CertificateDescriptionRequest>,
+) -> Result<ApiResponse<CertificateResponse>, ApiError> {
+    let result = CertRepository::new(&state.app.db)
+        .update_description(id, request.description)
         .await
         .map_err(ApiError::from)?;
     Ok(ApiResponse::new(result.into()))
@@ -1160,10 +1378,29 @@ async fn delete_certificate(
     State(state): State<HttpState>,
     Path(id): Path<i64>,
 ) -> Result<ApiResponse<serde_json::Value>, ApiError> {
-    let deleted = CertRepository::new(&state.app.db)
-        .delete(id)
+    let repo = CertRepository::new(&state.app.db);
+    let cert = repo
+        .find(id)
         .await
-        .map_err(ApiError::from)?;
+        .map_err(ApiError::from)?
+        .ok_or_else(|| {
+            ApiError::new(
+                axum::http::StatusCode::NOT_FOUND,
+                "not_found",
+                format!("证书不存在: {id}"),
+            )
+        })?;
+    if cert.archived_at.is_none() && cert.revoked_at.is_none() {
+        return Err(ApiError::new(
+            axum::http::StatusCode::CONFLICT,
+            "conflict",
+            "仅归档或吊销态的证书可删除".to_owned(),
+        ));
+    }
+
+    let cert_pem_path = cert.cert_pem_path.clone();
+    let key_pem_path = cert.key_pem_path.clone();
+    let deleted = repo.delete(id).await.map_err(ApiError::from)?;
     if !deleted {
         return Err(ApiError::new(
             axum::http::StatusCode::NOT_FOUND,
@@ -1171,6 +1408,19 @@ async fn delete_certificate(
             format!("证书不存在: {id}"),
         ));
     }
+
+    // 清理文件，失败仅记日志不回滚已删除的记录；路径经 FileStore::delete 内 resolve 防逃逸
+    if let Ok(store) = FileStore::open(state.app.config.data_dir.clone()).await {
+        for rel in [&cert_pem_path, &key_pem_path] {
+            match store.delete(rel).await {
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(%error, path = %rel, "删除证书文件失败，已忽略");
+                }
+            }
+        }
+    }
+
     Ok(ApiResponse::new(serde_json::json!({ "deleted": true })))
 }
 
@@ -1927,10 +2177,24 @@ fn pipeline_input(request: PipelineRequest) -> PipelineInput {
         steps: request
             .steps
             .into_iter()
-            .map(|step| PipelineStepInput {
-                type_id: step.type_id,
-                input: step.input,
-                enabled: step.enabled,
+            .map(|mut step| {
+                if step.type_id == "cert.apply" && step.input.is_object() {
+                    let obj = step.input.as_object_mut().expect("input 应为对象");
+                    let needs_default = match obj.get("renew_before_days") {
+                        None => true,
+                        Some(serde_json::Value::Null) => true,
+                        Some(serde_json::Value::String(s)) if s.trim().is_empty() => true,
+                        _ => false,
+                    };
+                    if needs_default {
+                        obj.insert("renew_before_days".to_owned(), serde_json::json!(30));
+                    }
+                }
+                PipelineStepInput {
+                    type_id: step.type_id,
+                    input: step.input,
+                    enabled: step.enabled,
+                }
             })
             .collect(),
     }
@@ -1957,6 +2221,8 @@ impl From<acmecast_store::entity::cert::Model> for CertificateResponse {
             not_after: model.not_after,
             acme_account_access_id: model.acme_account_access_id,
             revoked_at: model.revoked_at,
+            archived_at: model.archived_at,
+            key_algorithm: model.key_algorithm,
             description: model.description,
             created_at: model.created_at,
             updated_at: model.updated_at,

@@ -27,7 +27,8 @@ export function CertificateDetailPage() {
   const queryClient = useQueryClient();
   const token = useAuthStore((state) => state.token);
   const [downloading, setDownloading] = useState<string | null>(null);
-
+  const [archiving, setArchiving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const { data: cert, error } = useQuery({
     queryKey: ["certificate", certId],
     queryFn: async () => {
@@ -63,6 +64,86 @@ export function CertificateDetailPage() {
     }
   };
 
+  const isRevoked = typeof cert.revoked_at === "string" && cert.revoked_at.trim() !== "";
+  const isArchived = typeof cert.archived_at === "string" && cert.archived_at.trim() !== "";
+
+  const confirmArchive = () => {
+    modal.confirm({
+      title: "确认归档证书？",
+      content: `将把证书文件移至归档目录：${cert.domains.join(", ")}。归档后仍可下载查看。`,
+      okText: "归档",
+      cancelText: "取消",
+      okButtonProps: { color: "orange", variant: "outlined" as const },
+      onOk: async () => {
+        setArchiving(true);
+        try {
+          const result = await client.POST(`/api/certificates/${certId}/archive`, {
+            params: { path: { id: certId } },
+          });
+          if (result.error !== undefined) {
+            let msg = "归档失败";
+            if (
+              result.error !== null &&
+              typeof result.error === "object" &&
+              "error" in result.error
+            ) {
+              const inner = result.error.error;
+              if (
+                inner !== null &&
+                typeof inner === "object" &&
+                "message" in inner
+              ) {
+                const maybeMsg = inner.message;
+                if (typeof maybeMsg === "string" && maybeMsg.trim() !== "") {
+                  msg = maybeMsg;
+                }
+              }
+            }
+            message.error(msg);
+            return;
+          }
+          message.success("证书已归档");
+          await queryClient.invalidateQueries({ queryKey: ["certificate", certId] });
+          await queryClient.invalidateQueries({ queryKey: ["certificates"] });
+        } finally {
+          setArchiving(false);
+        }
+      },
+    });
+  };
+
+  const confirmDelete = () => {
+    modal.confirm({
+      title: "确认删除证书？",
+      content: `将彻底删除证书（含文件与记录）：${cert.domains.join(", ")}。仅归档或吊销态可删除，删除后不可恢复。`,
+      okText: "删除",
+      okButtonProps: { danger: true },
+      cancelText: "取消",
+      onOk: async () => {
+        setDeleting(true);
+        try {
+          const result = await client.DELETE(`/api/certificates/${certId}`, {
+            params: { path: { id: certId } },
+          });
+          if (result.error !== undefined) {
+            let msg = "删除失败";
+            if (result.error !== null && typeof result.error === "object" && "error" in result.error) {
+              const inner = (result.error as { error?: { message?: string } }).error;
+              if (inner?.message && inner.message.trim() !== "") msg = inner.message;
+            }
+            message.error(msg);
+            return;
+          }
+          message.success("证书已删除");
+          await queryClient.invalidateQueries({ queryKey: ["certificates"] });
+          await queryClient.invalidateQueries({ queryKey: ["certificate", certId] });
+        } finally {
+          setDeleting(false);
+        }
+      },
+    });
+  };
+
   const confirmRevoke = () => {
     modal.confirm({
       title: "确认吊销证书？",
@@ -72,11 +153,29 @@ export function CertificateDetailPage() {
       cancelText: "取消",
       onOk: async () => {
         const result = await client.POST(`/api/certificates/${certId}/revoke`, {
+          params: { path: { id: certId } },
           body: {},
         });
         if (result.error !== undefined) {
-          const body = result.error as { error?: { message?: string } };
-          message.error(body?.error?.message ?? "吊销失败");
+          let msg = "吊销失败";
+          if (
+            result.error !== null &&
+            typeof result.error === "object" &&
+            "error" in result.error
+          ) {
+            const inner = result.error.error;
+            if (
+              inner !== null &&
+              typeof inner === "object" &&
+              "message" in inner
+            ) {
+              const maybeMsg = inner.message;
+              if (typeof maybeMsg === "string" && maybeMsg.trim() !== "") {
+                msg = maybeMsg;
+              }
+            }
+          }
+          message.error(msg);
           return;
         }
         message.success("证书已吊销，本地状态已更新");
@@ -111,6 +210,29 @@ export function CertificateDetailPage() {
               </Button>
             ))}
             <Button
+              loading={downloading === "key"}
+              onClick={() => doDownload("key")}
+            >
+              下载私钥 (PEM)
+            </Button>
+            <Button
+              color="orange"
+              variant="outlined"
+              disabled={isRevoked || isArchived}
+              loading={archiving}
+              onClick={confirmArchive}
+            >
+              归档
+            </Button>
+            <Button
+              danger
+              disabled={!isRevoked && !isArchived}
+              loading={deleting}
+              onClick={confirmDelete}
+            >
+              删除
+            </Button>
+            <Button
               danger
               disabled={cert.revoked_at !== null || cert.acme_account_access_id === null}
               onClick={confirmRevoke}
@@ -132,6 +254,20 @@ export function CertificateDetailPage() {
           </Descriptions.Item>
           <Descriptions.Item label="签发账号凭据">
             {cert.acme_account_access_id ? `#${cert.acme_account_access_id}` : "未绑定（手动上传）"}
+          </Descriptions.Item>
+          <Descriptions.Item label="私钥算法">
+            {cert.key_algorithm?.trim() ? cert.key_algorithm : "—"}
+          </Descriptions.Item>
+          <Descriptions.Item label="描述">
+            {(() => {
+              const text = cert.description?.trim();
+              if (!text) return "—";
+              return (
+                <Typography.Text ellipsis={{ tooltip: text }} style={{ maxWidth: 480 }}>
+                  {text}
+                </Typography.Text>
+              );
+            })()}
           </Descriptions.Item>
           <Descriptions.Item label="证书文件">{cert.cert_pem_path}</Descriptions.Item>
           <Descriptions.Item label="私钥文件">{cert.key_pem_path}</Descriptions.Item>
