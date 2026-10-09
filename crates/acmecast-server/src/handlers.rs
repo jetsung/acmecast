@@ -20,7 +20,7 @@ use axum::{
     extract::{Path, State},
     http::{HeaderValue, StatusCode, header},
     response::Response,
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use chrono::{DateTime, Utc};
 use sea_orm::{ActiveModelTrait, EntityTrait, QueryOrder, Set};
@@ -83,6 +83,7 @@ pub(crate) fn routes() -> Router<HttpState> {
         .route("/api/credential-types", get(list_credential_types))
         .route("/api/notifications/test", post(test_notifications))
         .route("/api/schedules", get(list_schedules).post(create_schedule))
+        .route("/api/schedules/{pipeline_id}", delete(delete_schedule))
         .route("/api/schedules/trigger-logs", get(list_trigger_logs))
         .route("/api/tasks", get(list_tasks))
         .route("/api/tasks/{type_id}/schema", get(task_schema))
@@ -1409,15 +1410,25 @@ async fn delete_certificate(
         ));
     }
 
-    // 清理文件，失败仅记日志不回滚已删除的记录；路径经 FileStore::delete 内 resolve 防逃逸
-    if let Ok(store) = FileStore::open(state.app.config.data_dir.clone()).await {
-        for rel in [&cert_pem_path, &key_pem_path] {
-            match store.delete(rel).await {
-                Ok(_) => {}
-                Err(error) => {
-                    tracing::warn!(%error, path = %rel, "删除证书文件失败，已忽略");
+    // 清理文件与指纹目录，失败仅记日志不回滚已删除的记录；路径经 FileStore 内 resolve 防逃逸
+    match FileStore::open(state.app.config.data_dir.clone()).await {
+        Ok(store) => {
+            for rel in [&cert_pem_path, &key_pem_path] {
+                match store.delete(rel).await {
+                    Ok(true) => tracing::info!(path = %rel, "已删除证书文件"),
+                    Ok(false) => tracing::info!(path = %rel, "证书文件不存在，无需删除"),
+                    Err(error) => {
+                        tracing::warn!(%error, path = %rel, "删除证书文件失败，已忽略");
+                    }
                 }
             }
+            // 两文件删完后统一清理其指纹父目录（仅空目录，防逃逸由内部 resolve 承担）
+            if let Err(error) = store.remove_parent_dirs_if_empty(&[&cert_pem_path, &key_pem_path]).await {
+                tracing::warn!(%error, "清理指纹目录失败，已忽略");
+            }
+        }
+        Err(error) => {
+            tracing::warn!(%error, "打开数据目录失败，跳过文件清理");
         }
     }
 
@@ -1893,6 +1904,34 @@ async fn create_schedule(
         .await
         .map_err(ApiError::from)?;
     Ok(ApiResponse::new(schedule_response(config)))
+}
+
+/// 删除调度并联动清理触发记录（`DELETE /api/schedules/{pipeline_id}`）。
+///
+/// 先删调度行——不存在时回 404。删成功后清理该 `pipeline_id` 的全部
+/// 触发记录，避免孤儿审计数据残留。两步串行、无事务：即使清日志失败，
+/// 调度已删、引擎不再装载，最差只是残留少量孤儿日志（不影响功能）。
+async fn delete_schedule(
+    State(state): State<HttpState>,
+    Path(pipeline_id): Path<i64>,
+) -> Result<ApiResponse<serde_json::Value>, ApiError> {
+    let deleted = acmecast_store::repository::ScheduleRepository::new(&state.app.db)
+        .delete(pipeline_id)
+        .await
+        .map_err(ApiError::from)?;
+    if !deleted {
+        return Err(ApiError::new(
+            axum::http::StatusCode::NOT_FOUND,
+            "not_found",
+            format!("调度配置不存在: 流水线 {pipeline_id}"),
+        ));
+    }
+    let logs_removed = acmecast_store::repository::TriggerLogRepository::new(&state.app.db)
+        .delete_by_pipeline(pipeline_id)
+        .await
+        .map_err(ApiError::from)?;
+    tracing::info!(pipeline_id, logs_removed, "调度已删除，触发记录已清理");
+    Ok(ApiResponse::new(serde_json::json!({ "deleted": true })))
 }
 
 /// 触发记录查询参数。

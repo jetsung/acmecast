@@ -30,7 +30,7 @@ use utoipa::OpenApi;
 /// `/api/openapi.json` 与 `/swagger-ui` 由 `SwaggerUi` 挂载、与文档本身
 /// 同源生成，不在此列。这份清单就是「端点变更后文档同步」的守护：
 /// 新增路由而忘记补文档时，这里会失败提醒。
-const KNOWN_API_PATHS: [&str; 22] = [
+const KNOWN_API_PATHS: [&str; 24] = [
     "/api/login",
     "/api/pipelines",
     "/api/pipelines/{id}",
@@ -40,6 +40,7 @@ const KNOWN_API_PATHS: [&str; 22] = [
     "/api/certificates/{id}",
     "/api/certificates/{id}/download",
     "/api/certificates/{id}/revoke",
+    "/api/certificates/{id}/archive",
     "/api/credentials",
     "/api/credentials/{id}",
     "/api/credentials/{id}/test",
@@ -51,6 +52,7 @@ const KNOWN_API_PATHS: [&str; 22] = [
     "/api/histories/{id}",
     "/api/histories/{id}/logs",
     "/api/schedules",
+    "/api/schedules/{pipeline_id}",
     "/api/schedules/trigger-logs",
     "/healthz",
 ];
@@ -261,6 +263,70 @@ async fn pfx_download_is_binary_with_keystore_content_type() {
     assert!(!bytes.is_empty(), "PFX 响应体不应为空");
 }
 
+#[tokio::test]
+#[serial]
+async fn key_download_returns_pem_with_key_filename() {
+    let (app, _data_dir) = app_with_downloadable_certificate().await;
+
+    let response = send(
+        &app,
+        Request::get("/api/certificates/1/download?format=key")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let content_type = response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        content_type.contains("x-pem-file") || content_type.contains("pem"),
+        "私钥应以 PEM 内容类型返回，实际为 `{content_type}`"
+    );
+    let disposition = response
+        .headers()
+        .get(header::CONTENT_DISPOSITION)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        disposition.contains("download.example.com.key.pem"),
+        "私钥文件名应为 *.key.pem，实际为 `{disposition}`"
+    );
+    let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .expect("应能读取响应体");
+    let text = String::from_utf8_lossy(&body);
+    assert!(
+        text.contains("BEGIN PRIVATE KEY"),
+        "私钥下载内容应包含 PEM 私钥标记"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn key_download_variants_are_accepted() {
+    let (app, _data_dir) = app_with_downloadable_certificate().await;
+    for format in ["KEY", "private-key", "key-pem"] {
+        let response = send(
+            &app,
+            Request::get(format!("/api/certificates/1/download?format={format}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "format={format} 应被接受为私钥下载"
+        );
+    }
+}
+
 // ---- 10.9 请求追踪标识 ----
 
 #[derive(Clone, Default)]
@@ -367,4 +433,69 @@ async fn requests_without_a_client_id_get_a_generated_one() {
         "日志里应携带生成的标识 {generated}：\n{}",
         logs
     );
+}
+
+// ---- 删除证书：归档/吊销态彻底清理文件与指纹目录 ----
+
+#[tokio::test]
+#[serial]
+async fn deleting_an_archived_certificate_removes_files_and_fingerprint_dir() {
+    let (fixture, cert_pem_path, key_pem_path, _cert_pem) = certificate_fixture().await;
+    let data_dir = fixture.path().to_path_buf();
+    let config = acmecast_server::config::ServerConfig {
+        data_dir: data_dir.clone(),
+        ..Default::default()
+    };
+    let app = app_with(config, acmecast_server::auth::AuthMode::Disabled).await;
+
+    // 经 REST 入库一条活跃证书，再手动归档（POST /archive），使其进入可删态。
+    let response = send(
+        &app,
+        json_request(
+            "POST",
+            "/api/certificates",
+            &serde_json::json!({
+                "domains": ["delete.example.com"],
+                "cert_pem_path": cert_pem_path,
+                "key_pem_path": key_pem_path,
+                "fingerprint": "sha256:delete-test",
+                "not_before": "2026-01-01T00:00:00Z",
+                "not_after": "2027-01-01T00:00:00Z"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK, "证书应能创建");
+
+    let response = send(
+        &app,
+        Request::post("/api/certificates/1/archive")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK, "归档应成功");
+
+    // 归档后材料应在指纹目录下。
+    let archived_cert = data_dir.join("certs/archived/sha256:delete-test");
+    assert!(
+        tokio::fs::metadata(&archived_cert).await.is_ok(),
+        "归档目录应存在"
+    );
+
+    // 已归档后可删——直接删除。
+    let response = send(
+        &app,
+        Request::delete("/api/certificates/1").body(Body::empty()).unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK, "归档态应可删除");
+
+    // 文件与指纹目录都应被清理。
+    assert!(
+        tokio::fs::metadata(&archived_cert).await.is_err(),
+        "指纹目录应被清理"
+    );
+    let body = json(response).await;
+    assert_eq!(body["data"]["deleted"], true);
 }

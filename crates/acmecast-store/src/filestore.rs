@@ -124,19 +124,19 @@ impl FileStore {
         format!("{REVOKED_CERT_DIR}/{fingerprint}")
     }
 
-    /// 把被续期/重签替换的旧证书材料移动到归档目录 `certs/archived/<旧指纹>/`，返回归档后路径。
+    /// 把单条证书的材料移动到归档目录 `certs/archived/<指纹>/`，返回归档后路径。
     ///
-    /// 活跃目录扁平，无法整目录搬，只能逐文件 `rename`。目标指纹为**旧证书**的指纹。
-    /// - 已归档过（源即目标）直接返回目标；
+    /// 供**手动归档**与续期归档复用：目标按指纹分子目录、文件名不变，权限受限、防逃逸。
+    /// - 已归档过（源即目标）直接返回目标（幂等）；
     /// - 任一源文件缺失返回 `None`；
     /// - 归档目标目录逐层以受限权限创建。
-    pub async fn archive_replaced_certificate(
+    pub async fn move_to_archived(
         &self,
         cert_pem_relative: &str,
         key_pem_relative: &str,
-        old_fingerprint: &str,
+        fingerprint: &str,
     ) -> Result<Option<CertFilePaths>> {
-        let archived_dir = Self::archived_cert_dir(old_fingerprint);
+        let archived_dir = Self::archived_cert_dir(fingerprint);
         let target = CertFilePaths {
             cert_pem: format!("{archived_dir}/{}", base_name_of(cert_pem_relative)),
             key_pem: format!("{archived_dir}/{}", base_name_of(key_pem_relative)),
@@ -150,12 +150,29 @@ impl FileStore {
                 return Ok(None);
             }
         }
-        self.ensure_archived_dir(old_fingerprint).await?;
+        self.ensure_archived_dir(fingerprint).await?;
         for (source, target) in sources.iter().zip([&target.cert_pem, &target.key_pem]) {
             self.move_within(source, target).await?;
         }
         Ok(Some(target))
     }
+
+    /// 把被续期/重签替换的旧证书材料移动到归档目录 `certs/archived/<旧指纹>/`，返回归档后路径。
+    ///
+    /// 活跃目录扁平，无法整目录搬，只能逐文件 `rename`。目标指纹为**旧证书**的指纹。
+    /// - 已归档过（源即目标）直接返回目标；
+    /// - 任一源文件缺失返回 `None`；
+    /// - 归档目标目录逐层以受限权限创建。
+    pub async fn archive_replaced_certificate(
+        &self,
+        cert_pem_relative: &str,
+        key_pem_relative: &str,
+        old_fingerprint: &str,
+    ) -> Result<Option<CertFilePaths>> {
+        self.move_to_archived(cert_pem_relative, key_pem_relative, old_fingerprint)
+            .await
+    }
+
 
     /// 把一条证书的材料移动到吊销目录，返回归档后的相对路径。
     ///
@@ -392,6 +409,28 @@ impl FileStore {
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
             Err(err) => Err(err.into()),
         }
+    }
+
+    /// 供 `DELETE` 清理：删除指向的两个文件后，尝试清理其指纹父目录（空目录才删）。
+    ///
+    /// 指纹文件夹下通常恰好是两文件，删完即空；`remove_parent_dir_if_empty` 本身
+    /// 仅在目录为空时成功（`remove_dir` 语义），其余情况的错误由调用方忽略。
+    pub async fn remove_parent_dirs_if_empty(&self, relatives: &[&str]) -> Result<()> {
+        use std::collections::HashSet;
+        let mut seen: HashSet<PathBuf> = HashSet::new();
+        for rel in relatives {
+            let parent = target_dir_of(self.resolve(rel)?);
+            if parent == self.root || !seen.insert(parent.clone()) {
+                continue;
+            }
+            let _ = tokio::fs::remove_dir(&parent).await;
+        }
+        Ok(())
+    }
+
+    /// 解析相对路径供外部做清理/检查（与 `resolve` 同校验，仅可见性不同）。
+    pub fn resolve_for_cleanup(&self, relative: &str) -> Result<PathBuf> {
+        self.resolve(relative)
     }
 
     /// 把相对路径解析为数据目录内的绝对路径，并拒绝一切逃逸可能。
