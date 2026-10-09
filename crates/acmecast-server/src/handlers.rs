@@ -1410,21 +1410,15 @@ async fn delete_certificate(
         ));
     }
 
-    // 清理文件与指纹目录，失败仅记日志不回滚已删除的记录；路径经 FileStore 内 resolve 防逃逸
+    // 归档/吊销态材料清理：指纹专属目录整删（含文件与目录），共享活跃目录退回逐文件。
+    // 失败仅记日志不回滚已删除的记录；防逃逸由 FileStore 内 resolve 承担。
     match FileStore::open(state.app.config.data_dir.clone()).await {
         Ok(store) => {
-            for rel in [&cert_pem_path, &key_pem_path] {
-                match store.delete(rel).await {
-                    Ok(true) => tracing::info!(path = %rel, "已删除证书文件"),
-                    Ok(false) => tracing::info!(path = %rel, "证书文件不存在，无需删除"),
-                    Err(error) => {
-                        tracing::warn!(%error, path = %rel, "删除证书文件失败，已忽略");
-                    }
-                }
-            }
-            // 两文件删完后统一清理其指纹父目录（仅空目录，防逃逸由内部 resolve 承担）
-            if let Err(error) = store.remove_parent_dirs_if_empty(&[&cert_pem_path, &key_pem_path]).await {
-                tracing::warn!(%error, "清理指纹目录失败，已忽略");
+            if let Err(error) = store
+                .remove_material(&cert_pem_path, &key_pem_path)
+                .await
+            {
+                tracing::warn!(%error, cert_id = id, "清理证书文件与目录失败，已忽略");
             }
         }
         Err(error) => {

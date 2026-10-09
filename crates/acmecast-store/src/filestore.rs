@@ -411,26 +411,41 @@ impl FileStore {
         }
     }
 
-    /// 供 `DELETE` 清理：删除指向的两个文件后，尝试清理其指纹父目录（空目录才删）。
+    /// 彻底清理一条证书的材料：指纹专属目录整删，共享活跃目录退回逐文件。
     ///
-    /// 指纹文件夹下通常恰好是两文件，删完即空；`remove_parent_dir_if_empty` 本身
-    /// 仅在目录为空时成功（`remove_dir` 语义），其余情况的错误由调用方忽略。
-    pub async fn remove_parent_dirs_if_empty(&self, relatives: &[&str]) -> Result<()> {
-        use std::collections::HashSet;
-        let mut seen: HashSet<PathBuf> = HashSet::new();
-        for rel in relatives {
-            let parent = target_dir_of(self.resolve(rel)?);
-            if parent == self.root || !seen.insert(parent.clone()) {
-                continue;
+    /// - 两个文件同在一个**指纹专属**目录（`certs/archived/<指纹>/`、
+    ///   `certs/revoked/<指纹>/`）时，整个目录一次 `remove_dir_all`——目录只为
+    ///   这条证书存在，文件与目录一步清掉，无需先删文件再删目录。
+    /// - 共享扁平活跃目录 `certs/ssl/` **不可整删**（手动上传的证书可能混放在
+    ///   同一目录），退回逐文件删除且不动目录本身；与 [`Self::try_move_whole_dir`]
+    ///   的整搬守卫同一口径。
+    /// - 两文件分处不同目录（手动上传的非常规布局）同样退回逐文件。
+    ///
+    /// 路径均经 `resolve` 防逃逸校验；文件/目录不存在视为幂等成功。
+    pub async fn remove_material(
+        &self,
+        cert_pem_relative: &str,
+        key_pem_relative: &str,
+    ) -> Result<()> {
+        let delete_files_individually = async {
+            for rel in [cert_pem_relative, key_pem_relative] {
+                let _ = self.delete(rel).await;
             }
-            let _ = tokio::fs::remove_dir(&parent).await;
-        }
-        Ok(())
-    }
+        };
 
-    /// 解析相对路径供外部做清理/检查（与 `resolve` 同校验，仅可见性不同）。
-    pub fn resolve_for_cleanup(&self, relative: &str) -> Result<PathBuf> {
-        self.resolve(relative)
+        let Some(dir) = self.shared_parent_dir(cert_pem_relative, key_pem_relative)? else {
+            delete_files_individually.await;
+            return Ok(());
+        };
+        if dir == self.resolve(ACTIVE_CERT_DIR)? {
+            delete_files_individually.await;
+            return Ok(());
+        }
+        match tokio::fs::remove_dir_all(&dir).await {
+            Ok(()) => Ok(()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(err.into()),
+        }
     }
 
     /// 把相对路径解析为数据目录内的绝对路径，并拒绝一切逃逸可能。
