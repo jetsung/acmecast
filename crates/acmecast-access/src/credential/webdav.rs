@@ -8,8 +8,7 @@ use serde::{Deserialize, Serialize};
 use super::{ConnectivityOutcome, CredentialType};
 
 /// WebDAV 凭据类型标识。
-pub const TYPE_ID: &str = "webdav";
-
+pub const TYPE_ID: &str = "deploy.webdav";
 /// WebDAV 凭据字段。
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
 pub struct WebdavFields {

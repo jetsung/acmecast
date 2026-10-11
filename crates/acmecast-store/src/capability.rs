@@ -4,8 +4,8 @@
 //! - 解析数据库文本为能力集合（缺省 / 空 / 非法 JSON 视为双能力，兼容存量）；
 //! - 归一化（白名单过滤、去重、排序）后序列化回文本，保证
 //!   `["deploy","dns"]` 与 `["dns","deploy"]` 在库中形式一致；
-//! - 受控类型白名单：仅 `tencent` / `cloudflare` / `aliyun` 声明能力，
-//!   其余类型（`tencent-eo`、`ssh`、`acme.account` 等）不暴露该字段。
+//! - 受控类型白名单：仅 `cloud.tencent` / `cloud.cloudflare` / `cloud.aliyun` 声明能力，
+//!   其余类型（`dns.tencent-eo`、`deploy.ssh`、`acme.account` 等）不暴露该字段。
 
 /// 能力枚举：可用于 DNS-01 挑战。
 pub const DNS: &str = "dns";
@@ -13,7 +13,7 @@ pub const DNS: &str = "dns";
 pub const DEPLOY: &str = "deploy";
 
 /// 受控凭据类型：仅这些类型声明并持久化能力。
-pub const CONTROLLED_TYPES: [&str; 3] = ["tencent", "cloudflare", "aliyun"];
+pub const CONTROLLED_TYPES: [&str; 3] = ["cloud.tencent", "cloud.cloudflare", "cloud.aliyun"];
 
 /// 判断凭据类型是否受控（声明并持久化能力）。
 #[must_use]
@@ -120,11 +120,11 @@ mod tests {
 
     #[test]
     fn controlled_types_match_whitelist() {
-        assert!(is_controlled("tencent"));
-        assert!(is_controlled("cloudflare"));
-        assert!(is_controlled("aliyun"));
-        assert!(!is_controlled("tencent-eo"));
-        assert!(!is_controlled("ssh"));
+        assert!(is_controlled("cloud.tencent"));
+        assert!(is_controlled("cloud.cloudflare"));
+        assert!(is_controlled("cloud.aliyun"));
+        assert!(!is_controlled("dns.tencent-eo"));
+        assert!(!is_controlled("deploy.ssh"));
         assert!(!is_controlled("acme.account"));
     }
 }

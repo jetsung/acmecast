@@ -199,7 +199,7 @@ async fn credential_detail_returns_decrypted_fields_for_editing() {
     let create = Request::post("/api/credentials")
         .header("content-type", "application/json")
         .body(Body::from(
-            r#"{"name":"cf","type_id":"cloudflare","fields":{"api_token":"  secret-tok  "}}"#,
+            r#"{"name":"cf","type_id":"cloud.cloudflare","fields":{"api_token":"  secret-tok  "}}"#,
         ))
         .unwrap();
     let response = app.clone().oneshot(create).await.unwrap();
@@ -221,7 +221,7 @@ async fn credential_detail_returns_decrypted_fields_for_editing() {
     assert_eq!(detail.status(), StatusCode::OK);
     let detail_body = json_body(detail).await;
     assert_eq!(detail_body["data"]["name"], "cf");
-    assert_eq!(detail_body["data"]["type_id"], "cloudflare");
+    assert_eq!(detail_body["data"]["type_id"], "cloud.cloudflare");
     assert_eq!(
         detail_body["data"]["fields"]["api_token"].as_str(),
         Some("secret-tok"),
@@ -250,7 +250,7 @@ async fn credential_remark_round_trips_through_api() {
     let create = Request::post("/api/credentials")
         .header("content-type", "application/json")
         .body(Body::from(
-            r#"{"name":"cf","type_id":"cloudflare","fields":{"api_token":"tok"},"remark":"生产 DNS"}"#,
+            r#"{"name":"cf","type_id":"cloud.cloudflare","fields":{"api_token":"tok"},"remark":"生产 DNS"}"#,
         ))
         .unwrap();
     let response = app.clone().oneshot(create).await.unwrap();
@@ -289,7 +289,7 @@ async fn credential_remark_round_trips_through_api() {
     let create_no_remark = Request::post("/api/credentials")
         .header("content-type", "application/json")
         .body(Body::from(
-            r#"{"name":"no-remark","type_id":"cloudflare","fields":{"api_token":"tok2"}}"#,
+            r#"{"name":"no-remark","type_id":"cloud.cloudflare","fields":{"api_token":"tok2"}}"#,
         ))
         .unwrap();
     let response = app.clone().oneshot(create_no_remark).await.unwrap();
@@ -300,7 +300,7 @@ async fn credential_remark_round_trips_through_api() {
     let update = Request::put(format!("/api/credentials/{id}"))
         .header("content-type", "application/json")
         .body(Body::from(
-            r#"{"name":"cf","type_id":"cloudflare","fields":{"api_token":"tok"},"remark":"测试 DNS"}"#,
+            r#"{"name":"cf","type_id":"cloud.cloudflare","fields":{"api_token":"tok"},"remark":"测试 DNS"}"#,
         ))
         .unwrap();
     let response = app.oneshot(update).await.unwrap();
@@ -488,7 +488,7 @@ async fn credential_list_defaults_to_id_desc() {
         let create = Request::post("/api/credentials")
             .header("content-type", "application/json")
             .body(Body::from(format!(
-                r#"{{"name":"cf-{index}","type_id":"cloudflare","fields":{{"api_token":"tok{index}"}}}}"#
+                r#"{{"name":"cf-{index}","type_id":"cloud.cloudflare","fields":{{"api_token":"tok{index}"}}}}"#
             )))
             .unwrap();
         let response = app.clone().oneshot(create).await.unwrap();

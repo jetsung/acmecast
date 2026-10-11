@@ -43,12 +43,12 @@ vi.mock("@/api/client", () => ({
             data: {
               items: [
                 { id: 7, name: "le-prod", type_id: "acme.account", remark: "" },
-                { id: 8, name: "some-dns", type_id: "cloudflare", remark: "" },
-                { id: 9, name: "ali-dns", type_id: "aliyun", remark: "" },
-                { id: 10, name: "web-01", type_id: "ssh", remark: "" },
-                { id: 30, name: "腾讯云 SSL", type_id: "tencent", remark: "生产 DNS" },
-                { id: 31, name: "EdgeOne DNS", type_id: "tencent-eo", remark: "" },
-                { id: 40, name: "SSH 主机", type_id: "ssh", remark: "" },
+                { id: 8, name: "some-dns", type_id: "cloud.cloudflare", remark: "" },
+                { id: 9, name: "ali-dns", type_id: "cloud.aliyun", remark: "" },
+                { id: 10, name: "web-01", type_id: "deploy.ssh", remark: "" },
+                { id: 30, name: "腾讯云 SSL", type_id: "cloud.tencent", remark: "生产 DNS" },
+                { id: 31, name: "EdgeOne DNS", type_id: "dns.tencent-eo", remark: "" },
+                { id: 40, name: "SSH 主机", type_id: "deploy.ssh", remark: "" },
               ],
               total: 7,
               page: 1,
@@ -212,9 +212,8 @@ vi.mock("@/api/client", () => ({
                                 credential_id: {
                                   type: "integer",
                                   description: "腾讯云凭据的标识。",
-                                  "x-credential-types": ["tencent"],
+                                  "x-credential-types": ["cloud.tencent"],
                                 },
-                                alias: { type: "string", description: "云端备注名。" },
                                 repeatable: {
                                   type: "boolean",
                                   description: "允许重复上传同指纹证书。",

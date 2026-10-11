@@ -358,20 +358,20 @@ async fn list_by_type_returns_only_that_type_ordered_by_id() {
     );
     let fields = serde_json::json!({ "ca": "letsencrypt" });
 
-    let first = insert_credential(&db, &cipher, "cloudflare", &fields).await;
-    let _other = insert_credential(&db, &cipher, "aliyun", &fields).await;
-    let second = insert_credential(&db, &cipher, "cloudflare", &fields).await;
+    let first = insert_credential(&db, &cipher, "cloud.cloudflare", &fields).await;
+    let _other = insert_credential(&db, &cipher, "cloud.aliyun", &fields).await;
+    let second = insert_credential(&db, &cipher, "cloud.cloudflare", &fields).await;
 
     let store = CredentialStore::new(&db, registry(), Arc::clone(&cipher));
     let listed = store
-        .list_by_type("cloudflare")
+        .list_by_type("cloud.cloudflare")
         .await
         .expect("按类型列出应成功");
 
-    assert_eq!(listed.len(), 2, "只含 cloudflare 类型的两条");
+    assert_eq!(listed.len(), 2, "只含 cloud.cloudflare 类型的两条");
     assert_eq!(listed[0].id, first, "按 id 升序");
     assert_eq!(listed[1].id, second);
-    assert!(listed.iter().all(|item| item.type_id == "cloudflare"));
+    assert!(listed.iter().all(|item| item.type_id == "cloud.cloudflare"));
 }
 
 #[tokio::test]
@@ -384,7 +384,7 @@ async fn list_by_type_of_an_empty_type_is_empty() {
     let store = CredentialStore::new(&db, registry(), Arc::clone(&cipher));
 
     let listed = store
-        .list_by_type("tencent")
+        .list_by_type("cloud.tencent")
         .await
         .expect("查询应成功");
     assert!(listed.is_empty());

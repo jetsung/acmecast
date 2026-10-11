@@ -201,6 +201,7 @@ async fn cert_can_resolve_its_acme_account_credential() {
         type_id: Set("acme.account".to_owned()),
         encrypted_fields: Set("{\"key\":\"<ciphertext>\"}".to_owned()),
         remark: Set(String::new()),
+        capabilities: Set("[]".to_owned()),
         created_at: Set(Utc::now()),
         updated_at: Set(Utc::now()),
         ..Default::default()
@@ -336,12 +337,12 @@ async fn credential_ciphertext_column_never_holds_plaintext() {
     )
     .unwrap();
     let encoded = cipher.encrypt_string(secret).unwrap();
-
     let credential = credential::ActiveModel {
         name: Set("DNS 密钥".to_owned()),
-        type_id: Set("dns.cloudflare".to_owned()),
+        type_id: Set("cloud.cloudflare".to_owned()),
         encrypted_fields: Set(serde_json::json!({ "api_token": encoded }).to_string()),
         remark: Set(String::new()),
+        capabilities: Set("[]".to_owned()),
         created_at: Set(Utc::now()),
         updated_at: Set(Utc::now()),
         ..Default::default()

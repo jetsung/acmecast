@@ -7,7 +7,7 @@ import { client } from "@/api/client";
 import { CredentialListPage } from "./CredentialListPage";
 
 const CLOUDFLARE_TYPE = {
-  type_id: "cloudflare",
+  type_id: "cloud.cloudflare",
   display_name: "Cloudflare",
   schema: {
     type: "object",
@@ -47,7 +47,7 @@ const ACME_ACCOUNT_SCHEMA = {
 };
 
 const TENCENT_TYPE = {
-  type_id: "tencent",
+  type_id: "cloud.tencent",
   display_name: "腾讯云",
   schema: {
     type: "object",
@@ -77,7 +77,7 @@ const ACME_TYPE = {
 
 /** SSH 主机类型:schema 键序故意打乱,渲染顺序应来自前端注入的 x-field-order。 */
 const SSH_HOST_TYPE = {
-  type_id: "ssh",
+  type_id: "deploy.ssh",
   display_name: "SSH 主机",
   schema: {
     type: "object",
@@ -95,7 +95,7 @@ const SSH_HOST_TYPE = {
 
 /** S3 兼容存储类型：schema 含后端注入的 x-field-order（properties 本身是字母序）。 */
 const S3_TYPE = {
-  type_id: "s3",
+  type_id: "deploy.s3",
   display_name: "S3 兼容存储",
   schema: {
     type: "object",
@@ -132,7 +132,7 @@ vi.mock("@/api/client", () => ({
                 {
                   id: 5,
                   name: "cf-main",
-                  type_id: "cloudflare",
+                  type_id: "cloud.cloudflare",
                   capabilities: ["dns", "deploy"],
                   created_at: "2026-09-19T00:00:00Z",
                   updated_at: "2026-09-19T00:00:00Z",
@@ -167,7 +167,7 @@ vi.mock("@/api/client", () => ({
             data: {
               id: isAcme ? 6 : 5,
               name: isAcme ? "le-account" : "cf-main",
-              type_id: isAcme ? "acme.account" : "cloudflare",
+              type_id: isAcme ? "acme.account" : "cloud.cloudflare",
               fields: isAcme
                 ? { ca: "letsencrypt", credentials: '{"id":"acct/1"}' }
                 : { api_token: "secret-tok" },
@@ -558,7 +558,7 @@ describe("凭据编辑弹窗", () => {
             data: {
               id: 5,
               name: "cf-main",
-              type_id: "cloudflare",
+              type_id: "cloud.cloudflare",
               fields: { api_token: "secret-tok" },
               created_at: "2026-09-19T00:00:00Z",
               updated_at: "2026-09-19T00:00:00Z",

@@ -289,9 +289,9 @@ pub(crate) fn host_of(endpoint: &str) -> &str {
 ///
 /// 提供商对应的同厂商 DoH 排第一，其后按固定序排列其余厂商 DoH：
 ///
-/// - `cloudflare` → Cloudflare 优先；兜底序：Cloudflare → 阿里 → 腾讯 → Google
-/// - `aliyun` → 阿里优先；兜底序：阿里 → Cloudflare → 腾讯 → Google
-/// - `tencent` / `tencent-eo` → 腾讯优先；兜底序：腾讯 → Cloudflare → 阿里 → Google
+/// - `cloud.cloudflare` → Cloudflare 优先；兜底序：Cloudflare → 阿里 → 腾讯 → Google
+/// - `cloud.aliyun` → 阿里优先；兜底序：阿里 → Cloudflare → 腾讯 → Google
+/// - `cloud.tencent` / `dns.tencent-eo` → 腾讯优先；兜底序：腾讯 → Cloudflare → 阿里 → Google
 /// - 其他 / 未传参 → Cloudflare → 阿里 → 腾讯 → Google
 ///
 /// 已排到前面的解析器不会在兜底序中重复出现（命中即排除）。
@@ -310,9 +310,9 @@ pub fn prioritize_for_provider(
     // 提供商对应的 DoH 匹配关键词（排第一），其后跟固定兜底序。
     // 兜底序中已包含首选关键词——排序逻辑靠下标去重保证不重复。
     let (primary, fallback): (&[&str], &[&str]) = match tag.as_str() {
-        "cloudflare" => (&["cloudflare"], &["cloudflare", "阿里", "alidns", "腾讯", "1.12", "google"]),
-        "aliyun" => (&["阿里", "alidns", "120.53"], &["阿里", "alidns", "120.53", "cloudflare", "腾讯", "1.12", "google"]),
-        "tencent" | "tencent-eo" => (&["腾讯", "1.12"], &["腾讯", "1.12", "cloudflare", "阿里", "alidns", "google"]),
+        "cloud.cloudflare" => (&["cloudflare"], &["cloudflare", "阿里", "alidns", "腾讯", "1.12", "google"]),
+        "cloud.aliyun" => (&["阿里", "alidns", "120.53"], &["阿里", "alidns", "120.53", "cloudflare", "腾讯", "1.12", "google"]),
+        "cloud.tencent" | "dns.tencent-eo" => (&["腾讯", "1.12"], &["腾讯", "1.12", "cloudflare", "阿里", "alidns", "google"]),
         _ => (&[], &["cloudflare", "阿里", "alidns", "腾讯", "1.12", "google"]),
     };
 
@@ -1554,7 +1554,7 @@ mod tests {
         let _guard = ENV_LOCK.lock();
         let http: Arc<dyn HttpTransport> =
             Arc::new(crate::http::ReqwestTransport::default());
-        for id in [Some("aliyun"), Some("cloudflare"), Some("tencent"), Some("tencent-eo"), None, Some("unknown")] {
+        for id in [Some("cloud.aliyun"), Some("cloud.cloudflare"), Some("cloud.tencent"), Some("dns.tencent-eo"), None, Some("unknown")] {
             let v = doh_resolvers_for_provider(Arc::clone(&http), id);
             assert_eq!(v.len(), 4, "provider={id:?} 应返回全部四家内置 DoH");
         }
@@ -1566,7 +1566,7 @@ mod tests {
         let _env = EnvGuard::set("ACMECAST_DOH_RESOLVERS", "my=https://dns.example.com/resolve");
         let http: Arc<dyn HttpTransport> =
             Arc::new(crate::http::ReqwestTransport::default());
-        let v = doh_resolvers_for_provider(http, Some("aliyun"));
+        let v = doh_resolvers_for_provider(http, Some("cloud.aliyun"));
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].name(), "my", "环境变量应覆盖提供商感知");
     }
@@ -1577,7 +1577,7 @@ mod tests {
         let _env = EnvGuard::set("ACMECAST_DOH_RESOLVERS", "none");
         let http: Arc<dyn HttpTransport> =
             Arc::new(crate::http::ReqwestTransport::default());
-        let v = doh_resolvers_for_provider(http, Some("tencent"));
+        let v = doh_resolvers_for_provider(http, Some("cloud.tencent"));
         assert!(v.is_empty(), "none 时应为空集");
     }
 
@@ -1586,7 +1586,7 @@ mod tests {
         let _guard = ENV_LOCK.lock();
         let http: Arc<dyn HttpTransport> =
             Arc::new(crate::http::ReqwestTransport::default());
-        for id in [Some("aliyun"), Some("cloudflare"), Some("tencent"), None] {
+        for id in [Some("cloud.aliyun"), Some("cloud.cloudflare"), Some("cloud.tencent"), None] {
             let a = doh_resolvers_for_provider(Arc::clone(&http), id);
             let b = resolvers_for_provider(Arc::clone(&http), "example.com", id);
             assert_eq!(a.len(), b.len(), "provider={id:?}");
@@ -1603,7 +1603,7 @@ mod tests {
         let _guard = ENV_LOCK.lock();
         let http: Arc<dyn HttpTransport> =
             Arc::new(crate::http::ReqwestTransport::default());
-        let all = doh_resolvers_for_provider(http, Some("aliyun"));
+        let all = doh_resolvers_for_provider(http, Some("cloud.aliyun"));
         let names: Vec<_> = all.iter().map(|r| r.name().to_owned()).collect();
         assert!(names.contains(&"阿里 DNS".to_owned()));
         assert!(names.contains(&"Cloudflare DNS".to_owned()));

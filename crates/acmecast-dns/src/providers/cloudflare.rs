@@ -141,7 +141,7 @@ impl Default for CloudflareProvider {
 #[async_trait]
 impl DnsProvider for CloudflareProvider {
     fn type_id(&self) -> &'static str {
-        "cloudflare"
+        "cloud.cloudflare"
     }
 
     fn display_name(&self) -> &'static str {

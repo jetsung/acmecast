@@ -2589,11 +2589,11 @@ mod capability_tests {
     fn controlled_type_accepts_valid_capabilities() {
         // 合法：归一化排序后落库（与规格「更新为 ["dns","deploy"] 原样返回」一致）。
         assert_eq!(
-            resolve_capabilities_text("tencent", Some(&vec!["deploy".into(), "dns".into()])).unwrap(),
+            resolve_capabilities_text("cloud.tencent", Some(&vec!["deploy".into(), "dns".into()])).unwrap(),
             r#"["dns","deploy"]"#
         );
         assert_eq!(
-            resolve_capabilities_text("cloudflare", Some(&vec!["dns".into()])).unwrap(),
+            resolve_capabilities_text("cloud.cloudflare", Some(&vec!["dns".into()])).unwrap(),
             r#"["dns"]"#
         );
     }
@@ -2602,7 +2602,7 @@ mod capability_tests {
     fn controlled_type_defaults_when_omitted() {
         // 未传视为双能力（旧前端兼容）。
         assert_eq!(
-            resolve_capabilities_text("aliyun", None).unwrap(),
+            resolve_capabilities_text("cloud.aliyun", None).unwrap(),
             capability::DEFAULT_CAPABILITIES_TEXT
         );
     }
@@ -2611,16 +2611,16 @@ mod capability_tests {
     fn controlled_type_rejects_empty_and_illegal_values() {
         // 空数组与非法取值 400，field 指向 capabilities。
         assert_eq!(
-            err_field(resolve_capabilities_text("tencent", Some(&vec![]))),
+            err_field(resolve_capabilities_text("cloud.tencent", Some(&vec![]))),
             "capabilities"
         );
         assert_eq!(
-            err_field(resolve_capabilities_text("tencent", Some(&vec!["admin".into()]))),
+            err_field(resolve_capabilities_text("cloud.tencent", Some(&vec!["admin".into()]))),
             "capabilities"
         );
         assert_eq!(
             err_field(resolve_capabilities_text(
-                "cloudflare",
+                "cloud.cloudflare",
                 Some(&vec!["dns".into(), "bogus".into()])
             )),
             "capabilities"
@@ -2630,7 +2630,7 @@ mod capability_tests {
     #[test]
     fn uncontrolled_type_ignores_capabilities() {
         // 非受控类型忽略输入，落库空数组。
-        for type_id in ["tencent-eo", "ssh", "acme.account"] {
+        for type_id in ["dns.tencent-eo", "deploy.ssh", "acme.account"] {
             assert_eq!(
                 resolve_capabilities_text(type_id, Some(&vec!["dns".into()])).unwrap(),
                 "[]"

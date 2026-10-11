@@ -776,43 +776,43 @@ fn both_providers_are_registered_and_looked_up_by_type_id() {
     assert_eq!(
         registry.type_ids(),
         vec![
-            "aliyun".to_owned(),
-            "cloudflare".to_owned(),
-            "tencent".to_owned(),
-            "tencent-eo".to_owned(),
+            "cloud.aliyun".to_owned(),
+            "cloud.cloudflare".to_owned(),
+            "cloud.tencent".to_owned(),
+            "dns.tencent-eo".to_owned(),
         ]
     );
     assert_eq!(
-        registry.require("cloudflare").unwrap().display_name(),
+        registry.require("cloud.cloudflare").unwrap().display_name(),
         "Cloudflare"
     );
     assert_eq!(
-        registry.require("aliyun").unwrap().display_name(),
+        registry.require("cloud.aliyun").unwrap().display_name(),
         "阿里云 DNS"
     );
     assert_eq!(
-        registry.require("tencent").unwrap().display_name(),
+        registry.require("cloud.tencent").unwrap().display_name(),
         "腾讯云"
     );
     assert_eq!(
-        registry.require("tencent-eo").unwrap().display_name(),
+        registry.require("dns.tencent-eo").unwrap().display_name(),
         "腾讯云 EdgeOne"
     );
 
     // 凭据定义随提供商一起导出，前端据此渲染表单。
-    for type_id in ["cloudflare", "aliyun", "tencent", "tencent-eo"] {
+    for type_id in ["cloud.cloudflare", "cloud.aliyun", "cloud.tencent", "dns.tencent-eo"] {
         let rendered =
             serde_json::to_string(&registry.require(type_id).unwrap().credential_fields()).unwrap();
         assert!(rendered.contains("required"), "{type_id}: {rendered}");
     }
     assert!(
-        serde_json::to_string(&registry.require("aliyun").unwrap().credential_fields())
+        serde_json::to_string(&registry.require("cloud.aliyun").unwrap().credential_fields())
             .unwrap()
             .contains("access_key_secret")
     );
     // 腾讯云体系的凭据字段：两家共用一份定义，含站点枚举。
     let tencent_fields =
-        serde_json::to_string(&registry.require("tencent").unwrap().credential_fields()).unwrap();
+        serde_json::to_string(&registry.require("cloud.tencent").unwrap().credential_fields()).unwrap();
     for field in ["secret_id", "secret_key", "account_site", "cn", "intl"] {
         assert!(tencent_fields.contains(field), "凭据 schema 应含 {field}: {tencent_fields}");
     }

@@ -313,7 +313,7 @@ impl Default for TencentProvider {
 #[async_trait]
 impl DnsProvider for TencentProvider {
     fn type_id(&self) -> &'static str {
-        "tencent"
+        "cloud.tencent"
     }
 
     fn display_name(&self) -> &'static str {

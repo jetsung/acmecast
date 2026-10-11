@@ -12,8 +12,7 @@ use acmecast_cert::parse_pem_leaf;
 use crate::target::{CertMaterials, DeployMode, DeployOutcome, DeploymentTarget, parse_input};
 
 /// S3 凭据可接受的类型。
-const ACCEPTED_CREDENTIAL_TYPES: [&str; 1] = ["s3"];
-
+const ACCEPTED_CREDENTIAL_TYPES: [&str; 1] = ["deploy.s3"];
 /// S3 部署目标。
 #[derive(Debug, Default)]
 pub struct S3Target;
@@ -97,7 +96,7 @@ impl DeploymentTarget for S3Target {
         {
             credential_id
                 .extensions
-                .insert("x-credential-types".into(), json!(["s3"]));
+                .insert("x-credential-types".into(), json!(["deploy.s3"]));
         }
         schema.schema.extensions.insert(
             "x-field-order".into(),
@@ -129,7 +128,7 @@ impl DeploymentTarget for S3Target {
         if !ACCEPTED_CREDENTIAL_TYPES.contains(&resolved.type_id.as_str()) {
             return Err(Error::invalid_input(
                 "credential_id",
-                format!("凭据 `{}`（{}）不是 s3 类型", input.credential_id, resolved.type_id),
+                format!("凭据 `{}`（{}）不是 deploy.s3 类型", input.credential_id, resolved.type_id),
             ));
         }
         let fields: serde_json::Value = resolved.fields.clone();

@@ -166,11 +166,11 @@ async fn setup() -> (
     let cipher =
         Arc::new(CredentialCipher::from_base64(&CredentialCipher::generate_key_base64()).unwrap());
     let mut registry = CredentialRegistry::new();
-    for type_id in ["tencent", "tencent-eo"] {
+    for type_id in ["cloud.tencent", "dns.tencent-eo"] {
         registry.register(TencentType(type_id)).expect("应能注册");
     }
     registry
-        .register(PermissiveType("cloudflare"))
+        .register(PermissiveType("cloud.cloudflare"))
         .expect("应能注册");
     let store = CredentialStore::new(db, Arc::new(registry), Arc::clone(&cipher));
     (db, store, cipher)
@@ -232,7 +232,7 @@ fn update_fail(message: &str) -> HttpResponse {
 #[tokio::test]
 async fn a_fresh_certificate_is_uploaded() {
     let (db, store, cipher) = setup().await;
-    let id = seed_credential(db, &cipher, "tencent", tencent_fields(None)).await;
+    let id = seed_credential(db, &cipher, "cloud.tencent", tencent_fields(None)).await;
 
     let (chain, key) = self_signed_pem("example.com");
     let transport = ScriptedTransport::new(vec![describe_page(0, &[]), upload_ok("CERTNEW")]);
@@ -275,7 +275,7 @@ async fn the_international_endpoint_serves_intl_credentials() {
     let id = seed_credential(
         db,
         &cipher,
-        "tencent",
+        "cloud.tencent",
         tencent_fields(Some("intl")),
     )
     .await;
@@ -307,7 +307,7 @@ async fn the_international_endpoint_serves_intl_credentials() {
 #[tokio::test]
 async fn an_existing_certificate_is_replaced() {
     let (db, store, cipher) = setup().await;
-    let id = seed_credential(db, &cipher, "tencent", tencent_fields(None)).await;
+    let id = seed_credential(db, &cipher, "cloud.tencent", tencent_fields(None)).await;
 
     let (chain, key) = self_signed_pem("example.com");
     let transport = ScriptedTransport::new(vec![
@@ -343,7 +343,7 @@ async fn an_existing_certificate_is_replaced() {
 #[tokio::test]
 async fn wildcard_coverage_is_not_treated_as_existing() {
     let (db, store, cipher) = setup().await;
-    let id = seed_credential(db, &cipher, "tencent", tencent_fields(None)).await;
+    let id = seed_credential(db, &cipher, "cloud.tencent", tencent_fields(None)).await;
 
     // 本次是 a.example.com，云端只有 *.example.com——泛域名覆盖关系不算
     // 「同域名」，不该替人删掉服务所有子域名的泛域名证书。
@@ -375,7 +375,7 @@ async fn wildcard_coverage_is_not_treated_as_existing() {
 #[tokio::test]
 async fn replace_existing_false_skips_the_lookup_and_the_delete() {
     let (db, store, cipher) = setup().await;
-    let id = seed_credential(db, &cipher, "tencent", tencent_fields(None)).await;
+    let id = seed_credential(db, &cipher, "cloud.tencent", tencent_fields(None)).await;
 
     let (chain, key) = self_signed_pem("example.com");
     // 脚本里只有上传一个应答：若目标在关闭替换后仍发起查询，会因脚本耗尽而报错。
@@ -401,7 +401,7 @@ async fn replace_existing_false_skips_the_lookup_and_the_delete() {
 #[tokio::test]
 async fn a_failed_update_does_not_fail_the_deployment() {
     let (db, store, cipher) = setup().await;
-    let id = seed_credential(db, &cipher, "tencent", tencent_fields(None)).await;
+    let id = seed_credential(db, &cipher, "cloud.tencent", tencent_fields(None)).await;
 
     let (chain, key) = self_signed_pem("example.com");
     let transport = ScriptedTransport::new(vec![
@@ -428,7 +428,7 @@ async fn a_failed_update_does_not_fail_the_deployment() {
 #[tokio::test]
 async fn skip_write_makes_no_requests() {
     let (db, store, cipher) = setup().await;
-    let id = seed_credential(db, &cipher, "tencent", tencent_fields(None)).await;
+    let id = seed_credential(db, &cipher, "cloud.tencent", tencent_fields(None)).await;
 
     let (chain, key) = self_signed_pem("example.com");
     let transport = ScriptedTransport::new(vec![]);
@@ -459,7 +459,7 @@ async fn a_non_tencent_credential_is_rejected_without_requests() {
     let id = seed_credential(
         db,
         &cipher,
-        "cloudflare",
+        "cloud.cloudflare",
         json!({ "api_token": "cf-token" }),
     )
     .await;
@@ -487,7 +487,7 @@ async fn a_non_tencent_credential_is_rejected_without_requests() {
 async fn the_edgeone_credential_type_is_rejected_without_requests() {
     // EdgeOne 仅服务 DNS、无 SSL 部署能力，tencent-eo 凭据在 SSL 部署中应被拒绝。
     let (db, store, cipher) = setup().await;
-    let id = seed_credential(db, &cipher, "tencent-eo", tencent_fields(None)).await;
+    let id = seed_credential(db, &cipher, "dns.tencent-eo", tencent_fields(None)).await;
 
     let (chain, key) = self_signed_pem("example.com");
     let transport = ScriptedTransport::new(vec![]);
@@ -513,7 +513,7 @@ async fn the_edgeone_credential_type_is_rejected_without_requests() {
 #[tokio::test]
 async fn the_lookup_paginates_past_the_first_page() {
     let (db, store, cipher) = setup().await;
-    let id = seed_credential(db, &cipher, "tencent", tencent_fields(None)).await;
+    let id = seed_credential(db, &cipher, "cloud.tencent", tencent_fields(None)).await;
 
     let (chain, key) = self_signed_pem("example.com");
     let transport = ScriptedTransport::new(vec![
@@ -547,7 +547,7 @@ async fn the_lookup_paginates_past_the_first_page() {
 #[tokio::test]
 async fn a_full_single_page_is_not_paginated_again() {
     let (db, store, cipher) = setup().await;
-    let id = seed_credential(db, &cipher, "tencent", tencent_fields(None)).await;
+    let id = seed_credential(db, &cipher, "cloud.tencent", tencent_fields(None)).await;
 
     let (chain, key) = self_signed_pem("example.com");
     let transport = ScriptedTransport::new(vec![
@@ -614,8 +614,8 @@ fn the_schema_injects_credential_type_allowlist() {
         .expect("应有 credential_id 字段");
     let rendered = serde_json::to_string(&properties).unwrap();
     assert!(
-        rendered.contains(r#""x-credential-types":["tencent"]"#),
-        "credential_id 应注入 x-credential-types 仅 tencent: {rendered}"
+        rendered.contains(r#""x-credential-types":["cloud.tencent"]"#),
+        "credential_id 应注入 x-credential-types 仅 cloud.tencent: {rendered}"
     );
     // 新字段进入 properties，受 x-field-order 声明顺序控制。
     assert!(
@@ -651,7 +651,7 @@ fn the_schema_injects_credential_type_allowlist() {
 async fn repeatable_is_passthrough_to_upload_payload() {
     // repeatable 字段透传到 UploadCertificate 的 Repeatable。
     let (db, store, cipher) = setup().await;
-    let id = seed_credential(db, &cipher, "tencent", tencent_fields(None)).await;
+    let id = seed_credential(db, &cipher, "cloud.tencent", tencent_fields(None)).await;
 
     let (chain, key) = self_signed_pem("example.com");
     let transport = ScriptedTransport::new(vec![describe_page(0, &[]), upload_ok("CERTWITHREP")]);
@@ -678,7 +678,7 @@ async fn repeatable_is_passthrough_to_upload_payload() {
 async fn resource_types_and_regions_inject_into_update_payload() {
     // resource_types 多选时，更新调用携带 ResourceTypes 为多项，Region 与 Type 笛卡尔积。
     let (db, store, cipher) = setup().await;
-    let id = seed_credential(db, &cipher, "tencent", tencent_fields(None)).await;
+    let id = seed_credential(db, &cipher, "cloud.tencent", tencent_fields(None)).await;
 
     let (chain, key) = self_signed_pem("example.com");
     let transport = ScriptedTransport::new(vec![
@@ -723,7 +723,7 @@ async fn resource_types_and_regions_inject_into_update_payload() {
 #[tokio::test]
 async fn without_resource_types_no_resource_fields_are_carried() {
     let (db, store, cipher) = setup().await;
-    let id = seed_credential(db, &cipher, "tencent", tencent_fields(None)).await;
+    let id = seed_credential(db, &cipher, "cloud.tencent", tencent_fields(None)).await;
 
     let (chain, key) = self_signed_pem("example.com");
     let transport = ScriptedTransport::new(vec![
@@ -758,7 +758,7 @@ async fn without_resource_types_no_resource_fields_are_carried() {
 async fn multiple_existing_certificates_are_updated_one_by_one() {
     // 多张匹配逐张更新，单张失败不阻塞整体。
     let (db, store, cipher) = setup().await;
-    let id = seed_credential(db, &cipher, "tencent", tencent_fields(None)).await;
+    let id = seed_credential(db, &cipher, "cloud.tencent", tencent_fields(None)).await;
 
     let (chain, key) = self_signed_pem("example.com");
     let transport = ScriptedTransport::new(vec![
@@ -803,7 +803,7 @@ async fn deploy_fails_without_cloud_requests_when_deploy_capability_is_missing()
     let now = Utc::now();
     let id = credential::ActiveModel {
         name: Set("仅 DNS 凭据".to_owned()),
-        type_id: Set("tencent".to_owned()),
+        type_id: Set("cloud.tencent".to_owned()),
         encrypted_fields: Set(sealed),
         capabilities: Set(r#"["dns"]"#.to_owned()),
         created_at: Set(now),

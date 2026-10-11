@@ -19,9 +19,8 @@ use crate::targets::ssh::SshAuthSource;
 /// SSH 主机档案的凭据类型标识。
 ///
 /// 与 SSH 部署目标的 `type_id()` 对齐（沿 DNS 凭据的先例：
-/// `cloudflare` / `aliyun` 凭据类型也与各自的提供商标识对齐）。
-pub const SSH_HOST_TYPE_ID: &str = "ssh";
-
+/// `cloud.cloudflare` / `cloud.aliyun` 凭据类型也与各自的提供商标识对齐）。
+pub const SSH_HOST_TYPE_ID: &str = "deploy.ssh";
 fn default_port() -> u16 {
     22
 }
@@ -348,6 +347,6 @@ mod tests {
 
     #[test]
     fn the_type_id_aligns_with_the_ssh_deploy_target() {
-        assert_eq!(SSH_HOST_TYPE_ID, "ssh");
+        assert_eq!(SSH_HOST_TYPE_ID, "deploy.ssh");
     }
 }

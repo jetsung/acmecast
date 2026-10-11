@@ -8,8 +8,7 @@ use serde::{Deserialize, Serialize};
 use super::{ConnectivityOutcome, CredentialType};
 
 /// S3 凭据类型标识。
-pub const TYPE_ID: &str = "s3";
-
+pub const TYPE_ID: &str = "deploy.s3";
 /// S3 凭据字段。
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
 pub struct S3Fields {

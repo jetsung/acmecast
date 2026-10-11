@@ -179,7 +179,7 @@ impl Default for AliyunProvider {
 #[async_trait]
 impl DnsProvider for AliyunProvider {
     fn type_id(&self) -> &'static str {
-        "aliyun"
+        "cloud.aliyun"
     }
 
     fn display_name(&self) -> &'static str {

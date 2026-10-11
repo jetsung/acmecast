@@ -157,7 +157,7 @@ impl Default for TencentEoProvider {
 #[async_trait]
 impl DnsProvider for TencentEoProvider {
     fn type_id(&self) -> &'static str {
-        "tencent-eo"
+        "dns.tencent-eo"
     }
 
     fn display_name(&self) -> &'static str {
@@ -245,7 +245,7 @@ mod tests {
 
     #[test]
     fn the_display_name_identifies_the_product() {
-        assert_eq!(TencentEoProvider::new().type_id(), "tencent-eo");
+        assert_eq!(TencentEoProvider::new().type_id(), "dns.tencent-eo");
         assert_eq!(TencentEoProvider::new().display_name(), "腾讯云 EdgeOne");
     }
 }

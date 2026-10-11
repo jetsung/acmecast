@@ -12,7 +12,7 @@ type CredentialRow = components["schemas"]["CredentialResponse"];
 
 // 与后端 acmecast_store::capability::CONTROLLED_TYPES 保持一致：
 // 仅这三类凭据声明并持久化能力（dns / deploy）。
-const CAPABILITY_CONTROLLED_TYPES = ["tencent", "cloudflare", "aliyun"];
+const CAPABILITY_CONTROLLED_TYPES = ["cloud.tencent", "cloud.cloudflare", "cloud.aliyun"];
 const CAPABILITY_OPTIONS = [
   { label: "DNS", value: "dns" },
   { label: "部署", value: "deploy" },

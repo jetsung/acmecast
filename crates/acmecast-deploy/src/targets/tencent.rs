@@ -40,8 +40,8 @@ const SSL_VERSION: &str = "2019-12-05";
 const PAGE_LIMIT: u64 = 1000;
 
 /// `credential_id` 可引用的凭据类型：仅腾讯云账号密钥（DNS 与 SSL 通用）。
-/// `tencent-eo` 不含 SSL 部署能力（EdgeOne 仅服务 DNS），不接受。
-const ACCEPTED_CREDENTIAL_TYPES: [&str; 1] = ["tencent"];
+/// `dns.tencent-eo` 不含 SSL 部署能力（EdgeOne 仅服务 DNS），不接受。
+const ACCEPTED_CREDENTIAL_TYPES: [&str; 1] = ["cloud.tencent"];
 
 /// 腾讯云 SSL 证书库部署。
 #[derive(Debug)]
@@ -274,7 +274,7 @@ async fn resolve_tencent_credentials(
         return Err(Error::invalid_input(
             "credential_id",
             format!(
-                "凭据 `{id}`（{}）不是可用于 SSL 部署的腾讯云凭据，需要 tencent 类型（tencent-eo 仅服务 DNS，无 SSL 部署能力）",
+                "凭据 `{id}`（{}）不是可用于 SSL 部署的腾讯云凭据，需要 cloud.tencent 类型（dns.tencent-eo 仅服务 DNS，无 SSL 部署能力）",
                 resolved.type_id
             ),
         ));
@@ -338,8 +338,8 @@ impl DeploymentTarget for TencentSslTarget {
                 "resource_regions"
             ]),
         );
-        // credential_id 仅接受 tencent 凭据：前端据此过滤下拉，避免选到
-        // tencent-eo（EdgeOne 无 SSL 部署能力）或 SSH 等无关凭据。
+        // credential_id 仅接受 cloud.tencent 凭据：前端据此过滤下拉，避免选到
+        // dns.tencent-eo（EdgeOne 无 SSL 部署能力）或 deploy.ssh 等无关凭据。
         if let Some(Schema::Object(credential_id)) = schema
             .schema
             .object
@@ -348,7 +348,7 @@ impl DeploymentTarget for TencentSslTarget {
         {
             credential_id
                 .extensions
-                .insert("x-credential-types".to_owned(), json!(["tencent"]));
+                .insert("x-credential-types".to_owned(), json!(["cloud.tencent"]));
         }
         schema
     }

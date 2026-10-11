@@ -13,6 +13,41 @@ use serde::Deserialize;
 
 use super::domain_error;
 
+fn platform_summary(input: &CertDeployInput) -> String {
+    let target = input.target.trim();
+    let cfg = &input.config;
+    let obj = cfg.as_object();
+    let get = |k: &str| obj.and_then(|o| o.get(k)).and_then(|v| v.as_str()).map(|s| s.trim()).filter(|s| !s.is_empty()).map(|s| s.to_owned());
+    match target {
+        "s3" => {
+            let bucket = get("bucket").or_else(|| get("Bucket"));
+            let region = get("region").or_else(|| get("Region"));
+            let endpoint = get("endpoint").or_else(|| get("Endpoint")).or_else(|| get("endpoint_url"));
+            let host = endpoint.as_deref().and_then(|u| url_host(u));
+            if let Some(b) = bucket { if let Some(r) = region { format!("{b}/{r}") } else if let Some(h) = host { format!("{b}@{h}") } else { b } } else if let Some(h) = host { h } else if let Some(r) = region { r } else { "unknown".to_owned() }
+        }
+        "ssh" => {
+            let host = get("host").or_else(|| get("hostname"));
+            let port = get("port");
+            if let Some(h) = host { if let Some(p) = port { format!("{h}:{p}") } else { h } } else { "unknown".to_owned() }
+        }
+        "tencent-ssl" => {
+            let cid = obj.and_then(|o| o.get("credential_id")).and_then(|v| v.as_i64()).map(|n| n.to_string());
+            let region = get("region").or_else(|| get("Region"));
+            match (cid, region) { (Some(c), Some(r)) => format!("credential={c} region={r}"), (Some(c), None) => format!("credential={c}"), (None, Some(r)) => r, _ => "unknown".to_owned() }
+        }
+        "local" => get("cert_path").or_else(|| get("certPath")).or_else(|| get("key_path")).unwrap_or_else(|| "unknown".to_owned()),
+        "webdav" => { let url = get("url").or_else(|| get("endpoint")); url.as_deref().and_then(|u| url_host(u)).unwrap_or_else(|| "unknown".to_owned()) }
+        _ => "unknown".to_owned(),
+    }
+}
+fn url_host(raw: &str) -> Option<String> {
+    let s = raw.trim(); if s.is_empty() { return None; }
+    let without_scheme = s.split("://").last().unwrap_or(s);
+    let host = without_scheme.split('/').next().unwrap_or(without_scheme).split('?').next().unwrap_or(without_scheme).trim();
+    if host.is_empty() { None } else { Some(host.to_owned()) }
+}
+
 /// `cert.deploy` 的输入。
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct CertDeployInput {
@@ -133,61 +168,75 @@ impl PipelineStep for CertDeployStep {
             }
         };
 
+        let platform = platform_summary(&input);
+        let platform_tag = format!(" platform={platform}");
         // 腾讯云 SSL：把云端证书 ID 以结构化输出写入运行历史，使单次运行可自包含回溯。
         // 跳过写入时与普通日志合并为一条带 output 的日志，避免"跳过提示 + 结构化结果"两条冗余日志。
+        // 平台信息在同一行前后追加，始终脱敏（platform 仅为脱敏后摘要，空值为 unknown）。
         if target.type_id() == "tencent-ssl" {
             if outcome.skipped_write {
                 ctx.log_info_with_output(
                     format!(
-                        "目标 {} 指纹未变，跳过写入：target={}, skipped_write=true, reason=fingerprint unchanged, fingerprint={fingerprint}；重载已按配置执行",
-                        target.type_id(),
-                        target.type_id(),
+                        "目标 {} 指纹未变，跳过写入：target={}{}, skipped_write=true, reason=fingerprint unchanged, fingerprint={fingerprint}；重载已按配置执行",
+                        target.type_id(), target.type_id(), platform_tag,
                     ),
-                    serde_json::json!({
-                        "cert_ids": outcome.paths,
-                        "skipped_write": true,
-                    }),
+                    serde_json::json!({ "cert_ids": outcome.paths, "skipped_write": true, "platform": platform }),
                 );
             } else {
                 ctx.log_info(format!(
-                    "已部署到目标 {}，写入 {} 个路径：target={}, fingerprint={}",
-                    target.type_id(),
-                    outcome.paths.len(),
-                    target.type_id(),
-                    fingerprint,
+                    "已部署到目标 {} (platform={})，写入 {} 个路径：target={}, platform={}, fingerprint={}",
+                    target.type_id(), platform, outcome.paths.len(), target.type_id(), platform, fingerprint,
                 ));
-                ctx.log_info_with_output(
-                    "腾讯云 SSL 部署结果",
-                    serde_json::json!({
-                        "cert_ids": outcome.paths,
-                        "skipped_write": false,
-                    }),
-                );
+                ctx.log_info_with_output("腾讯云 SSL 部署结果", serde_json::json!({ "cert_ids": outcome.paths, "skipped_write": false, "platform": platform }));
             }
         } else if outcome.skipped_write {
             ctx.log_info_with_output(
                 format!(
-                    "目标 {} 指纹未变，跳过写入：target={}, skipped_write=true, reason=fingerprint unchanged, fingerprint={fingerprint}；重载已按配置执行",
-                    target.type_id(),
-                    target.type_id(),
+                    "目标 {} 指纹未变，跳过写入：target={}{}, skipped_write=true, reason=fingerprint unchanged, fingerprint={fingerprint}；重载已按配置执行",
+                    target.type_id(), target.type_id(), platform_tag,
                 ),
-                serde_json::json!({
-                    "skipped_write": true,
-                }),
+                serde_json::json!({ "skipped_write": true, "platform": platform }),
             );
         } else {
             ctx.log_info(format!(
-                "已部署到目标 {}，写入 {} 个路径：target={}, fingerprint={}",
-                target.type_id(),
-                outcome.paths.len(),
-                target.type_id(),
-                fingerprint,
+                "已部署到目标 {} (platform={})，写入 {} 个路径：target={}, platform={}, fingerprint={}",
+                target.type_id(), platform, outcome.paths.len(), target.type_id(), platform, fingerprint,
             ));
         }
 
         Ok(StepOutput::empty()
             .with_artifact("deployed_paths", serde_json::json!(outcome.paths))
             .with_artifact("skipped_write", serde_json::json!(outcome.skipped_write)))
+    }
+}
+
+#[cfg(test)]
+mod tests_platform {
+    use super::*;
+
+    fn input(target: &str, config: serde_json::Value) -> CertDeployInput {
+        CertDeployInput { target: target.to_owned(), config }
+    }
+
+    #[test]
+    fn s3_platform_summary_variants() {
+        assert_eq!(platform_summary(&input("s3", serde_json::json!({"bucket":"my-bucket","region":"auto"}))), "my-bucket/auto");
+        assert_eq!(platform_summary(&input("s3", serde_json::json!({"bucket":"my-bucket","endpoint":"https://r2.cloudflarestorage.com"}))), "my-bucket@r2.cloudflarestorage.com");
+        assert_eq!(platform_summary(&input("s3", serde_json::json!({"region":"us-east-1"}))), "us-east-1");
+        assert_eq!(platform_summary(&input("s3", serde_json::json!({}))), "unknown");
+    }
+
+    #[test]
+    fn ssh_and_tencent_and_webdav_platform() {
+        assert_eq!(platform_summary(&input("ssh", serde_json::json!({"host":"10.0.0.1","port":"2222"}))), "10.0.0.1:2222");
+        assert_eq!(platform_summary(&input("ssh", serde_json::json!({"host":"10.0.0.1"}))), "10.0.0.1");
+        assert_eq!(platform_summary(&input("tencent-ssl", serde_json::json!({"credential_id": 7}))), "credential=7");
+        assert_eq!(platform_summary(&input("tencent-ssl", serde_json::json!({"credential_id": 7, "region":"ap-guangzhou"}))), "credential=7 region=ap-guangzhou");
+        assert_eq!(platform_summary(&input("webdav", serde_json::json!({"url":"https://dav.example.com/files"}))), "dav.example.com");
+        assert_eq!(platform_summary(&input("webdav", serde_json::json!({}))), "unknown");
+        assert_eq!(platform_summary(&input("local", serde_json::json!({"cert_path":"/etc/ssl/cert.pem"}))), "/etc/ssl/cert.pem");
+        assert_eq!(platform_summary(&input("local", serde_json::json!({}))), "unknown");
+        assert_eq!(platform_summary(&input("unknown-target", serde_json::json!({}))), "unknown");
     }
 }
 

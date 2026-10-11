@@ -54,7 +54,7 @@ impl CloudflareCredentialType {
 impl CredentialType for CloudflareCredentialType {
     fn type_id(&self) -> &'static str {
         // 与 `CloudflareProvider::type_id` 对齐：cert.apply 的凭据 `type_id` 即提供商标识。
-        "cloudflare"
+        "cloud.cloudflare"
     }
 
     fn display_name(&self) -> &'static str {
@@ -120,7 +120,7 @@ impl AliyunCredentialType {
 impl CredentialType for AliyunCredentialType {
     fn type_id(&self) -> &'static str {
         // 与 `AliyunProvider::type_id` 对齐。
-        "aliyun"
+        "cloud.aliyun"
     }
 
     fn display_name(&self) -> &'static str {
@@ -212,7 +212,7 @@ impl TencentCredentialType {
 impl CredentialType for TencentCredentialType {
     fn type_id(&self) -> &'static str {
         // 与 `TencentProvider::type_id` 对齐：cert.apply 的凭据 `type_id` 即提供商标识。
-        "tencent"
+        "cloud.tencent"
     }
 
     fn display_name(&self) -> &'static str {
@@ -267,7 +267,7 @@ impl TencentEoCredentialType {
 impl CredentialType for TencentEoCredentialType {
     fn type_id(&self) -> &'static str {
         // 与 `TencentEoProvider::type_id` 对齐。
-        "tencent-eo"
+        "dns.tencent-eo"
     }
 
     fn display_name(&self) -> &'static str {
@@ -301,7 +301,7 @@ pub struct SshHostCredentialType;
 impl CredentialType for SshHostCredentialType {
     fn type_id(&self) -> &'static str {
         // 与 SSH 部署目标的 type_id 对齐：`cert.deploy` 的 SSH 配置引用它。
-        "ssh"
+        "deploy.ssh"
     }
 
     fn display_name(&self) -> &'static str {
@@ -394,10 +394,10 @@ mod tests {
     /// 类型标识必须与 DNS 提供商的 type_id 一致，否则凭据 `type_id` 推导的提供商对不上。
     #[test]
     fn type_ids_match_dns_providers() {
-        assert_eq!(CloudflareCredentialType::default().type_id(), "cloudflare");
-        assert_eq!(AliyunCredentialType::default().type_id(), "aliyun");
-        assert_eq!(TencentCredentialType::default().type_id(), "tencent");
-        assert_eq!(TencentEoCredentialType::default().type_id(), "tencent-eo");
+        assert_eq!(CloudflareCredentialType::default().type_id(), "cloud.cloudflare");
+        assert_eq!(AliyunCredentialType::default().type_id(), "cloud.aliyun");
+        assert_eq!(TencentCredentialType::default().type_id(), "cloud.tencent");
+        assert_eq!(TencentEoCredentialType::default().type_id(), "dns.tencent-eo");
     }
 
     #[test]
@@ -461,7 +461,7 @@ mod tests {
     /// SSH 档案的标识必须与 SSH 部署目标一致，前端据此对齐语义。
     #[test]
     fn the_ssh_host_type_id_aligns_with_the_deploy_target() {
-        assert_eq!(SshHostCredentialType.type_id(), "ssh");
+        assert_eq!(SshHostCredentialType.type_id(), "deploy.ssh");
         assert_eq!(SshHostCredentialType.display_name(), "SSH 主机");
     }
 

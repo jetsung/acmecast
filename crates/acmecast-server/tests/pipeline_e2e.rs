@@ -1540,7 +1540,7 @@ async fn a_tencent_credential(
         .expect("应能加密凭据");
     acmecast_store::entity::credential::ActiveModel {
         name: Set(name.to_owned()),
-        type_id: Set("tencent".to_owned()),
+        type_id: Set("cloud.tencent".to_owned()),
         encrypted_fields: Set(encrypted),
         capabilities: Set(capabilities.to_owned()),
         created_at: Set(chrono::Utc::now()),

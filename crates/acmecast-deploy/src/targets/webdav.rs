@@ -10,8 +10,7 @@ use crate::error::{Error, Result};
 use acmecast_cert::parse_pem_leaf;
 use crate::target::{CertMaterials, DeployMode, DeployOutcome, DeploymentTarget, parse_input};
 
-const ACCEPTED_CREDENTIAL_TYPES: [&str; 1] = ["webdav"];
-
+const ACCEPTED_CREDENTIAL_TYPES: [&str; 1] = ["deploy.webdav"];
 #[derive(Debug, Default)]
 pub struct WebdavTarget;
 
@@ -90,7 +89,7 @@ impl DeploymentTarget for WebdavTarget {
         {
             credential_id
                 .extensions
-                .insert("x-credential-types".into(), json!(["webdav"]));
+                .insert("x-credential-types".into(), json!(["deploy.webdav"]));
         }
         schema.schema.extensions.insert(
             "x-field-order".into(),
@@ -121,7 +120,7 @@ impl DeploymentTarget for WebdavTarget {
         if !ACCEPTED_CREDENTIAL_TYPES.contains(&resolved.type_id.as_str()) {
             return Err(Error::invalid_input(
                 "credential_id",
-                format!("凭据 `{}`（{}）不是 webdav 类型", input.credential_id, resolved.type_id),
+                format!("凭据 `{}`（{}）不是 deploy.webdav 类型", input.credential_id, resolved.type_id),
             ));
         }
         let fields = resolved.fields.clone();

@@ -11,18 +11,17 @@ import { PageHeader } from "@/components/PageHeader";
 /** `account_credential_id` 一类字段只接受这类凭据。 */
 const ACME_ACCOUNT_TYPE_ID = "acme.account";
 /** SSH 主机档案凭据：cert.deploy 的 SSH 配置按标识引用它。 */
-const SSH_HOST_TYPE_ID = "ssh";
+const SSH_HOST_TYPE_ID = "deploy.ssh";
 
 const DNS_CREDENTIAL_TYPE_IDS: Record<string, true> = {
-  cloudflare: true,
-  aliyun: true,
-  tencent: true,
-  "tencent-eo": true,
+  "cloud.cloudflare": true,
+  "cloud.aliyun": true,
+  "cloud.tencent": true,
+  "dns.tencent-eo": true,
 };
 
 /** 与后端 acmecast_store::capability::CONTROLLED_TYPES 保持一致。 */
-const CAPABILITY_CONTROLLED_TYPES = ["tencent", "cloudflare", "aliyun"];
-
+const CAPABILITY_CONTROLLED_TYPES = ["cloud.tencent", "cloud.cloudflare", "cloud.aliyun"];
 /**
  * 能力过滤：受控类型（tencent/cloudflare/aliyun）需声明指定能力；
  * 能力缺省（旧数据 / 非受控类型如 tencent-eo）视为双能力，不因能力被过滤。

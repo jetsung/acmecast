@@ -223,7 +223,8 @@ mod tests {
             CaKind::LetsEncryptStaging,
             CaKind::ZeroSsl,
             CaKind::Google,
-            CaKind::SslCom,
+            CaKind::GoogleTest,
+            CaKind::FreeSsl,
         ] {
             let url = kind.builtin_url().expect("内置 CA 应有 URL");
             assert!(url.starts_with("https://"), "{kind:?} -> {url}");
