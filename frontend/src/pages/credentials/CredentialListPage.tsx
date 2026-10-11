@@ -260,7 +260,7 @@ const SSH_HOST_FIELD_ORDER = [
  */
 function withTypeFieldOrder(type: CredentialTypeRow): unknown {
   const schema = type.schema as Record<string, unknown> | undefined;
-  if (!schema || type.type_id !== "ssh") return type.schema;
+  if (!schema || type.type_id !== "deploy.ssh") return type.schema;
   return { ...schema, "x-field-order": SSH_HOST_FIELD_ORDER };
 }
 

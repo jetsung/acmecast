@@ -113,9 +113,9 @@
 传播等待启动时产生两行 `info` 日志，顺序固定，均在 `round 1 miss` 之前：
 
 1. `propagation start timeout=<s> interval=<s> (record: _acme-challenge.<domain>)` — 首行，内容不变。
-2. `provider dns: <provider_id> (<resolver name>)` — 次行命中单家 DNS，命中集为 `prioritize_for_provider` 排序后的首位 DoH 的 `name()`（`provider=cloudflare` 时仅 `Cloudflare DNS`），与后续 `round x miss (resolvers: ...)` 的 resolver 标识同源。
+2. `provider dns: <provider_id> (<resolver1>, <resolver2>, ...)` — 次行命中 DNS，命中集为整组 `ext_refs` 经 `prioritize_for_provider` 排序后的 `name()` 序列（`provider=cloudflare` 时整组 `Cloudflare DNS, 阿里 DNS, 腾讯 DNSPod, Google DNS`，首位为 Cloudflare），与后续 `round x miss (resolvers: ...)` 的 resolver 标识同源。
 
-`provider` 未知/空时次行可为空或 `provider dns: (none)`，但两行顺序不变。`propagation start` 本行不追加解析器上下文。
+`provider` 未知/空时次行按固定兜底序 `Cloudflare → 阿里 → 腾讯 → Google`，但两行顺序不变。`propagation start` 本行不追加解析器上下文。
 
 ### 四阶段等分时序
 
@@ -123,28 +123,28 @@
 
 | 阶段 | 时间窗 | 查询集 |
 |---|---|---|
-| `hit` | `[0, timeout/4)` | 仅命中单家 DoH（`provider` 对应的首位） |
+| `hit` | `[0, timeout/4)` | 整组 `ext_refs` provider 优先（首位为 `provider` 对应的 DoH） |
 | `authoritative` | `[timeout/4, timeout/2)` | 权威 NS（`AuthoritativeResolver`），**不排除**已在 hit 出现的单家 |
 | `all_dns` | `[timeout/2, 3*timeout/4)` | 整组 `ext_refs` |
 | `doh` | `[3*timeout/4, timeout)` | 再拆半：`doh_single [3*timeout/4, 7*timeout/8)` 仅命中单家 → `doh_full [7*timeout/8, timeout)` 整组 ext_refs provider 优先 |
 
 - 任一阶段命中即 `on_progress(hit)` 并成功返回，不等待后续阶段。
-- `provider=cloudflare` 且 `ext_refs` 含四家时：`hit`/`doh_single` 仅查 `Cloudflare DNS` 单家，`authoritative` 仍查权威 NS（不因已在 hit 出现而剔除），`doh_full` 查整组 `Cloudflare, 阿里, 腾讯, Google` 且首位为 Cloudflare。
+- `provider=cloudflare` 且 `ext_refs` 含四家时：`hit` 查整组 `Cloudflare DNS, 阿里 DNS, 腾讯 DNSPod, Google DNS`（首位 Cloudflare），`doh_single` 仅查 `Cloudflare DNS` 单家，`authoritative` 仍查权威 NS（不因已在 hit 出现而剔除），`doh_full` 查整组 `Cloudflare, 阿里, 腾讯, Google` 且首位为 Cloudflare。
 - `ACMECAST_DOH_RESOLVERS=none`（或解析器切片为空）时三组均为空，走"提供商侧确认即就绪"短路。
 
 ### miss 日志入库精简（双轨语义）
 
 SSE 实时推送与终态持久化遵循双轨：
 
-- **SSE 实时流**（`RunExecutionSink::emit` → `HistoryCache::push_log` + `SseBroadcaster::broadcast_log`）：全量 `round x miss`，每轮 miss 产生一条 `log` 事件，含命中单家 DNS 行，不因后续精简而提前过滤。
-- **入库前精简**（`execute_run` 组装 `step_logs` 后、`HistoryRepository::finish` 前）：对 `message` 匹配 `round \d+ miss` 且含 `resolvers:` 的条目，仅保留最后一条（`rposition`），其余 `retain` 移除。命中单家 DNS 行、`round x hit`、`propagation start`、`propagation succeeded` 等非 miss 日志不受影响。
+- **SSE 实时流**（`RunExecutionSink::emit` → `HistoryCache::push_log` + `SseBroadcaster::broadcast_log`）：全量 `round x miss`，每轮 miss 产生一条 `log` 事件，含命中 DNS 行（整组），不因后续精简而提前过滤。
+- **入库前精简**（`execute_run` 组装 `step_logs` 后、`HistoryRepository::finish` 前）：对 `message` 匹配 `round \d+ miss` 且含 `resolvers:` 的条目，仅保留最后一条（`rposition`），其余 `retain` 移除。命中 DNS 行（整组）、`round x hit`、`propagation start`、`propagation succeeded` 等非 miss 日志不受影响。
 
 精简仅影响持久化与后续 `GET /api/histories/{id}/logs` / 缓存重放返回的持久化视图；SSE 已推送的实时流不受影响。空/单条/无 miss 时为 no-op。
 
 ### 实现索引
 
-- `crates/acmecast-dns/src/propagation.rs: wait_until_visible_phased` — 四阶段等分调度 + 命中单家行 + 末段拆半
-- `crates/acmecast-server/src/steps/apply.rs: complete_challenge` — 提供 `hit_single_refs`（单家）与 `ext_refs`（整组）给 phased
+- `crates/acmecast-dns/src/propagation.rs: wait_until_visible_phased` — 四阶段等分调度 + 命中整组行 + 末段拆半
+- `crates/acmecast-server/src/steps/apply.rs: complete_challenge` — 提供整组 `ext_refs`（provider 优先）给 phased 的 hit/doh_full 阶段
 - `crates/acmecast-server/src/run.rs: execute_run` — `compact_propagation_miss_logs` 切入点（落库前压缩）
 - `crates/acmecast-pipeline/src/runner.rs` — `mpsc → EventSink::emit(Log)` 增量分流（SSE 全量）
 
@@ -277,3 +277,23 @@ SSE 实时推送与终态持久化遵循双轨：
 - `crates/acmecast-access/src/credential/s3.rs: s3_fields_schema` — 注入 `x-field-order: ["access_key","secret_key","endpoint","bucket","region","prefix","session_token"]`
 - `crates/acmecast-server/src/credentials.rs: tencent_credentials_schema` — 参考既有注入模式
 - `frontend/src/components/SchemaForm.tsx: orderedEntries` — `x-field-order` 定序渲染
+
+## 部署平台化日志（`cert.deploy`）
+
+`cert.deploy` 在部署成功或指纹一致跳过时，"已部署到目标" 的同一 `info` 行**前后追加**平台信息（同一行内，不另起一条日志），平台取自 `input.config` 的脱敏摘要，空值时记 `unknown`，始终经 `redact` 脱敏后输出。
+
+| 目标 `target` | 平台字段 |
+|---|---|
+| `tencent-ssl` | `credential_id` / `region` |
+| `s3` | `bucket` / `region` / `endpoint host` |
+| `ssh` | `host:port` 或主机档案标识 |
+| `local` | 部署路径 |
+| `webdav` | `url host` |
+| 其他 / 缺字段 | `unknown` 兜底 |
+
+格式示例：`已部署到目标 <target> (platform=<...>)，写入 <N> 个路径` 或 `... fingerprint=<...> platform=<...>`。`tencent-ssl` 的跳过写入分支（`skipped_write`）与写入分支均在同一行追加 `platform`，`output` 结构化字段中亦补 `platform`。失败分支已含 `target`，可追加 `platform`。
+
+### 实现索引
+
+- `crates/acmecast-server/src/steps/deploy.rs: platform_summary` — 按 `target` 从 `config` 取字段拼接 `platform=<...>`，经 `redact` 脱敏
+- `crates/acmecast-server/src/steps/deploy.rs:138-186` — "已部署到目标" 成功/跳过分支同一行前后追加 `platform`
