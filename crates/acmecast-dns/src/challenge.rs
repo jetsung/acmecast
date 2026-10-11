@@ -12,7 +12,7 @@ use crate::error::{Error, Result};
 use crate::provider::{DnsProvider, TxtRecord};
 
 /// ACME 的 DNS-01 挑战记录名前缀。
-const CHALLENGE_PREFIX: &str = "_acme-challenge";
+pub(crate) const CHALLENGE_PREFIX: &str = "_acme-challenge";
 
 /// 本项目支持的挑战类型。
 ///
@@ -98,6 +98,16 @@ pub fn ensure_kind_covers(domains: &[String], kind: ChallengeKind) -> Result<()>
 pub fn challenge_record_name(domain: &str) -> String {
     let base = domain.strip_prefix("*.").unwrap_or(domain);
     format!("{CHALLENGE_PREFIX}.{base}")
+}
+
+/// 按 DNS zone 构造挑战记录的**写入名**。
+///
+/// 与 [`challenge_record_name`] 的区别在于输入：后者吃授权域名（CA 视角），
+/// 前者吃记录实际写入的 zone（提供商视角）。挑战记录经 CNAME 委派到另一个
+/// zone 托管时，两者给出不同的名字——CA 查前者，DNS 提供商写后者。
+#[must_use]
+pub fn challenge_write_name(zone: &str) -> String {
+    format!("{CHALLENGE_PREFIX}.{zone}")
 }
 
 /// 写入一条挑战记录，执行 `action`，然后**无论成败**都清理掉它。

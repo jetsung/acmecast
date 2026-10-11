@@ -33,6 +33,23 @@ export interface paths {
         delete: operations["delete_certificate"];
         options?: never;
         head?: never;
+        patch: operations["update_certificate_description"];
+        trace?: never;
+    };
+    [path: `/api/certificates/${number}/archive`]: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 手动归档端点的文档占位函数。 */
+        post: operations["archive_certificate"];
+        delete?: never;
+        options?: never;
+        head?: never;
         patch?: never;
         trace?: never;
     };
@@ -52,7 +69,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    [path: `/api/certificates/${string}/revoke`]: {
+    [path: `/api/certificates/${number}/revoke`]: {
         parameters: {
             query?: never;
             header?: never;
@@ -316,6 +333,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    [path: `/api/schedules/${number}`]: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** 删除调度的文档占位函数。 */
+        delete: operations["delete_schedule"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/tasks": {
         parameters: {
             query?: never;
@@ -379,6 +413,23 @@ export interface components {
             message: string;
         };
         /** @description 统一成功响应。 */
+        ApiResponse_ArchiveResponse: {
+            /** @description 手动归档结果。 */
+            data: {
+                /** @description 是否本次调用完成了文件移动（`false` 表示已在归档/吊销目录或源缺失的幂等返回）。 */
+                archived_now: boolean;
+                /**
+                 * Format: int64
+                 * @description 证书记录标识。
+                 */
+                cert_id: number;
+                /** @description 归档后的证书链相对路径（幂等或源缺失时为当前库中路径）。 */
+                cert_pem_path: string;
+                /** @description 归档后的私钥相对路径。 */
+                key_pem_path: string;
+            };
+        };
+        /** @description 统一成功响应。 */
         ApiResponse_CertificateResponse: {
             /** @description 证书响应。 */
             data: {
@@ -387,6 +438,11 @@ export interface components {
                  * @description ACME 账号凭据标识。
                  */
                 acme_account_access_id?: number | null;
+                /**
+                 * Format: date-time
+                 * @description 归档时间。
+                 */
+                archived_at?: string | null;
                 /** @description 证书 PEM 相对路径。 */
                 cert_pem_path: string;
                 /**
@@ -407,6 +463,8 @@ export interface components {
                 id: number;
                 /** @description 签发者。 */
                 issuer?: string | null;
+                /** @description 私钥算法展示名（RSA / ECDSA P-256 等）；旧数据可为空。 */
+                key_algorithm?: string | null;
                 /** @description 私钥 PEM 相对路径。 */
                 key_pem_path: string;
                 /**
@@ -569,6 +627,11 @@ export interface components {
                      * @description ACME 账号凭据标识。
                      */
                     acme_account_access_id?: number | null;
+                    /**
+                     * Format: date-time
+                     * @description 归档时间。
+                     */
+                    archived_at?: string | null;
                     /** @description 证书 PEM 相对路径。 */
                     cert_pem_path: string;
                     /**
@@ -589,6 +652,8 @@ export interface components {
                     id: number;
                     /** @description 签发者。 */
                     issuer?: string | null;
+                    /** @description 私钥算法展示名（RSA / ECDSA P-256 等）；旧数据可为空。 */
+                    key_algorithm?: string | null;
                     /** @description 私钥 PEM 相对路径。 */
                     key_pem_path: string;
                     /**
@@ -911,6 +976,10 @@ export interface components {
             };
         };
         /** @description 统一成功响应。 */
+        ApiResponse_Value: {
+            data: unknown;
+        };
+        /** @description 统一成功响应。 */
         ApiResponse_Vec_HistoryLogResponse: {
             data: {
                 /** Format: date-time */
@@ -920,8 +989,13 @@ export interface components {
                 /** @description 日志消息。 */
                 message: string;
                 /**
-                 * @description 结构化输出；步骤产生可程序化读取的产物摘要时附带，
-                 *     如 `cert.deploy` 在 `tencent-ssl` 目标下返回的云端证书 ID 列表。
+                 * @description 结构化输出；步骤产生可程序化读取的产物摘要时附带。
+                 *
+                 *     `cert.deploy` 在 `tencent-ssl` 目标下的载荷为
+                 *     `{ "cert_ids": string[], "skipped_write": boolean }`：
+                 *     - `cert_ids` 为本次上传或更新涉及的腾讯云证书 ID 列表，跳过写入时为空数组；
+                 *     - `skipped_write` 标识是否因指纹一致跳过写入。
+                 *     无结构化输出时为 `null`。
                  */
                 output?: unknown;
                 /**
@@ -969,9 +1043,28 @@ export interface components {
                 updated_at: string;
             }[];
         };
+        /** @description 手动归档结果。 */
+        ArchiveResponse: {
+            /** @description 是否本次调用完成了文件移动（`false` 表示已在归档/吊销目录或源缺失的幂等返回）。 */
+            archived_now: boolean;
+            /**
+             * Format: int64
+             * @description 证书记录标识。
+             */
+            cert_id: number;
+            /** @description 归档后的证书链相对路径（幂等或源缺失时为当前库中路径）。 */
+            cert_pem_path: string;
+            /** @description 归档后的私钥相对路径。 */
+            key_pem_path: string;
+        };
+        /** @description 证书备注更新 DTO（PATCH /api/certificates/{id}）。 */
+        CertificateDescriptionRequest: {
+            /** @description 管理员备注；空白归一为 `None`，传 `null` 或空串即清除。 */
+            description?: string | null;
+        };
         /** @description 证书下载查询参数。 */
         CertificateDownloadQuery: {
-            /** @description 目标格式：`pem`（默认）、`der`、`pfx`、`jks`、`p7b`。 */
+            /** @description 目标格式：`pem`（默认）、`der`、`pfx`、`jks`、`p7b`，以及 `key`（私钥 PEM）。 */
             format?: string | null;
             /** @description PFX / JKS 的口令；未设置时使用约定默认值。 */
             password?: string | null;
@@ -1013,6 +1106,11 @@ export interface components {
              * @description ACME 账号凭据标识。
              */
             acme_account_access_id?: number | null;
+            /**
+             * Format: date-time
+             * @description 归档时间。
+             */
+            archived_at?: string | null;
             /** @description 证书 PEM 相对路径。 */
             cert_pem_path: string;
             /**
@@ -1033,6 +1131,8 @@ export interface components {
             id: number;
             /** @description 签发者。 */
             issuer?: string | null;
+            /** @description 私钥算法展示名（RSA / ECDSA P-256 等）；旧数据可为空。 */
+            key_algorithm?: string | null;
             /** @description 私钥 PEM 相对路径。 */
             key_pem_path: string;
             /**
@@ -1148,8 +1248,13 @@ export interface components {
             /** @description 日志消息。 */
             message: string;
             /**
-             * @description 结构化输出；步骤产生可程序化读取的产物摘要时附带，
-             *     如 `cert.deploy` 在 `tencent-ssl` 目标下返回的云端证书 ID 列表。
+             * @description 结构化输出；步骤产生可程序化读取的产物摘要时附带。
+             *
+             *     `cert.deploy` 在 `tencent-ssl` 目标下的载荷为
+             *     `{ "cert_ids": string[], "skipped_write": boolean }`：
+             *     - `cert_ids` 为本次上传或更新涉及的腾讯云证书 ID 列表，跳过写入时为空数组；
+             *     - `skipped_write` 标识是否因指纹一致跳过写入。
+             *     无结构化输出时为 `null`。
              */
             output?: unknown;
             /**
@@ -1236,6 +1341,11 @@ export interface components {
                  * @description ACME 账号凭据标识。
                  */
                 acme_account_access_id?: number | null;
+                /**
+                 * Format: date-time
+                 * @description 归档时间。
+                 */
+                archived_at?: string | null;
                 /** @description 证书 PEM 相对路径。 */
                 cert_pem_path: string;
                 /**
@@ -1256,6 +1366,8 @@ export interface components {
                 id: number;
                 /** @description 签发者。 */
                 issuer?: string | null;
+                /** @description 私钥算法展示名（RSA / ECDSA P-256 等）；旧数据可为空。 */
+                key_algorithm?: string | null;
                 /** @description 私钥 PEM 相对路径。 */
                 key_pem_path: string;
                 /**
@@ -1818,10 +1930,74 @@ export interface operations {
             };
         };
     };
+    update_certificate_description: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 证书标识 */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CertificateDescriptionRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_CertificateResponse"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    archive_certificate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 证书标识 */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_ArchiveResponse"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
     download_certificate: {
         parameters: {
             query?: {
-                /** @description pem / der / pfx / jks / p7b */
+                /** @description pem / der / pfx / jks / p7b / key（key 为私钥 PEM，需鉴权） */
                 format?: string;
                 /** @description PFX / JKS 口令 */
                 password?: string;
@@ -1835,7 +2011,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description 证书文件下载 */
+            /** @description 证书/私钥文件下载 */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -1858,7 +2034,10 @@ export interface operations {
         parameters: {
             query?: never;
             header?: never;
-            path?: never;
+            path: {
+                /** @description 证书标识 */
+                id: number;
+            };
             cookie?: never;
         };
         requestBody: {
@@ -2418,6 +2597,15 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorBody"];
                 };
             };
+            /** @description schedule_bound：该流水线已被调度绑定，请先解除调度后再删除 */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
         };
     };
     list_pipeline_histories: {
@@ -2565,6 +2753,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponse_PageResponse_TriggerLogResponse"];
+                };
+            };
+        };
+    };
+    delete_schedule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 调度绑定的流水线标识 */
+                pipeline_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 删除成功 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_Value"];
+                };
+            };
+            /** @description not_found：调度不存在 */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
                 };
             };
         };

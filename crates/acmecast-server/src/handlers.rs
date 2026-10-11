@@ -691,7 +691,7 @@ pub(crate) struct PipelineQuery {
     pub page: Option<u64>,
     /// 每页条数。
     pub page_size: Option<u64>,
-    /// 排序方向：`asc` 或 `desc`，按更新时间排序。
+    /// 排序方向：`asc` 或 `desc`，按更新时间排序；缺省时按 ID 降序。
     pub sort: Option<String>,
 }
 
@@ -754,7 +754,7 @@ pub(crate) struct PipelineResponse {
 pub(crate) struct CertificateQuery {
     /// 域名子串。
     pub domain: Option<String>,
-    /// 排序方向：`asc` 或 `desc`。
+    /// 排序方向：`asc` 或 `desc`（按到期时间）；缺省按 ID 降序。
     pub sort: Option<String>,
     /// 页码，从 1 开始。
     pub page: Option<u64>,
@@ -1016,23 +1016,28 @@ async fn list_pipelines(
     if let Some(enabled) = query.enabled {
         rows.retain(|row| row.enabled == enabled);
     }
-    match query
+    // 默认不排序：保留仓储返回的 ID 降序；仅当显式传 sort 时按更新时间排序。
+    match &query
         .sort
         .as_deref()
-        .unwrap_or("desc")
-        .to_ascii_lowercase()
-        .as_str()
+        .map(str::to_ascii_lowercase)
+        .map(|s| s.as_str().to_owned())
     {
-        "asc" | "ascending" => rows.sort_by_key(|row| (row.updated_at, row.id)),
-        "desc" | "descending" => {
-            rows.sort_by_key(|row| (std::cmp::Reverse(row.updated_at), std::cmp::Reverse(row.id)))
+        Some(s) if s == "asc" || s == "ascending" => {
+            rows.sort_by_key(|row| (row.updated_at, row.id));
         }
-        other => {
+        Some(s) if s == "desc" || s == "descending" => {
+            rows.sort_by_key(|row| {
+                (std::cmp::Reverse(row.updated_at), std::cmp::Reverse(row.id))
+            });
+        }
+        Some(other) => {
             return Err(ApiError::validation(
                 "sort",
                 format!("排序方向 `{other}` 只支持 asc 或 desc"),
             ));
         }
+        None => {}
     }
     let total = rows.len() as u64;
     let items = paginate(rows, page, page_size)
@@ -1271,13 +1276,14 @@ async fn list_certificates(
     let sort = match query
         .sort
         .as_deref()
-        .unwrap_or("asc")
-        .to_ascii_lowercase()
-        .as_str()
+        .map(str::to_ascii_lowercase)
+        .as_deref()
     {
-        "asc" | "ascending" => CertSort::Ascending,
-        "desc" | "descending" => CertSort::Descending,
-        other => {
+        // 缺省或显式 id_desc 时用 IdDesc（与其他列表一致的 ID 降序）。
+        None | Some("id_desc") => CertSort::IdDesc,
+        Some("asc") | Some("ascending") => CertSort::Ascending,
+        Some("desc") | Some("descending") => CertSort::Descending,
+        Some(other) => {
             return Err(ApiError::validation(
                 "sort",
                 format!("排序方向 `{other}` 只支持 asc 或 desc"),
@@ -1437,7 +1443,7 @@ async fn list_credentials(
     let page_size = query.page_size.unwrap_or(DEFAULT_PAGE_SIZE);
     validate_page("page", page, page_size)?;
     let mut rows = acmecast_store::entity::credential::Entity::find()
-        .order_by_asc(acmecast_store::entity::credential::Column::Id)
+        .order_by_desc(acmecast_store::entity::credential::Column::Id)
         .all(&state.app.db)
         .await
         .map_err(|error| ApiError::from(acmecast_store::Error::from(error)))?;
@@ -1964,7 +1970,7 @@ async fn list_trigger_logs(
     let page = query.page.unwrap_or(1).max(1);
     let page_size = query
         .page_size
-        .unwrap_or(DEFAULT_PAGE_SIZE)
+        .unwrap_or(10)
         .clamp(1, MAX_PAGE_SIZE);
     let result = acmecast_store::repository::TriggerLogRepository::new(&state.app.db)
         .list(query.pipeline_id, page, page_size)
@@ -2302,6 +2308,12 @@ pub(crate) fn default_credential_registry() -> Arc<CredentialRegistry> {
     registry
         .register(SshHostCredentialType)
         .expect("内置 SSH 主机凭据类型不应重复注册");
+    registry
+        .register(acmecast_access::S3CredentialType)
+        .expect("内置 S3 凭据类型不应重复注册");
+    registry
+        .register(acmecast_access::WebdavCredentialType)
+        .expect("内置 WebDAV 凭据类型不应重复注册");
     Arc::new(registry)
 }
 

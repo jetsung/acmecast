@@ -296,6 +296,66 @@ pub(crate) fn host_of(endpoint: &str) -> &str {
         .unwrap_or(endpoint)
 }
 
+/// 按 `dns_provider` 将公共解析器集做优先级排序：
+///
+/// - `tencent` / `tencent-eo` → 腾讯 DNSPod 优先
+/// - `aliyun` → 阿里 DNS 优先
+/// - `cloudflare` → Cloudflare 优先
+/// - 其他 → `Cloudflare → 阿里 → 其余（内置+配置）`
+pub fn prioritize_for_provider(
+    resolvers: Vec<Box<dyn DnsResolver>>,
+    provider_id: Option<&str>,
+) -> Vec<Box<dyn DnsResolver>> {
+    use std::collections::HashSet;
+    if resolvers.is_empty() {
+        return resolvers;
+    }
+    let tag = provider_id
+        .map(|v| v.trim().to_ascii_lowercase())
+        .unwrap_or_default();
+    let ranked: &[&str] = match tag.as_str() {
+        "tencent" | "tencent-eo" => &["腾讯", "1.12"],
+        "aliyun" => &["阿里", "alidns", "120.53"],
+        "cloudflare" => &["cloudflare"],
+        _ => &["cloudflare", "阿里", "alidns"],
+    };
+
+    let mut ordered: Vec<usize> = Vec::new();
+    let mut seen_idx: HashSet<usize> = HashSet::new();
+    for key in ranked {
+        let key_lower = key.to_ascii_lowercase();
+        for (idx, r) in resolvers.iter().enumerate() {
+            if seen_idx.contains(&idx) {
+                continue;
+            }
+            if r.name().to_ascii_lowercase().contains(&key_lower) {
+                ordered.push(idx);
+                seen_idx.insert(idx);
+            }
+        }
+    }
+    if ordered.is_empty() {
+        return resolvers;
+    }
+    let mut by_idx: Vec<Option<Box<dyn DnsResolver>>> = resolvers.into_iter().map(Some).collect();
+    let mut out: Vec<Box<dyn DnsResolver>> = Vec::with_capacity(by_idx.len());
+    let mut taken: HashSet<usize> = HashSet::new();
+    for idx in &ordered {
+        if let Some(v) = by_idx[*idx].take() {
+            out.push(v);
+            taken.insert(*idx);
+        }
+    }
+    for (idx, slot) in by_idx.into_iter().enumerate() {
+        if !taken.contains(&idx) {
+            if let Some(v) = slot {
+                out.push(v);
+            }
+        }
+    }
+    out
+}
+
 /// 传播等待的策略。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PropagationPolicy {
@@ -343,84 +403,234 @@ pub async fn wait_until_visible(
     let deadline = Instant::now() + policy.timeout;
     let mut published = false;
     let mut round = 0_u32;
-    // 跨轮保留，供超时错误指明「是谁没跟上」「是谁查不了」。
     let mut missing: Vec<String> = Vec::new();
     let mut unreachable: Vec<String> = Vec::new();
 
     loop {
         round += 1;
 
-        // 第一段：提供商侧确认。它都不认，下游无从谈起。
         if !published {
             let found = provider.find_txt(credentials, record).await?;
             published = found.iter().any(|value| value == &record.value);
         }
 
         if published && resolvers.is_empty() {
-            info!(name = %record.name, round, "传播等待已禁用，提供商侧确认即就绪");
+            info!(name = %record.ca_name, round, "传播等待已禁用，提供商侧确认即就绪");
             return Ok(());
         }
 
-        if published {
-            missing.clear();
-            unreachable.clear();
-            for resolver in resolvers {
-                // 查询**失败**（含超时）与「查到了但值不对」是两回事：前者多半是
-                // 这个解析器本身出了问题（端点不可达、被墙），按「不可达」归类，
-                // 不参与判定——任一家看到即可放行，所以失败只会让自己出局，
-                // 不会像旧的「全部可见」语义那样把整个等待拖死。
-                let outcome =
-                    match tokio::time::timeout(LOOKUP_TIMEOUT, resolver.lookup_txt(&record.name))
-                        .await
-                    {
-                        Ok(result) => result,
-                        Err(_elapsed) => Err(Error::provider(format!(
-                            "{} 查询 `{}` 超时（{} 秒）",
-                            resolver.name(),
-                            record.name,
-                            LOOKUP_TIMEOUT.as_secs()
-                        ))),
-                    };
-                match outcome {
-                    Ok(values) => {
-                        if values.iter().any(|value| value == &record.value) {
-                            info!(
-                                name = %record.name,
-                                round,
-                                resolver = resolver.name(),
-                                "记录已在解析器上可见"
-                            );
-                            return Ok(());
-                        }
-                        missing.push(resolver.name().to_owned());
-                    }
-                    Err(err) => {
-                        warn!(resolver = resolver.name(), error = %err, "解析器查询失败，按不可达处理");
-                        unreachable.push(resolver.name().to_owned());
-                    }
-                }
-            }
-
-            debug!(name = %record.name, round, missing = ?missing, unreachable = ?unreachable, "尚无解析器可见该记录");
+        if published && let ProbeOutcome::Visible = probe_resolvers(
+            resolvers, record, round, &mut missing, &mut unreachable,
+        )
+        .await
+        {
+            return Ok(());
         }
 
         if Instant::now() >= deadline {
             return Err(timeout_error(
-                published,
-                record,
-                &missing,
-                &unreachable,
-                policy,
+                published, record, &missing, &unreachable, policy,
             ));
         }
         sleep(policy.interval).await;
     }
 }
 
+/// 分阶段传播等待：按时间窗口依次切换解析器组。
+///
+/// 三阶段递进，每阶段的解析器视角从「最贴近 CA」到「最贴近公共网络」：
+///
+/// 1. **权威 NS 直查**（`authoritative`，占 `timeout` 的前 1/2）：
+///    CA 从根区递归到权威 NS 取答案，不看公共解析器的缓存——直查权威
+///    NS 最贴近 CA 视角，否定缓存（NXDOMAIN 按 SOA minimum 缓存）不会
+///    在「写入→删除→重试」循环里制造假不可见。
+///
+/// 2. **全量 DNS**（`all_dns`，占 `timeout` 的 1/4）：内置 DNS 服务器 +
+///    自定义解析器，覆盖公共递归视角与厂商线路差异。
+///
+/// 3. **DoH**（`doh`，占 `timeout` 的最后 1/4）：内置 DoH + 配置文件的
+///    DoH 解析器，兜底公共网络可达性。
+///
+/// **就绪判定**：权威 NS 可见后仍不返回——还需至少一个公共解析器
+/// （`all_dns` / `doh`）也可见才算真正就绪。CA 通过公共递归解析器查
+/// TXT，否定缓存（NXDOMAIN 按 SOA minimum，常见 600–3600 秒）会让递归
+/// 解析器在记录已写入权威后仍稳定地查不到；只查权威就放行会让 CA 吃
+/// NXDOMAIN。权威预检确认记录已入权威侧，公共确认确保 CA 能查到。
+///
+/// 权威阶段超时后退化到只查公共解析器（阶段 2/3）。
+/// 所有阶段的「任一家可见即放行」语义不变。
+///
+/// `ACMECAST_DOH_RESOLVERS=none` 时三组均为空，跳过解析器阶段。
+pub async fn wait_until_visible_phased(
+    provider: &dyn DnsProvider,
+    credentials: &Value,
+    record: &TxtRecord,
+    authoritative: &[&dyn DnsResolver],
+    all_dns: &[&dyn DnsResolver],
+    doh: &[&dyn DnsResolver],
+    policy: &PropagationPolicy,
+) -> Result<()> {
+    let start = Instant::now();
+    let phase1_end = start + policy.timeout / 2;
+    let phase2_end = start + policy.timeout * 3 / 4;
+    let deadline = start + policy.timeout;
+
+    let mut published = false;
+    // 权威为空时跳过预检，直接查公共解析器。
+    let mut authoritative_seen = authoritative.is_empty();
+    let mut round = 0_u32;
+    let mut missing: Vec<String> = Vec::new();
+    let mut unreachable: Vec<String> = Vec::new();
+
+    loop {
+        round += 1;
+
+        if !published {
+            let found = provider.find_txt(credentials, record).await?;
+            published = found.iter().any(|value| value == &record.value);
+        }
+
+        let all_empty = authoritative.is_empty() && all_dns.is_empty() && doh.is_empty();
+        if published && all_empty {
+            info!(name = %record.ca_name, round, "传播等待已禁用，提供商侧确认即就绪");
+            return Ok(());
+        }
+
+        if published {
+            let now = Instant::now();
+            let in_phase1 = now < phase1_end;
+
+            // 阶段 1：权威 NS 预检——确认记录已入权威侧。
+            // 权威可见后标记 `authoritative_seen`，继续查公共解析器。
+            if in_phase1 && !authoritative.is_empty() && !authoritative_seen
+                && let ProbeOutcome::Visible = probe_resolvers(
+                    authoritative, record, round, &mut missing, &mut unreachable,
+                )
+                .await
+            {
+                authoritative_seen = true;
+                info!(
+                    name = %record.ca_name, round,
+                    "权威 NS 已可见，继续等待公共解析器确认",
+                );
+            }
+
+            // 公共解析器确认：权威已可见（或权威阶段已超时）后，
+            // 任一公共解析器可见即真正就绪。
+            let public: &[&dyn DnsResolver] = if !all_dns.is_empty() { all_dns } else { doh };
+            if authoritative_seen && !public.is_empty()
+                && let ProbeOutcome::Visible = probe_resolvers(
+                    public, record, round, &mut missing, &mut unreachable,
+                )
+                .await
+            {
+                info!(
+                    name = %record.ca_name, round,
+                    "公共解析器已确认，传播就绪",
+                );
+                return Ok(());
+            }
+
+            // 权威阶段超时后退化为只查公共解析器。
+            if !in_phase1 && !authoritative_seen {
+                let active: &[&dyn DnsResolver] = if now < phase2_end {
+                    if !all_dns.is_empty() { all_dns } else { doh }
+                } else if !doh.is_empty() {
+                    doh
+                } else if !all_dns.is_empty() {
+                    all_dns
+                } else {
+                    authoritative
+                };
+
+                if !active.is_empty()
+                    && let ProbeOutcome::Visible = probe_resolvers(
+                        active, record, round, &mut missing, &mut unreachable,
+                    )
+                    .await
+                {
+                    return Ok(());
+                }
+            }
+        }
+
+        if Instant::now() >= deadline {
+            return Err(timeout_error(
+                published, record, &missing, &unreachable, policy,
+            ));
+        }
+        sleep(policy.interval).await;
+    }
+}
+
+/// 单轮解析器探测的结果。
+enum ProbeOutcome {
+    /// 任一家解析器看到了期望值。
+    Visible,
+    /// 全部没看到（调用方继续等下一轮）。
+    NotVisible,
+}
+
+/// 对一组解析器执行一轮查询：任一家看到期望值即返回 `Visible`，
+/// 否则把没看到的记入 `missing`、查不了的记入 `unreachable`。
+///
+/// 查询**失败**（含超时）与「查到了但值不对」是两回事：前者多半是
+/// 解析器本身出了问题（端点不可达、被墙），按「不可达」归类，
+/// 不参与判定——任一家看到即可放行，所以失败只会让自己出局。
+async fn probe_resolvers(
+    resolvers: &[&dyn DnsResolver],
+    record: &TxtRecord,
+    round: u32,
+    missing: &mut Vec<String>,
+    unreachable: &mut Vec<String>,
+) -> ProbeOutcome {
+    missing.clear();
+    unreachable.clear();
+    // 查 CA 查询名而非写入名：CA 是按订单标识符查找的，跨 zone CNAME 委派时
+    // 它俩不是同一个名字，只有从 ca_name 出发跟随 CNAME 链才等于 CA 的视角。
+    let name = &record.ca_name;
+    for resolver in resolvers {
+        let outcome = match tokio::time::timeout(LOOKUP_TIMEOUT, resolver.lookup_txt(name)).await {
+            Ok(result) => result,
+            Err(_elapsed) => Err(Error::provider(format!(
+                "{} 查询 `{}` 超时（{} 秒）",
+                resolver.name(),
+                name,
+                LOOKUP_TIMEOUT.as_secs()
+            ))),
+        };
+        match outcome {
+            Ok(values) => {
+                if values.iter().any(|value| value == &record.value) {
+                    info!(
+                        name = %name,
+                        round,
+                        resolver = resolver.name(),
+                        "记录已在解析器上可见"
+                    );
+                    return ProbeOutcome::Visible;
+                }
+                missing.push(resolver.name().to_owned());
+            }
+            Err(err) => {
+                warn!(resolver = resolver.name(), error = %err, "解析器查询失败，按不可达处理");
+                unreachable.push(resolver.name().to_owned());
+            }
+        }
+    }
+
+    debug!(name = %name, round, missing = ?missing, unreachable = ?unreachable, "尚无解析器可见该记录");
+    ProbeOutcome::NotVisible
+}
+
 /// 按「卡在哪一段」组装超时错误。
 ///
 /// 只列出**没跟上**的解析器：已经就绪的那些是噪音，而排查时真正要看的
 /// 是「谁还差着」。
+///
+/// 跨 zone CNAME 委派时（写入名 != CA 查询名）额外点出两个名字与 zone：
+/// 记录已经写进 `dns_zone` 却查不到，多半是委派链没接好或还没生效，
+/// 而错误里只有一个名字时看不出这一点。
 fn timeout_error(
     published: bool,
     record: &TxtRecord,
@@ -429,10 +639,19 @@ fn timeout_error(
     policy: &PropagationPolicy,
 ) -> Error {
     let waited = humanize(policy.timeout);
+    let delegation_hint = if record.is_delegated() {
+        format!(
+            "（写入名 `{}`，经 CNAME 委派查询 `{}`；写入名可见而 CA 查不到，\
+             通常是委派未生效或尚未传播）",
+            record.name, record.ca_name
+        )
+    } else {
+        String::new()
+    };
 
     if !published {
         return Error::provider(format!(
-            "等待 {waited} 后，提供商侧仍未确认记录 `{}` 已写入",
+            "等待 {waited} 后，提供商侧仍未确认记录 `{}` 已写入{delegation_hint}",
             record.name
         ));
     }
@@ -454,9 +673,11 @@ fn timeout_error(
     }
 
     Error::provider(format!(
-        "记录 `{}` 已写入提供商侧，但等待 {waited} 后：{}",
+        "记录 `{}` 已写入提供商侧（zone `{}`），但等待 {waited} 后 CA 查询名 `{}` 仍不可见：{}{delegation_hint}",
         record.name,
-        parts.join("；")
+        record.zone,
+        record.ca_name,
+        parts.join("；"),
     ))
 }
 
@@ -596,6 +817,138 @@ mod tests {
                 .cloned()
                 .unwrap_or_default())
         }
+    }
+
+    /// 只对特定名字有值的解析器：用于验证传播等待查的是 CA 查询名，
+    /// 而不是写入到 zone 下的那个名字。
+    #[derive(Debug)]
+    struct NameAwareResolver {
+        visible_name: String,
+        value: String,
+        queries: Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl DnsResolver for NameAwareResolver {
+        fn name(&self) -> &str {
+            "认名字的解析器"
+        }
+
+        async fn lookup_txt(&self, name: &str) -> Result<Vec<String>> {
+            self.queries
+                .lock()
+                .expect("锁不应中毒")
+                .push(name.to_owned());
+            if name == self.visible_name {
+                Ok(vec![self.value.clone()])
+            } else {
+                Ok(Vec::new())
+            }
+        }
+    }
+
+    fn delegated_record() -> TxtRecord {
+        TxtRecord::delegated(
+            "666517.xyz",
+            "_acme-challenge.666517.xyz",
+            "_acme-challenge.skiy.net",
+            "value-1",
+            60,
+        )
+    }
+
+    #[tokio::test]
+    async fn a_write_name_seen_but_ca_name_unseen_keeps_waiting() {
+        // spec：写入名已在 provider 侧可见，但 CA 查询名在解析器侧查不到时，
+        // 必须判为未就绪继续等——不能因写入名可见就放行，那正是 CNAME 委派
+        // 没接好时把「CA 看不到」误判成「可以通知 CA」的场景。
+        let provider = Publishes::always("value-1");
+        // 只有 CA 查询名可见，解析器侧照常返回期望值。
+        let resolver = NameAwareResolver {
+            visible_name: "_acme-challenge.skiy.net".to_owned(),
+            value: "value-1".to_owned(),
+            queries: Mutex::new(Vec::new()),
+        };
+        let record = delegated_record();
+
+        wait_until_visible(
+            &provider,
+            &serde_json::json!({}),
+            &record,
+            &[&resolver],
+            &fast_policy(),
+        )
+        .await
+        .expect("CA 查询名可见即应放行");
+
+        assert!(
+            resolver
+                .queries
+                .lock()
+                .expect("锁不应中毒")
+                .iter()
+                .all(|queried| queried == "_acme-challenge.skiy.net"),
+            "解析器查询必须用 CA 查询名，而非写入名"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_delegated_record_times_out_with_a_cname_hint() {
+        // 写入名可见、CA 查询名始终不可见 → 超时，且错误须指向 CNAME 委派。
+        let provider = Publishes::always("value-1");
+        let resolver = NameAwareResolver {
+            visible_name: "别处".to_owned(),
+            value: "value-1".to_owned(),
+            queries: Mutex::new(Vec::new()),
+        };
+        let record = delegated_record();
+
+        let error = wait_until_visible(
+            &provider,
+            &serde_json::json!({}),
+            &record,
+            &[&resolver],
+            &fast_policy(),
+        )
+        .await
+        .expect_err("CA 查询名不可见应超时");
+        let message = error.to_string();
+        assert!(
+            message.contains("CNAME"),
+            "错误应提示 CNAME 委派：{message}"
+        );
+        assert!(
+            message.contains("_acme-challenge.skiy.net"),
+            "错误应带 CA 查询名：{message}"
+        );
+        assert!(
+            message.contains("_acme-challenge.666517.xyz"),
+            "错误应带写入名：{message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_write_name_alone_does_not_release_the_wait() {
+        // 与上一条互补：provider 侧（写入名）已确认，但解析器侧对 CA 查询名
+        // 不可见时，等待必须耗尽预算而非提前返回。
+        let provider = Publishes::always("value-1");
+        let resolver = NameAwareResolver {
+            visible_name: "_acme-challenge.666517.xyz".to_owned(), // 只认写入名
+            value: "value-1".to_owned(),
+            queries: Mutex::new(Vec::new()),
+        };
+        let record = delegated_record();
+
+        let error = wait_until_visible(
+            &provider,
+            &serde_json::json!({}),
+            &record,
+            &[&resolver],
+            &fast_policy(),
+        )
+        .await
+        .expect_err("只有写入名可见不应放行");
+        assert!(error.to_string().contains("CNAME"));
     }
 
     /// 只实现传播等待用到的那部分能力的假提供商。
@@ -1202,5 +1555,151 @@ mod tests {
         assert_eq!(cf[0].name(), "Cloudflare DNS");
         let qq = doh_resolvers_for_provider(http, Some("tencent"));
         assert_eq!(qq[0].name(), "腾讯 DNSPod");
+    }
+
+    // ---- 分阶段传播等待 ----
+
+    #[tokio::test]
+    async fn phased_needs_public_confirmation_after_authoritative() {
+        // 权威可见后仍需公共解析器确认：权威第一轮就可见，
+        // 公共第二轮才可见——不应在权威可见时立即返回。
+        let provider = Publishes::always("value-1");
+        let auth = ScriptedResolver::new("权威 NS", vec![vec!["value-1".to_owned()]]);
+        let doh = ScriptedResolver::new("DoH", vec![vec![], vec!["value-1".to_owned()]]);
+
+        wait_until_visible_phased(
+            &provider,
+            &serde_json::json!({}),
+            &record(),
+            &[&auth],
+            &[],
+            &[&doh],
+            &PropagationPolicy {
+                interval: Duration::from_millis(5),
+                timeout: Duration::from_millis(200),
+            },
+        )
+        .await
+        .expect("公共确认后应成功");
+
+        assert!(auth.calls() > 0, "权威应被查询过");
+        assert!(doh.calls() > 0, "公共解析器应被查询过");
+    }
+
+    #[tokio::test]
+    async fn phased_times_out_when_authoritative_visible_but_public_never_sees() {
+        // 权威可见但公共解析器始终查不到 → 超时。
+        let provider = Publishes::always("value-1");
+        let auth = ScriptedResolver::new("权威 NS", vec![vec!["value-1".to_owned()]]);
+        let doh = ScriptedResolver::new("DoH", vec![vec![]]);
+
+        let err = wait_until_visible_phased(
+            &provider,
+            &serde_json::json!({}),
+            &record(),
+            &[&auth],
+            &[],
+            &[&doh],
+            &fast_policy(),
+        )
+        .await
+        .expect_err("公共解析器不可见应超时");
+
+        let text = err.to_string();
+        assert!(text.contains("已写入提供商侧"), "{text}");
+        assert!(text.contains("不可见"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn phased_falls_through_when_authoritative_never_sees() {
+        // 权威阶段超时后退化到只查公共解析器。
+        let provider = Publishes::always("value-1");
+        let auth = ScriptedResolver::new("权威", vec![vec![]]);
+        let doh = ScriptedResolver::new("DoH", vec![vec![], vec!["value-1".to_owned()]]);
+
+        wait_until_visible_phased(
+            &provider,
+            &serde_json::json!({}),
+            &record(),
+            &[&auth],
+            &[],
+            &[&doh],
+            &PropagationPolicy {
+                interval: Duration::from_millis(5),
+                timeout: Duration::from_millis(200),
+            },
+        )
+        .await
+        .expect("权威超时后公共可见应成功");
+
+        assert!(auth.calls() > 0, "权威阶段应被查询过");
+        assert!(doh.calls() > 0, "公共阶段应被查询过");
+    }
+
+    #[tokio::test]
+    async fn phased_all_empty_means_provider_only() {
+        // 三组全空（ACMECAST_DOH_RESOLVERS=none 时的语义）：
+        // 提供商侧确认即就绪。
+        let provider = Publishes::always("value-1");
+
+        wait_until_visible_phased(
+            &provider,
+            &serde_json::json!({}),
+            &record(),
+            &[],
+            &[],
+            &[],
+            &fast_policy(),
+        )
+        .await
+        .expect("三组全空时提供商侧确认即就绪");
+    }
+
+    #[tokio::test]
+    async fn phased_no_authoritative_means_public_only() {
+        // 权威为空 → 跳过预检，直接查公共解析器。
+        let provider = Publishes::always("value-1");
+        let all_dns = ScriptedResolver::new("全量", vec![vec!["value-1".to_owned()]]);
+        let doh = ScriptedResolver::new("DoH", vec![vec!["value-1".to_owned()]]);
+
+        wait_until_visible_phased(
+            &provider,
+            &serde_json::json!({}),
+            &record(),
+            &[],
+            &[&all_dns],
+            &[&doh],
+            &fast_policy(),
+        )
+        .await
+        .expect("无权威时全量阶段可见应成功");
+
+        assert_eq!(all_dns.calls(), 1, "全量一轮即中");
+        assert_eq!(doh.calls(), 0, "不应进入 DoH 阶段");
+    }
+
+    #[tokio::test]
+    async fn phased_all_never_visible_times_out() {
+        // 全阶段都查不到 → 超时。
+        let provider = Publishes::always("value-1");
+        let auth = ScriptedResolver::new("权威", vec![vec![]]);
+        let all_dns = ScriptedResolver::new("全量", vec![vec![]]);
+        let doh = ScriptedResolver::new("DoH", vec![vec![]]);
+
+        let err = wait_until_visible_phased(
+            &provider,
+            &serde_json::json!({}),
+            &record(),
+            &[&auth],
+            &[&all_dns],
+            &[&doh],
+            &fast_policy(),
+        )
+        .await
+        .expect_err("全不可见应超时");
+
+        let text = err.to_string();
+        assert!(text.contains("已写入提供商侧"), "{text}");
+        assert!(text.contains("不可见"), "{text}");
     }
 }

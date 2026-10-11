@@ -17,6 +17,8 @@ pub mod m20250107_000001_add_cert_description;
 pub mod m20250108_000001_add_schedule_renewal_threshold;
 pub mod m20250109_000001_add_history_log_output;
 pub mod m20250110_000001_add_pipeline_name_unique;
+pub mod m20250111_000001_add_cert_key_algorithm;
+pub mod m20250112_000001_add_cert_archived_at;
 
 use sea_orm::DatabaseConnection;
 use sea_orm_migration::prelude::*;
@@ -37,6 +39,8 @@ pub use m20250107_000001_add_cert_description::Migration as AddCertDescription;
 pub use m20250108_000001_add_schedule_renewal_threshold::Migration as AddScheduleRenewalThreshold;
 pub use m20250109_000001_add_history_log_output::Migration as AddHistoryLogOutput;
 pub use m20250110_000001_add_pipeline_name_unique::Migration as AddPipelineNameUnique;
+pub use m20250111_000001_add_cert_key_algorithm::Migration as AddCertKeyAlgorithm;
+pub use m20250112_000001_add_cert_archived_at::Migration as AddCertArchivedAt;
 
 #[async_trait::async_trait]
 impl MigratorTrait for Migrator {
@@ -52,6 +56,8 @@ impl MigratorTrait for Migrator {
             Box::new(AddScheduleRenewalThreshold),
             Box::new(AddHistoryLogOutput),
             Box::new(AddPipelineNameUnique),
+            Box::new(AddCertKeyAlgorithm),
+            Box::new(AddCertArchivedAt),
         ]
     }
 }

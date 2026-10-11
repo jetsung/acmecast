@@ -2,8 +2,9 @@
 //!
 //! 对应 `specs/http-api/spec.md`。库层只提供可测试的装配函数与停机语义；
 //! 环境变量读取与进程入口在 `main.rs`。
-
 pub mod auth;
+pub mod cert_backfill;
+pub mod cert_migrate;
 pub mod config;
 pub mod credentials;
 mod handlers;
@@ -12,7 +13,6 @@ pub mod response;
 mod run;
 pub mod scheduler;
 pub mod steps;
-
 /// 生成管理员口令的 Argon2 PHC 哈希（`hash-password` 子命令与开发示例共用）。
 ///
 /// 格式与 `ACMECAST_ADMIN_PASSWORD_HASH` 的解析端完全一致；错误仅在

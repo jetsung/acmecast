@@ -1,6 +1,8 @@
 //! 凭据类型定义。
 
 pub mod acme_account;
+pub mod s3;
+pub mod webdav;
 
 use schemars::schema::RootSchema;
 

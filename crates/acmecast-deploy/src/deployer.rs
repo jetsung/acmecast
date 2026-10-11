@@ -42,7 +42,7 @@ impl Deployer {
         let reference = target_ref_of(target.type_id(), input);
         let deployed = self.state.deployed_fingerprint(&reference).await?;
 
-        let mode = decide_mode(deployed.as_deref(), &materials.fingerprint, force);
+        let mode = if target.supports_skip_write() { decide_mode(deployed.as_deref(), &materials.fingerprint, force) } else { DeployMode::Write };
 
         let outcome = target.deploy(input, materials, credentials, mode).await?;
 

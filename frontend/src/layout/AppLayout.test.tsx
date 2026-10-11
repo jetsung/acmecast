@@ -76,3 +76,17 @@ describe("侧边栏固定布局", () => {
     expect(screen.getByRole("button", { name: /登\s*出/ })).toBeTruthy();
   });
 });
+
+describe("主体内容区布局", () => {
+  beforeEach(() => {
+    useAuthStore.setState({ token: "test-token", username: "admin" });
+  });
+
+  it("主体内容容器不携带 max-width: 1240 固定上限且保留 margin: 0 auto", () => {
+    renderLayout();
+    const outlet = document.querySelector("main.ant-layout-content > div");
+    expect(outlet).not.toBeNull();
+    expect((outlet as HTMLElement).style.maxWidth).toBe("");
+    expect((outlet as HTMLElement).style.margin).toBe("0px auto");
+  });
+});

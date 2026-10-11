@@ -54,7 +54,7 @@
 | `account_credential_id` | int | 是 | ACME 账号凭据标识（`acme.account` 类型） |
 | `dns_provider` | string | DNS-01 必填 | DNS 提供商标识：`cloudflare` / `aliyun` |
 | `dns_credential_id` | int | DNS-01 必填 | DNS 提供商凭据标识 |
-| `dns_zone` | string | 否 | DNS zone；缺省从主域名去掉第一段推导（`a.example.com` → `example.com`） |
+| `dns_zone` | string | 否 | 挑战记录写入的 DNS zone；缺省从主域名去掉第一段推导（`a.example.com` → `example.com`）。该字段同时决定写入的 zone 与记录名 `_acme-challenge.<dns_zone>`；挑战记录经 CNAME 委派到别处托管时（`_acme-challenge.skiy.net` CNAME 到 `_acme-challenge.666517.xyz`），填记录**实际托管**的 zone 即 `666517.xyz` |
 | `wait_propagation` | bool | 否（默认 `true`） | 等 TXT 记录可见后再让 CA 验证；内网 DNS（解析器查不到）应关闭 |
 | `contacts` | string[] | 否 | 账号联系人（裸邮箱或 `mailto:` URI），仅首次注册时用 |
 | `insecure_skip_verify` | bool | 否（默认 `false`） | 跳过 CA 的 TLS 校验，仅供自签测试 CA（pebble） |
@@ -77,11 +77,12 @@
 ### `cert.store` — 证书入库
 
 把申请到的证书写进数据目录（受限权限）并入库。同一域名集合再次入库是更新
-而非新增（续期重跑不产生重复记录）。
+而非新增（续期重跑不产生重复记录）。未到期跳过 `cert.apply` 时会直接注入
+库中证书的产物，`cert.store` 幂等成功后仍会触发后续 `cert.deploy`。
 
 | 字段 | 类型 | 必需 | 说明 |
 |---|---|---|---|
-| `acme_account_credential_id` | int | 否 | 签发账号凭据标识；记录后吊销才知道用哪个账号。手动上传场景可不填 |
+| `acme_account_credential_id` | int | 否 | 签发账号凭据标识；记录后吊销才知道用哪个账号。同一流水线已有 `cert.apply` 时可留空，执行时从 `cert.apply.account_credential_id` 或库中同域名记录推断；手动上传场景也可不填 |
 
 前置产物：`cert_pem`、`key_pem`、`domains`、`fingerprint`。
 产物：`cert_id`、`fingerprint`。
@@ -132,7 +133,7 @@
     },
     {
       "type_id": "cert.store",
-      "input": { "acme_account_credential_id": 1 }
+      "input": {}
     },
     {
       "type_id": "cert.deploy",

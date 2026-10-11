@@ -44,6 +44,8 @@ pub struct Model {
     pub acme_account_access_id: Option<i64>,
     /// 吊销时间，非空表示已吊销。
     pub revoked_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// 归档时间，非空表示已归档到 `certs/archived/<指纹>/`。
+    pub archived_at: Option<chrono::DateTime<chrono::Utc>>,
     /// 私钥算法展示名（如 RSA / ECDSA P-256 / Ed25519）；入库时从私钥检测，旧数据可为空。
     pub key_algorithm: Option<String>,
     /// 管理员备注（用途/归属说明），非敏感、可为空；用于列表可扫视。
@@ -198,6 +200,7 @@ mod tests {
             not_after,
             acme_account_access_id: Some(7),
             revoked_at: None,
+            archived_at: None,
             key_algorithm: None,
             description: None,
             created_at: not_after - Duration::days(90),

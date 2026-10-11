@@ -47,6 +47,8 @@ pub struct CertInput {
     pub not_after: DateTime<Utc>,
     /// 签发所用的 ACME 账号凭据标识；手动上传时为 `None`。
     pub acme_account_access_id: Option<i64>,
+    /// 私钥算法展示名（RSA / ECDSA P-256 等）；由调用方检测后传入，可为空。
+    pub key_algorithm: Option<String>,
     /// 管理员备注；空白归一为 `None`。
     pub description: Option<String>,
 }
@@ -79,13 +81,15 @@ impl SaveOutcome {
     }
 }
 
-/// 证书列表的排序方向。当前只按到期时间排序。
+/// 证书列表的排序方向。默认按 ID 降序；可选按到期时间升/降序。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CertSort {
-    /// 到期时间升序：最快到期的排在最前。
+    /// 按 ID 降序：ID 最大的排在最前。
     ///
-    /// 这是**默认**，对应运维视角下最常用的那个问题——「哪些证书最该先处理」。
+    /// 这是**默认**，与其他列表的「最新优先」保持一致。
     #[default]
+    IdDesc,
+    /// 到期时间升序：最快到期的排在最前。
     Ascending,
     /// 到期时间降序：最晚到期的排在最前，也就是最近签发的在前。
     Descending,
@@ -250,11 +254,13 @@ impl<'db> CertRepository<'db> {
 
         // 次级排序键 id 不能省：到期时间相同的记录若没有稳定的先后，
         // 翻页时可能重复或漏掉同一条。补上 id 之后排序才是全序。
+        // IdDesc 不按到期时间排序，仅按 ID 降序——这是与其他列表一致的默认行为。
         find = match query.sort {
+            CertSort::IdDesc => find,
             CertSort::Ascending => find.order_by_asc(cert::Column::NotAfter),
             CertSort::Descending => find.order_by_desc(cert::Column::NotAfter),
         };
-        find = find.order_by_asc(cert::Column::Id);
+        find = find.order_by_desc(cert::Column::Id);
 
         let paginator = find.paginate(self.db, query.page_size);
         let numbers = paginator.num_items_and_pages().await?;
@@ -334,6 +340,52 @@ impl<'db> CertRepository<'db> {
         Ok(())
     }
 
+    /// 列出尚无私钥算法展示名的证书记录（存量回填用）。
+    pub async fn list_missing_key_algorithm(&self) -> Result<Vec<cert::Model>> {
+        Ok(cert::Entity::find()
+            .filter(cert::Column::KeyAlgorithm.is_null())
+            .all(self.db)
+            .await?)
+    }
+
+    /// 回填一条证书记录的私钥算法展示名。
+    pub async fn update_key_algorithm(&self, cert_id: i64, algorithm: &str) -> Result<()> {
+        let row = cert::Entity::find_by_id(cert_id)
+            .one(self.db)
+            .await?
+            .ok_or_else(|| Error::not_found("证书", cert_id.to_string()))?;
+        cert::ActiveModel {
+            id: Set(row.id),
+            key_algorithm: Set(Some(algorithm.to_owned())),
+            updated_at: Set(Utc::now()),
+            ..Default::default()
+        }
+        .update(self.db)
+        .await?;
+        Ok(())
+    }
+
+    /// 更新证书的管理员备注；空白归一为 `None`，返回更新后的记录。
+    pub async fn update_description(
+        &self,
+        cert_id: i64,
+        description: Option<String>,
+    ) -> Result<cert::Model> {
+        let row = cert::Entity::find_by_id(cert_id)
+            .one(self.db)
+            .await?
+            .ok_or_else(|| Error::not_found("证书", cert_id.to_string()))?;
+        cert::ActiveModel {
+            id: Set(row.id),
+            description: Set(normalize_cert_description(description)),
+            updated_at: Set(Utc::now()),
+            ..Default::default()
+        }
+        .update(self.db)
+        .await
+        .map_err(Into::into)
+    }
+
     /// 更新证书材料的存放路径。
     ///
     /// 吊销归档用：文件移进吊销目录后，库中的相对路径必须跟着走，
@@ -349,6 +401,54 @@ impl<'db> CertRepository<'db> {
             cert_pem_path: Set(paths.cert_pem.clone()),
             key_pem_path: Set(paths.key_pem.clone()),
             updated_at: Set(Utc::now()),
+            ..Default::default()
+        }
+        .update(self.db)
+        .await?;
+
+        Ok(())
+    }
+
+    /// 原子归档：同时更新路径与 `archived_at`。
+    ///
+    /// 归档是“文件已移至 `certs/archived/<指纹>/`”的持久化事实来源，路径与时间
+    /// 必须同一次落库，否则刷新后 `archived_at` 仍为空会导致前端归档按钮可重复点击。
+    pub async fn set_archived_paths(
+        &self,
+        cert_id: i64,
+        paths: &CertFilePaths,
+        archived_at: DateTime<Utc>,
+    ) -> Result<()> {
+        let row = cert::Entity::find_by_id(cert_id)
+            .one(self.db)
+            .await?
+            .ok_or_else(|| Error::not_found("证书", cert_id.to_string()))?;
+
+        cert::ActiveModel {
+            id: Set(row.id),
+            cert_pem_path: Set(paths.cert_pem.clone()),
+            key_pem_path: Set(paths.key_pem.clone()),
+            archived_at: Set(Some(archived_at)),
+            updated_at: Set(archived_at),
+            ..Default::default()
+        }
+        .update(self.db)
+        .await?;
+
+        Ok(())
+    }
+
+    /// 标记证书为已归档（仅时间，未移动路径时慎用）。
+    pub async fn mark_archived(&self, cert_id: i64, archived_at: DateTime<Utc>) -> Result<()> {
+        let row = cert::Entity::find_by_id(cert_id)
+            .one(self.db)
+            .await?
+            .ok_or_else(|| Error::not_found("证书", cert_id.to_string()))?;
+
+        cert::ActiveModel {
+            id: Set(row.id),
+            archived_at: Set(Some(archived_at)),
+            updated_at: Set(archived_at),
             ..Default::default()
         }
         .update(self.db)
@@ -406,6 +506,7 @@ impl<'db> CertRepository<'db> {
             not_after: Set(input.not_after),
             acme_account_access_id: Set(input.acme_account_access_id),
             revoked_at: Set(None),
+            key_algorithm: Set(input.key_algorithm),
             description: Set(normalize_cert_description(input.description)),
             created_at: Set(now),
             updated_at: Set(now),
@@ -432,6 +533,7 @@ impl<'db> CertRepository<'db> {
             // 新证书天然未被吊销。若旧记录处于已吊销状态而这里不清空，
             // 续期后的证书会被永久当成已吊销，从此不再触发续期。
             revoked_at: Set(None),
+            key_algorithm: Set(input.key_algorithm),
             description: Set(normalize_cert_description(input.description)),
             updated_at: Set(Utc::now()),
             ..Default::default()
@@ -457,10 +559,10 @@ mod tests {
     }
 
     #[test]
-    fn default_query_is_the_first_page_soonest_first() {
+    fn default_query_is_the_first_page_id_desc() {
         let query = CertQuery::default();
         assert_eq!(query.domain, None);
-        assert_eq!(query.sort, CertSort::Ascending);
+        assert_eq!(query.sort, CertSort::IdDesc);
         assert_eq!(query.page, 1);
         assert_eq!(query.page_size, DEFAULT_PAGE_SIZE);
     }

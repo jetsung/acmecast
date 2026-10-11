@@ -111,13 +111,14 @@ describe("证书列表到期时间列", () => {
 });
 
 describe("证书列表默认排序", () => {
-  it("首次渲染即按到期时间降序请求（sort=descending, page=1）", async () => {
+  it("首次渲染即按 ID 降序请求（无 sort, page=1）", async () => {
     renderPage();
 
     await waitFor(() => {
       expect(mockedGet).toHaveBeenCalled();
     });
-    expect(queryOf(0)).toMatchObject({ sort: "descending", page: 1 });
+    expect(queryOf(0)).toMatchObject({ page: 1 });
+    expect(queryOf(0).sort).toBeUndefined();
   });
 
   it("切换为「按到期时间升序」后重新按升序请求", async () => {
@@ -127,9 +128,6 @@ describe("证书列表默认排序", () => {
       expect(mockedGet).toHaveBeenCalled();
     });
 
-    // 打开 antd Select 下拉（选项挂在 body 的 portal 中），点选升序。
-    // antd v6 的 Select 已无 .ant-select-selector 包装层，
-    // 对根元素派发 mousedown，事件冒泡到 rc-select 的处理器。
     fireEvent.mouseDown(container.querySelector(".ant-select")!);
     fireEvent.click(await screen.findByText("按到期时间升序"));
 

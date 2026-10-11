@@ -25,6 +25,13 @@
   给出 `b.co.uk`）。
 - **挑战超时，错误提示「解析器没看到」**：传播慢或用了内网 DNS。内网 zone
   请在 `cert.apply` 输入里设 `wait_propagation=false`。
+- **记录已写进 Cloudflare，CA 却报 `No TXT record found`**：多半是
+  `dns_zone` 配了委派目标 zone，但 CNAME 委派链没接好。此时错误会同时给出
+  两个记录名——**写入名**（写在 `dns_zone` 下的那个，如
+  `_acme-challenge.666517.xyz`）与 **CA 查询名**（按授权域名派生的那个，如
+  `_acme-challenge.skiy.net`）。日志里的「写入挑战记录 …（CA 查询名 …，经 CNAME
+  委派）」也是这两个。用 `dig +short CNAME <CA 查询名>` 确认委派存在且指向
+  写入名；查不到 CNAME 就是委派没建或已被同名 TXT/CNAME 盖住。
 - **报「异值残留」**：`_acme-challenge` 下有上次失败留下的旧 TXT 记录。
   这是刻意的保护（防 CA 读到旧值）；手工删掉残留记录后重跑。
 - **`NXDOMAIN looking up TXT` 或 `During secondary validation: No TXT record found`**：最常见于 **`CNAME`/`*.CNAME` 把 `_acme-challenge` 盖住了**（见 [DNS 提供商](06-dns-providers.md#通配符与-cname-的排障)）。`*.example.com CNAME x` 会让 `_acme-challenge.example.com` 合成出 `CNAME`，同名 `TXT` 被遮蔽；`dig @权威NS TXT _acme-challenge.example.com` 若只回 `CNAME`，就是这个原因。只留 `*.example.com` 的泛条、不要建显式的 `_acme-challenge.example.com CNAME`，待 `acmecast` 写入显式 `TXT` 压掉通配后再验证，或把泛解析改 `A` 记录。

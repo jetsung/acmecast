@@ -89,8 +89,8 @@ impl DnsResolver for AuthoritativeResolver {
         let servers = self.authority.name_server_ips(&self.zone).await?;
         if servers.is_empty() {
             return Err(Error::provider(format!(
-                "找不到 zone `{}` 的任何权威名字服务器",
-                self.zone
+                "找不到 zone `{}` 的任何权威名字服务器（查的是 `{}`）",
+                self.zone, name
             )));
         }
 
@@ -172,8 +172,8 @@ impl AuthoritativeResolver {
     async fn query_servers(&self, servers: &[IpAddr], name: &str) -> Result<Vec<String>> {
         if servers.is_empty() {
             return Err(Error::provider(format!(
-                "找不到 zone `{}` 的任何权威名字服务器",
-                self.zone
+                "找不到 zone `{}` 的任何权威名字服务器（查的是 `{}`）",
+                self.zone, name
             )));
         }
 
@@ -202,8 +202,8 @@ impl AuthoritativeResolver {
             Ok(values)
         } else {
             Err(Error::provider(format!(
-                "zone `{}` 的全部权威名字服务器查询失败",
-                self.zone
+                "zone `{}` 的全部权威名字服务器查询失败（查的是 `{}`）",
+                self.zone, name
             )))
         }
     }
@@ -442,7 +442,6 @@ mod tests {
         async fn name_server_ips(&self, _zone: &str) -> Result<Vec<IpAddr>> {
             Ok(self.servers.clone())
         }
-
         async fn txt_at(&self, ns: IpAddr, name: &str) -> Result<Vec<String>> {
             let answers = self.answers.lock().unwrap();
             answers
@@ -663,5 +662,82 @@ mod tests {
     fn fqdn_appends_only_a_missing_dot() {
         assert_eq!(fqdn("example.com"), "example.com.");
         assert_eq!(fqdn("example.com."), "example.com.");
+    }
+
+    /// 按 zone 返回各自 NS 的假权威——用于验证 CNAME 委派能跨 zone 跟随：
+    /// 委派源与委派目标是两个独立的 zone，各自有各自的 NS。
+    #[derive(Debug)]
+    struct SplitAuthority {
+        inner: FakeAuthority,
+    }
+
+    #[async_trait]
+    impl Authority for SplitAuthority {
+        async fn name_server_ips(&self, zone: &str) -> Result<Vec<IpAddr>> {
+            if zone == "666517.xyz" {
+                Ok(vec!["10.0.0.2".parse().unwrap()])
+            } else {
+                Ok(vec!["10.0.0.1".parse().unwrap()])
+            }
+        }
+
+        async fn txt_at(&self, ns: IpAddr, name: &str) -> Result<Vec<String>> {
+            self.inner.txt_at(ns, name).await
+        }
+
+        async fn records_at(
+            &self,
+            ns: IpAddr,
+            name: &str,
+        ) -> Result<(Vec<String>, Option<String>)> {
+            self.inner.records_at(ns, name).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_cname_across_zones_is_followed_to_the_delegation_target() {
+        // 流水线 #12 的真实形态：`_acme-challenge.skiy.net` CNAME 到
+        // `_acme-challenge.666517.xyz`。首跳 zone 是委派源（skiy.net），
+        // 记录写在委派目标（666517.xyz）下——两者 NS 各不相同。
+        let inner = FakeAuthority::new(&[]);
+        inner.cname_at(
+            "10.0.0.1",
+            "_acme-challenge.skiy.net",
+            "_acme-challenge.666517.xyz.",
+        );
+        inner.answer(
+            "10.0.0.2",
+            "_acme-challenge.666517.xyz",
+            &["challenge-value"],
+        );
+
+        let resolver = AuthoritativeResolver::with_authority(
+            "skiy.net",
+            Arc::new(SplitAuthority { inner }) as Arc<dyn Authority>,
+        );
+
+        let values = resolver
+            .lookup_txt("_acme-challenge.skiy.net")
+            .await
+            .expect("跨 zone 跟随 CNAME 应查到值");
+        assert_eq!(values, vec!["challenge-value".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn a_missing_authority_names_the_query_in_the_error() {
+        let resolver = AuthoritativeResolver::with_authority(
+            "skiy.net",
+            Arc::new(FakeAuthority::new(&[])) as Arc<dyn Authority>,
+        );
+        let error = resolver
+            .lookup_txt("_acme-challenge.skiy.net")
+            .await
+            .expect_err("无 NS 应报错");
+        let message = error.to_string();
+        assert!(message.contains("skiy.net"), "错误应带 zone：{message}");
+        assert!(
+            message.contains("_acme-challenge.skiy.net"),
+            "错误应带查询名：{message}"
+        );
     }
 }

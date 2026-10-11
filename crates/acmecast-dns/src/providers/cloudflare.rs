@@ -181,6 +181,12 @@ impl DnsProvider for CloudflareProvider {
             .collect())
     }
 
+    async fn probe_zone(&self, credentials: &Value, zone: &str) -> Result<()> {
+        let credentials: CloudflareCredentials = parse_credentials(credentials)?;
+        self.zone_id(&credentials.api_token, zone).await?;
+        Ok(())
+    }
+
     async fn delete_txt(&self, credentials: &Value, record: &TxtRecord) -> Result<()> {
         let credentials: CloudflareCredentials = parse_credentials(credentials)?;
         let zone_id = self.zone_id(&credentials.api_token, &record.zone).await?;

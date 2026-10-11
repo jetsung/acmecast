@@ -47,6 +47,9 @@ pub struct ServerConfig {
     pub notifications: Vec<ChannelConfig>,
     /// DNS-01 传播等待策略；来自 `[propagation]` 段与环境变量的合并。
     pub propagation: PropagationConfig,
+    /// `config.toml` 的 `[[resolvers]]` 条目；传播等待的阶段 2/3
+    /// 用它扩展内置解析器集合。
+    pub resolvers: Vec<ResolverEntry>,
 }
 
 impl Default for ServerConfig {
@@ -64,6 +67,7 @@ impl Default for ServerConfig {
                 timeout_secs: 300,
                 interval_secs: 5,
             },
+            resolvers: Vec::new(),
         }
     }
 }
@@ -358,6 +362,7 @@ fn apply_file(config: &mut ServerConfig, file: &AppConfig) {
         timeout_secs: file.propagation.timeout_secs,
         interval_secs: file.propagation.interval_secs,
     };
+    config.resolvers = file.resolvers.clone();
 }
 
 /// 校验并转换 `[[notifications]]` 条目；非法条目跳过并告警。

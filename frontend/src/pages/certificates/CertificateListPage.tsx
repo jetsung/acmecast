@@ -88,7 +88,7 @@ export function CertificateListPage() {
   const queryClient = useQueryClient();
   const { message, modal } = App.useApp();
   const [domain, setDomain] = useState("");
-  const [sort, setSort] = useState<"ascending" | "descending">("descending");
+  const [sort, setSort] = useState<"id_desc" | "ascending" | "descending">("id_desc");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(15);
   const [revokingId, setRevokingId] = useState<number | null>(null);
@@ -102,7 +102,7 @@ export function CertificateListPage() {
         params: {
           query: {
             domain: domain || undefined,
-            sort,
+            sort: sort === "id_desc" ? undefined : sort,
             page,
             page_size: pageSize,
           },
@@ -353,6 +353,7 @@ export function CertificateListPage() {
               style={{ width: 160 }}
               onChange={(value) => setSort(value)}
               options={[
+                { value: "id_desc", label: "按 ID 降序" },
                 { value: "ascending", label: "按到期时间升序" },
                 { value: "descending", label: "按到期时间降序" },
               ]}
@@ -381,7 +382,7 @@ export function CertificateListPage() {
               }
             },
             showSizeChanger: true,
-            pageSizeOptions: [15, 20, 50, 100],
+            pageSizeOptions: [10, 15, 20, 50, 100],
             showTotal: (total) => `共 ${total} 条`,
           }}
         />

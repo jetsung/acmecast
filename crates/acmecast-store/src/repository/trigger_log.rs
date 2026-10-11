@@ -103,7 +103,7 @@ impl<'db> TriggerLogRepository<'db> {
         Ok(row.map(|entry| entry.triggered_at))
     }
 
-    /// 分页查询触发记录，按触发时间倒序（9.7）。
+    /// 分页查询触发记录，按主键降序（9.7）。
     ///
     /// `pipeline_id` 为 `None` 时查全部流水线。
     pub async fn list(
@@ -121,8 +121,7 @@ impl<'db> TriggerLogRepository<'db> {
         }
 
         let paginator = select
-            .order_by_desc(trigger_log::Column::TriggeredAt)
-            // 同一时刻的记录靠主键定序，翻页不重不漏。
+            // 按主键降序，ID 最大的记录排在最前；翻页不重不漏。
             .order_by_desc(trigger_log::Column::Id)
             .paginate(self.db, page_size);
 

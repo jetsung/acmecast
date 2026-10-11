@@ -1,4 +1,4 @@
-import { Col, Form, Input, InputNumber, Row, Select, Switch, Alert, Typography } from "antd";
+import { Col, Form, Input, InputNumber, Row, Select, Space, Switch, Alert, Typography } from "antd";
 import type { FormInstance } from "antd";
 import type { Rule } from "antd/es/form";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
@@ -71,6 +71,8 @@ interface Extension {
    * 缺失时回退显示原值。
    */
   "x-enum-labels"?: Record<string, string>;
+  /** CA 按值对应的帮助链接（acme.account 的 ca 字段）：`{value,url,label}`。 */
+  "x-help-links"?: Array<{ value: string; url: string; label: string }>;
   /**
    * cert.deploy 的 `config`：结构随同级的 `target` 字段变化，后端把各部署
    * 目标的展示名、输入示例与 schema 按目标标识挂在这里。选中目标后按
@@ -110,6 +112,12 @@ type SchemaObject = JsonSchemaNode & Extension;
 
 interface Condition {
   Equals?: { field: string; values: unknown[] };
+  /** 多值匹配：字段当前值位于 values 之一时命中。 */
+  In?: { field: string; values: unknown[] };
+  /** 空值判定：字段为 undefined/null/空串时命中。 */
+  Empty?: string;
+  /** 与：全部子条件命中时命中。 */
+  And?: Condition[];
   /**
    * 数组字段的长度下限（后端 schema 注入，如 cert.apply 的 dns_zone）：
    * `domains` 填了至少 `count` 个域名时命中——其余形态（非数组、字段缺失）
@@ -230,12 +238,24 @@ function deref(node: JsonSchemaNode, root: JsonSchemaNode): JsonSchemaNode {
 
 /** 求值一条条件；条件缺失或形态不认识时按「不满足」处理。 */
 function conditionSatisfied(condition: Condition | undefined, values: Record<string, unknown>): boolean {
-  const equals = condition?.Equals;
+  if (!condition) return false;
+  if (condition.And) {
+    return condition.And.every((c) => conditionSatisfied(c, values));
+  }
+  const equals = condition.Equals;
   if (equals) {
     const actual = values[equals.field];
     return actual !== undefined && equals.values.some((value) => value === actual);
   }
-  const minItems = condition?.MinItems;
+  if (condition.In) {
+    const actual = values[condition.In.field];
+    return actual !== undefined && condition.In.values.some((value) => value === actual);
+  }
+  if (condition.Empty !== undefined) {
+    const actual = values[condition.Empty];
+    return actual === undefined || actual === null || (typeof actual === "string" && actual.trim() === "");
+  }
+  const minItems = condition.MinItems;
   if (minItems) {
     const actual = values[minItems.field];
     return Array.isArray(actual) && actual.length >= minItems.count;
@@ -413,17 +433,29 @@ function SchemaField({
     );
   }
 
-  if (node.enum && node.enum.length > 0) {
+    if (node.enum && node.enum.length > 0) {
     const labels = node["x-enum-labels"];
+    const helpLinks = node["x-help-links"] as Array<{ value: string; url: string; label: string }> | undefined;
+    const fieldName = String(path[path.length - 1] ?? "");
+    const cur = String(values?.[fieldName] ?? control?.value ?? "");
+    const links = helpLinks?.filter((l) => String(l.value) === cur) ?? [];
     return (
-      <Select
-        disabled={disabled}
-        options={node.enum.map((value) => {
-          const key = String(value);
-          return { value: key, label: labels?.[key] ?? key };
-        })}
-        {...control}
-      />
+      <Space.Compact block>
+        <Select
+          disabled={disabled}
+          options={node.enum.map((value) => {
+            const key = String(value);
+            return { value: key, label: labels?.[key] ?? key };
+          })}
+          {...control}
+          style={{ flex: 1 }}
+        />
+        {links.map((link) => (
+          <Typography.Link key={link.value} href={link.url} target="_blank" style={{ paddingLeft: 8, lineHeight: "32px", whiteSpace: "nowrap" }}>
+            {link.label}
+          </Typography.Link>
+        ))}
+      </Space.Compact>
     );
   }
 

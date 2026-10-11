@@ -18,6 +18,8 @@ const SSH_HOST_TYPE_ID = "ssh";
  * 后端没有「列出 DNS 提供商」的接口，这份清单只能前端维护。
  */
 const DNS_PROVIDERS = [
+  // 空值 = 留空自动选择：后端按域名托管商对齐（腾讯云 → 阿里云 → Cloudflare → 其它）探测后选定。
+  { value: "", label: "自动选择" },
   { value: "cloudflare", label: "Cloudflare" },
   { value: "aliyun", label: "阿里云" },
   { value: "tencent", label: "腾讯云" },
@@ -30,6 +32,8 @@ const DEPLOY_TARGETS = [
   { value: "local", label: "本地文件系统" },
   { value: "ssh", label: "SSH 远程主机" },
   { value: "tencent-ssl", label: "腾讯云 SSL 证书" },
+  { value: "s3", label: "S3 兼容存储" },
+  { value: "webdav", label: "WebDAV" },
 ];
 
 interface FieldOption {
@@ -240,6 +244,21 @@ export function PipelineEditorPage() {
   const hasApply = (stepTypeCount["cert.apply"] ?? 0) >= 1;
   const hasStore = (stepTypeCount["cert.store"] ?? 0) >= 1;
 
+  // cert.store 默认值联动 cert.apply：显式字段，默认跟随 apply 的 account_credential_id
+  const inputsWatch = Form.useWatch(["inputs"], form) as Record<string, Record<string, unknown>> | undefined;
+  useEffect(() => {
+    const applyStep = steps.find((s) => s.type_id === "cert.apply");
+    const storeStep = steps.find((s) => s.type_id === "cert.store");
+    if (!applyStep || !storeStep) return;
+    const applyVal = (inputsWatch?.[String(applyStep.id)] as Record<string, unknown> | undefined)?.["account_credential_id"];
+    if (applyVal == null || applyVal === "") return;
+    const storeVal = (inputsWatch?.[String(storeStep.id)] as Record<string, unknown> | undefined)?.["acme_account_credential_id"];
+    // 仅当 store 字段为空时自动填入 apply 的值，保留用户显式覆盖
+    if (storeVal == null || storeVal === "") {
+      form.setFieldValue(["inputs", storeStep.id, "acme_account_credential_id"], applyVal);
+    }
+  }, [steps, inputsWatch, form]);
+
   const canAddType = (typeId: string) => {
     const trimmed = typeId.trim();
     if (SINGLETON_STEP_TYPES[trimmed]) {
@@ -258,6 +277,48 @@ export function PipelineEditorPage() {
     if (storeCount > 1) {
       message.error("cert.store 仅允许添加一次");
       return;
+    }
+    // renew_before_days：0 表示跳过过期校验，>0 为到期阈值（正整数校验）；缺省按 30 补齐
+    for (const step of steps) {
+      if (step.type_id !== "cert.apply") continue;
+      const raw = (form.getFieldValue(["inputs", step.id]) ?? {}) as Record<string, unknown>;
+      const input = raw as Record<string, unknown>;
+      const value = input["renew_before_days"];
+      const missing =
+        value === undefined ||
+        value === null ||
+        (typeof value === "string" && (value as string).trim() === "");
+      if (missing) {
+        form.setFieldValue(["inputs", step.id, "renew_before_days"], 30);
+        continue;
+      }
+      let num: number | null = null;
+      if (typeof value === "number") {
+        num = value as number;
+      } else if (typeof value === "string") {
+        const trimmed = (value as string).trim();
+        if (trimmed === "") {
+          form.setFieldValue(["inputs", step.id, "renew_before_days"], 30);
+          continue;
+        }
+        const parsed = Number(trimmed);
+        if (!Number.isFinite(parsed)) {
+          message.error("renew_before_days：必须为大于等于 0 的整数");
+          return;
+        }
+        num = parsed;
+      } else {
+        message.error("renew_before_days：必须为大于等于 0 的整数");
+        return;
+      }
+      if (!Number.isInteger(num) || num < 0) {
+        message.error("renew_before_days：必须为大于等于 0 的整数");
+        return;
+      }
+      // 字符串输入归一为数字
+      if (typeof value === "string") {
+        form.setFieldValue(["inputs", step.id, "renew_before_days"], num);
+      }
     }
     setSaving(true);
     try {
@@ -501,7 +562,7 @@ function tightenSshSchema(schema: Record<string, unknown>): Record<string, unkno
  * cert.deploy 输入的字段渲染顺序：`target`（选哪种部署方式）是首要决策，
  * 排最前；`force`（要不要强制重写）次之；`config` 子表单跟在决策字段之后。
  */
-const CERT_DEPLOY_FIELD_ORDER = ["target", "force", "config"];
+const CERT_DEPLOY_FIELD_ORDER = ["target", "config"];
 
 /**
  * 给「应该选一个」的字段注入 `x-options`（SchemaForm 的客户端扩展），
@@ -528,6 +589,24 @@ function withFieldOptions(
     if (!next[field]) continue;
     next[field] = { ...next[field], "x-options": fieldOptions };
     changed = true;
+  }
+  if (next["force"]) {
+    next["force"] = { ...(next["force"] as Record<string, unknown>), "x-hidden": true };
+    changed = true;
+  }
+  // cert.store：acme_account_credential_id 显式展示，描述提示默认跟随 cert.apply
+  if (next["acme_account_credential_id"]) {
+    const field = next["acme_account_credential_id"] as Record<string, unknown>;
+    const desc = (field.description as string | undefined) ?? "";
+    if (!desc.includes("默认跟随")) {
+      next["acme_account_credential_id"] = {
+        ...field,
+        description: desc
+          ? `${desc}（默认跟随 cert.apply 的 account_credential_id，可显式覆盖）`
+          : "默认跟随 cert.apply 的 account_credential_id，可显式覆盖",
+      };
+      changed = true;
+    }
   }
   // cert.deploy 的输入 schema（以 dns_provider/target/config 为特征）注入根级
   // 字段顺序：force/target 两个决策字段排最前，config 子表单跟在后面。

@@ -346,6 +346,21 @@ impl DnsProvider for TencentProvider {
         Ok(())
     }
 
+    async fn probe_zone(&self, credentials: &Value, zone: &str) -> Result<()> {
+        let credentials: TencentCredentials = parse_credentials(credentials)?;
+        // DescribeDomain 对不存在的域名报错，存在即托管在 DNSPod。
+        self.client
+            .call(
+                &credentials,
+                DNSPOD_SERVICE,
+                DNSPOD_VERSION,
+                "DescribeDomain",
+                json!({ "Domain": zone }),
+            )
+            .await?;
+        Ok(())
+    }
+
     async fn find_txt(&self, credentials: &Value, record: &TxtRecord) -> Result<Vec<String>> {
         let credentials: TencentCredentials = parse_credentials(credentials)?;
 

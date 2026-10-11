@@ -10,6 +10,7 @@
 
 pub mod apply;
 pub mod deploy;
+pub(crate) mod provider_select;
 pub mod store;
 
 use std::path::PathBuf;
@@ -70,12 +71,20 @@ pub fn default_deploy_registry() -> Arc<DeploymentRegistry> {
     registry
         .register(acmecast_deploy::TencentSslTarget::new())
         .expect("内置部署目标不应重复注册");
+    registry
+        .register(acmecast_deploy::S3Target::default())
+        .expect("内置 S3 部署目标不应重复注册");
+    registry
+        .register(acmecast_deploy::WebdavTarget::default())
+        .expect("内置 WebDAV 部署目标不应重复注册");
     Arc::new(registry)
 }
 
 /// 装配内置流水线步骤；返回的注册表在服务启动时注入 [`RuntimeState`](crate::RuntimeState)。
 ///
 /// `propagation` 是 DNS-01 传播等待策略，来自服务配置的 `[propagation]` 段。
+/// `resolver_entries` 是 `config.toml` 的 `[[resolvers]]` 条目，供传播等待
+/// 的阶段 2/3 扩展内置解析器集合。
 #[must_use]
 pub fn default_steps(
     db: DatabaseConnection,
@@ -83,11 +92,19 @@ pub fn default_steps(
     dns: Arc<DnsProviderRegistry>,
     deploy: Arc<DeploymentRegistry>,
     propagation: acmecast_dns::PropagationPolicy,
+    resolver_entries: Vec<acmecast_dns::ResolverEntry>,
 ) -> StepRegistry {
     let mut steps = StepRegistry::new();
     // 到期检测需读证书库：为 cert.apply 注入 db，0/负数=跳过检测，其余按 not_after 判定。
+    // 跳过分支需注入库中证书产物，故一并注入 data_dir。
     steps
-        .register(CertApplyStep::with_policy_and_db(dns, propagation, db.clone()))
+        .register(CertApplyStep::with_policy_resolvers_db_and_data_dir(
+            dns,
+            propagation,
+            resolver_entries,
+            db.clone(),
+            data_dir.clone(),
+        ))
         .expect("内置步骤不应重复注册");
     steps
         .register(CertStoreStep::new(db.clone(), data_dir))

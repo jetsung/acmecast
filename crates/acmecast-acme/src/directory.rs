@@ -21,8 +21,10 @@ pub enum CaKind {
     ZeroSsl,
     /// Google Trust Services。
     Google,
-    /// SSL.com。
-    SslCom,
+    /// Google 测试环境。
+    GoogleTest,
+    /// FreeSSL。
+    FreeSsl,
     /// 用户自定义的 ACME 服务，必须自行提供 Directory URL。
     Custom,
 }
@@ -34,7 +36,8 @@ impl CaKind {
         "letsencrypt-staging",
         "zerossl",
         "google",
-        "sslcom",
+        "google-test",
+        "freessl",
         "custom",
     ];
 
@@ -46,7 +49,8 @@ impl CaKind {
             "letsencrypt-staging" | "le-staging" => Some(Self::LetsEncryptStaging),
             "zerossl" => Some(Self::ZeroSsl),
             "google" | "gts" => Some(Self::Google),
-            "sslcom" | "ssl.com" => Some(Self::SslCom),
+            "google-test" | "google_test" | "gts-test" => Some(Self::GoogleTest),
+            "freessl" | "free-ssl" => Some(Self::FreeSsl),
             "custom" => Some(Self::Custom),
             _ => None,
         }
@@ -62,7 +66,8 @@ impl CaKind {
             }
             Self::ZeroSsl => Some("https://acme.zerossl.com/v2/DV90"),
             Self::Google => Some("https://dv.acme-v02.api.pki.goog/directory"),
-            Self::SslCom => Some("https://acme.ssl.com/ssl/v2/DV"),
+            Self::GoogleTest => Some("https://dv.acme-v02.test-api.pki.goog/directory"),
+            Self::FreeSsl => Some("https://acme.litessl.com/acme/v2/directory"),
             // 自定义 CA 必须由用户提供 URL，这里刻意不提供兜底值：
             // 给一个默认值会让用户误以为已配置成功。
             Self::Custom => None,

@@ -48,7 +48,7 @@ const TRIGGER_LOGS = {
   ],
   total: 1,
   page: 1,
-  page_size: 15,
+  page_size: 10,
 };
 
 const mocks = vi.hoisted(() => ({
@@ -188,7 +188,7 @@ expect(screen.getByText("续期")).toBeTruthy();
         };
       }
       return {
-        data: { data: { items: [], total: 0, page: 1, page_size: 15 } },
+        data: { data: { items: [], total: 0, page: 1, page_size: 10 } },
         response: new Response(),
       };
     });

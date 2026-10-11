@@ -120,6 +120,14 @@ lettre = { version = "0.11", default-features = false, features = [
 # 测试：进程内 HTTP mock（webhook 渠道适配器的请求断言）。
 wiremock = "0.6"
 
+# S3 凭据连通性测试与部署目标的真实上传
+aws-sdk-s3 = "1"
+aws-config = { version = "1", features = ["behavior-version-latest"] }
+aws-credential-types = "1"
+aws-smithy-runtime = "1"
+aws-smithy-types = "1"
+http-body-util = "0.1"
+
 [workspace.lints.rust]
 missing_docs = "warn"
 missing_debug_implementations = "warn"

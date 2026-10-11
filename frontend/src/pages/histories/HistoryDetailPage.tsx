@@ -14,8 +14,19 @@ interface LogRow {
   level: string;
   message: string;
   created_at: string;
+  output?: unknown;
 }
 
+function tencentOutput(output: unknown): { certIds: string[]; skipped: boolean } | null {
+  if (!output || typeof output !== "object" || Array.isArray(output)) return null;
+  const obj = output as Record<string, unknown>;
+  if (!("cert_ids" in obj)) return null;
+  const certIds = Array.isArray(obj.cert_ids)
+    ? obj.cert_ids.filter((v): v is string => typeof v === "string")
+    : [];
+  const skipped = obj.skipped_write === true;
+  return { certIds, skipped };
+}
 const LEVEL_COLOR: Record<string, string> = {
   info: "#1677ff",
   warn: "#faad14",
@@ -129,14 +140,45 @@ export function HistoryDetailPage() {
           style={{ marginBottom: 16 }}
         >
           <Space direction="vertical" style={{ width: "100%" }}>
-            {stepLogs.map((log, index) => (
-              <Typography.Text
-                key={index}
-                style={{ color: LEVEL_COLOR[log.level] ?? undefined, fontFamily: "monospace" }}
-              >
-                [{formatTime(log.created_at)}] {log.message}
-              </Typography.Text>
-            ))}
+            {stepLogs.map((log, index) => {
+              const structured = tencentOutput((log as LogRow).output);
+              const hasCertIds = structured !== null && structured.certIds.length > 0;
+              const skippedWithEmpty =
+                structured !== null && structured.skipped && structured.certIds.length === 0;
+              return (
+                <div key={index}>
+                  <Typography.Text
+                    style={{ color: LEVEL_COLOR[log.level] ?? undefined, fontFamily: "monospace" }}
+                  >
+                    [{formatTime(log.created_at)}] {log.message}
+                  </Typography.Text>
+                  {hasCertIds && (
+                    <div style={{ marginTop: 6 }}>
+                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                        腾讯云证书 ID
+                      </Typography.Text>
+                      <Space size={[6, 6]} wrap style={{ marginTop: 4 }}>
+                        {structured!.certIds.map((certId) => (
+                          <Tag key={certId} color="geekblue">
+                            <Typography.Text copyable={{ text: certId }} style={{ fontSize: 12 }}>
+                              {certId}
+                            </Typography.Text>
+                          </Tag>
+                        ))}
+                      </Space>
+                    </div>
+                  )}
+                  {skippedWithEmpty && (
+                    <div style={{ marginTop: 6 }}>
+                      <Tag>指纹一致，已跳过写入</Tag>
+                      <Typography.Text type="secondary" style={{ fontSize: 12, marginLeft: 6 }}>
+                        无需上传，云端证书保持不变
+                      </Typography.Text>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </Space>
         </Card>
       ))}

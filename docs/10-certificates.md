@@ -35,10 +35,14 @@
 | `pfx` | `p12` | `application/x-pkcs12` | PKCS#12，默认 AES-256 加密（PBES2 + HMAC-SHA256）；口令默认 `changeit`，alias `acmecast` |
 | `jks` | — | `application/x-java-keystore` | JKS，口令最短 6 位（Java 自身约束）；alias 统一转小写 |
 | `p7b` | — | `application/pkcs7-mime` | PKCS#7 certs-only |
+| `key` | `private-key`、`key-pem`（大小写不敏感） | `application/x-pem-file` | 私钥 PEM（原样返回 `key_pem_path`，不做格式转换，文件名 `*.key.pem`） |
 
-转换全部在内存中完成（纯 Rust，无 OpenSSL 依赖），不改持久化的 PEM。
-下载文件名取首个域名（仅保留字母数字与 `.`、`-`、`_`）。
+转换全部在内存中完成（纯 Rust，无 OpenSSL 依赖），不改持久化的 PEM（私钥 `key` 分支原样返回，不经转换）。
+下载文件名取首个域名（仅保留字母数字与 `.`、`-`、`_`），私钥分支追加 `.key.pem`。
 
+## 详情页展示
+
+证书详情页（`/certificates/{id}`）展示「私钥算法」（`key_algorithm`，如 `ECDSA P-256`、`RSA`，历史数据可为空时显示 `—`）与「描述」（`description`，空白归一为 `—`，长文本截断并悬浮查看完整内容），并提供「下载私钥 (PEM)」按钮（`format=key`，与多格式证书下载并存，失败按现有错误通道提示）。
 ## 吊销
 
 `POST /api/certificates/{id}/revoke`，可选 `reason`（RFC 5280 原因码 0–10，
@@ -51,6 +55,32 @@
 
 已吊销的记录重复吊销幂等直接返回；手动上传（无签发账号）的记录返回
 422 `missing_account`——请去对应 CA 的管理渠道吊销。
+
+## 手动归档
+
+`POST /api/certificates/{id}/archive`：将活跃目录 `certs/ssl/<主域名>.*.pem`
+移至归档目录 `certs/archived/<指纹>/`（按该证书记录的指纹分子目录，文件名
+不变），并同步更新数据库记录的 `cert_pem_path` / `key_pem_path`。归档为本地
+文件移动，不触及吊销状态与 CA，证书详情与下载（`format=pem|key`）仍从新
+路径读取。
+
+- 已在 `certs/archived/<指纹>/` 或 `certs/revoked/<指纹>/` 的再次归档幂等
+  返回成功（`archived_now=false`）。
+- 源文件缺失时幂等返回成功并记 `warn!`，库路径保持不变（与吊销归档的降级
+  一致）。
+- IO 失败返回错误，文件保留在原位，库路径不变。
+- 归档目录与文件权限分别为 `0700` / `0600`，与现有归档/吊销目录一致，路径
+  含逃逸字符时拒绝。
+- 已归档证书仍可吊销：吊销时从 `certs/archived/<指纹>/` 读取证书 PEM，
+  成功后进一步移动到 `certs/revoked/<指纹>/`。
+
+证书列表页（`/certificates`）在“操作”列内提供“编辑 / 吊销 / 归档”
+三项行内操作，均需 `stopPropagation` 防行跳转；“吊销”“归档”均需二次确认。
+“吊销”沿用 `POST /api/certificates/{id}/revoke`，成功后刷新列表并提示
+“证书已吊销，本地状态已更新”；“归档”调用 `POST /api/certificates/{id}/archive`，
+成功后刷新并提示“证书已归档”。互斥规则：**吊销为最终态**——`revoked_at` 非空
+时“吊销”与“归档”均禁用；**已归档不阻断吊销**——`certs/archived/<指纹>/` 的证书
+仍可吊销，吊销成功后进一步移至 `certs/revoked/<指纹>/`。
 
 ## 私钥校验
 

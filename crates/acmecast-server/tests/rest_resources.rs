@@ -441,3 +441,78 @@ async fn history_logs_expose_structured_output_with_tencent_cert_ids() {
     assert_eq!(body["data"].as_array().unwrap().len(), 0);
 }
 
+#[tokio::test]
+async fn pipeline_list_defaults_to_id_desc() {
+    let app = app().await;
+    // 创建 3 条流水线，验证默认按 ID 降序返回。
+    let mut ids = Vec::new();
+    for name in ["alpha", "beta", "gamma"] {
+        let create = Request::post("/api/pipelines")
+            .header("content-type", "application/json")
+            .body(Body::from(format!(
+                r#"{{"name":"{name}","steps":[{{"type_id":"test.step","input":{{"value":1}}}}]}}"#
+            )))
+            .unwrap();
+        let response = app.clone().oneshot(create).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_body(response).await;
+        ids.push(body["data"]["id"].as_i64().expect("应返回流水线 id"));
+    }
+
+    // 不传 sort，验证默认按 ID 降序。
+    let list = app
+        .oneshot(
+            Request::get("/api/pipelines?page=1&page_size=10")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(list.status(), StatusCode::OK);
+    let list_body = json_body(list).await;
+    assert_eq!(list_body["data"]["total"], 3);
+    let items = list_body["data"]["items"].as_array().expect("应有 items");
+    let returned_ids: Vec<i64> = items
+        .iter()
+        .map(|item| item["id"].as_i64().expect("应有 id"))
+        .collect();
+    // 降序：最后创建的在最前。
+    assert_eq!(returned_ids, vec![ids[2], ids[1], ids[0]], "默认应按 ID 降序");
+}
+
+#[tokio::test]
+async fn credential_list_defaults_to_id_desc() {
+    let app = app_with_cipher().await;
+    let mut ids = Vec::new();
+    for index in 0..3 {
+        let create = Request::post("/api/credentials")
+            .header("content-type", "application/json")
+            .body(Body::from(format!(
+                r#"{{"name":"cf-{index}","type_id":"cloudflare","fields":{{"api_token":"tok{index}"}}}}"#
+            )))
+            .unwrap();
+        let response = app.clone().oneshot(create).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_body(response).await;
+        ids.push(body["data"]["id"].as_i64().expect("应返回凭据 id"));
+    }
+
+    let list = app
+        .oneshot(
+            Request::get("/api/credentials?page=1&page_size=10")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(list.status(), StatusCode::OK);
+    let list_body = json_body(list).await;
+    assert_eq!(list_body["data"]["total"], 3);
+    let items = list_body["data"]["items"].as_array().expect("应有 items");
+    let returned_ids: Vec<i64> = items
+        .iter()
+        .map(|item| item["id"].as_i64().expect("应有 id"))
+        .collect();
+    assert_eq!(returned_ids, vec![ids[2], ids[1], ids[0]], "默认应按 ID 降序");
+}
+

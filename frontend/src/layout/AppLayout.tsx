@@ -127,7 +127,7 @@ export function AppLayout() {
           </div>
         </Header>
         <Content style={{ padding: 24 }}>
-          <div style={{ maxWidth: 1240, margin: "0 auto" }}>
+          <div style={{ margin: "0 auto" }}>
             <Outlet />
           </div>
         </Content>

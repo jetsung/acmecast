@@ -504,7 +504,7 @@ async fn listing_sorts_by_expiry_in_both_directions() {
 }
 
 #[tokio::test]
-async fn default_query_lists_soonest_expiring_first() {
+async fn default_query_lists_by_id_desc() {
     let (db, account) = setup().await;
     seed_expiring_in_order(&db, account, 3).await;
     let repo = CertRepository::new(&db);
@@ -515,11 +515,11 @@ async fn default_query_lists_soonest_expiring_first() {
     assert_eq!(
         page_domains(&page),
         vec![
-            "host0.example.com",
+            "host2.example.com",
             "host1.example.com",
-            "host2.example.com"
+            "host0.example.com"
         ],
-        "默认应按到期时间升序"
+        "默认应按 ID 降序"
     );
 }
 
@@ -555,7 +555,12 @@ async fn paging_covers_every_record_exactly_once() {
 
         ids.extend(page.items.iter().map(|model| model.id));
         times.extend(page.items.iter().map(|model| model.not_after));
-        assert_monotonic(&page);
+        // 默认按 ID 降序，到期时间随 ID 递增而递增，因此到期时间单调不增。
+        let page_times: Vec<_> = page.items.iter().map(|model| model.not_after).collect();
+        assert!(
+            page_times.windows(2).all(|pair| pair[0] >= pair[1]),
+            "ID 降序下到期时间应单调不增，实际为 {page_times:?}"
+        );
     }
 
     assert_eq!(ids.len(), 7, "三页合计应恰好覆盖全部记录");
@@ -564,10 +569,10 @@ async fn paging_covers_every_record_exactly_once() {
     unique.dedup();
     assert_eq!(unique.len(), 7, "各页之间不应出现重复记录");
 
-    // 更强的证据：逐页拼接后整体仍单调，说明分页切分点没有打乱全序。
+    // 更强的证据：逐页拼接后整体仍单调（不增），说明分页切分点没有打乱全序。
     assert!(
-        times.windows(2).all(|pair| pair[0] <= pair[1]),
-        "跨页拼接后排序应仍然单调"
+        times.windows(2).all(|pair| pair[0] >= pair[1]),
+        "跨页拼接后排序应仍然单调不增"
     );
 }
 
@@ -779,14 +784,14 @@ async fn search_and_paging_compose() {
     assert_eq!(
         all,
         vec![
-            "web0.example.com",
-            "web1.example.com",
-            "web2.example.com",
-            "web3.example.com",
-            "web4.example.com",
             "web5.example.com",
+            "web4.example.com",
+            "web3.example.com",
+            "web2.example.com",
+            "web1.example.com",
+            "web0.example.com",
         ],
-        "筛选后逐页取回应覆盖全部命中记录且保持排序"
+        "筛选后逐页取回应覆盖全部命中记录且保持 ID 降序"
     );
 }
 

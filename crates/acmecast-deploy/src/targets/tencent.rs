@@ -305,6 +305,10 @@ impl DeploymentTarget for TencentSslTarget {
         "腾讯云 SSL 证书"
     }
 
+    fn supports_skip_write(&self) -> bool {
+        true
+    }
+
     fn input_schema(&self) -> RootSchema {
         use schemars::schema::Schema;
 

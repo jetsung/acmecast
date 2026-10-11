@@ -202,6 +202,13 @@ impl DnsProvider for TencentEoProvider {
             .collect())
     }
 
+    async fn probe_zone(&self, credentials: &Value, zone: &str) -> Result<()> {
+        let credentials: TencentCredentials = parse_credentials(credentials)?;
+        // zone_id 的查询即托管探测：zone 未接入 EdgeOne 时报错并指明 zone 名。
+        self.zone_id(&credentials, zone).await?;
+        Ok(())
+    }
+
     async fn delete_txt(&self, credentials: &Value, record: &TxtRecord) -> Result<()> {
         let credentials: TencentCredentials = parse_credentials(credentials)?;
         let zone_id = self.zone_id(&credentials, &record.zone).await?;

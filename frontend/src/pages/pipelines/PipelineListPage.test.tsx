@@ -172,8 +172,72 @@ describe("流水线删除确认", () => {
     const ok = modalButton(/删\s*除/);
     fireEvent.click(ok!);
 
-    expect(await screen.findByText("删除失败")).toBeTruthy();
+    // 优先展示后端返回的 message，而非通用“删除失败”。
+    expect(await screen.findByText("boom")).toBeTruthy();
+    expect(screen.queryByText("删除失败")).toBeNull();
     expect(await screen.findByText("le-wildcard")).toBeTruthy();
+  });
+
+  it("调度绑定冲突（409）时提示后端中文消息且列表不移除", async () => {
+    const { client } = await import("@/api/client");
+    vi.mocked(client.DELETE).mockResolvedValueOnce({
+      error: {
+        error: {
+          code: "schedule_bound",
+          message: "该流水线已被调度绑定，请先解除调度后再删除（流水线 #3）",
+        },
+      },
+      response: new Response(null, { status: 409 }),
+    } as never);
+    await openConfirmForRow();
+
+    const ok = modalButton(/删\s*除/);
+    fireEvent.click(ok!);
+
+    // 应展示后端返回的可诊断中文，而非通用“删除失败”。
+    expect(
+      await screen.findByText("该流水线已被调度绑定，请先解除调度后再删除（流水线 #3）"),
+    ).toBeTruthy();
+    expect(screen.queryByText("删除失败")).toBeNull();
+    // 列表未移除该行。
+    expect(await screen.findByText("le-wildcard")).toBeTruthy();
+  });
+});
+
+describe("流水线列表 ID 列", () => {
+  it("首列为 ID 列（宽 80px）且渲染行的数字 ID", async () => {
+    // 使用模块级默认 mock（id:3 le-wildcard），不注入 Once 队列以免串扰其他用例。
+    const { container } = renderPage();
+    await waitFor(() => {
+      expect(container.textContent).toContain("ID");
+    });
+    // 列宽钉在 80：antd 会把列宽写到 colgroup 的 col 元素上。
+    await waitFor(() => {
+      const cols = [...container.querySelectorAll("colgroup col")];
+      expect(
+        cols.some((col) => (col as HTMLElement).style.width === "80px"),
+        "ID 列应渲染为 80px 宽",
+      ).toBe(true);
+    });
+    await waitFor(() => {
+      const cell = [...container.querySelectorAll("td")].find(
+        (td) => td.textContent === "3",
+      );
+      expect(cell, "应有单元格渲染数字 ID").toBeTruthy();
+    });
+  });
+
+  it("空列表不报错并展示空态", async () => {
+    const { client } = await import("@/api/client");
+    vi.mocked(client.GET).mockImplementationOnce(async () => ({
+      data: { data: { items: [], total: 0 } },
+      response: new Response(),
+    } as never));
+    const { container } = renderPage();
+    await waitFor(() => {
+      expect(container.textContent).toContain("ID");
+    });
+    expect(container.textContent).toContain("暂无数据");
   });
 });
 

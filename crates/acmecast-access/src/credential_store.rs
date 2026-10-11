@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use acmecast_core::CredentialCipher;
 use acmecast_store::entity::{credential, pipeline, pipeline_step};
-use sea_orm::{DatabaseConnection, EntityTrait};
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder};
 
 use crate::error::{Error, Result};
 use crate::registry::CredentialRegistry;
@@ -95,6 +95,20 @@ impl ResolvedCredential {
     }
 }
 
+/// 按类型列出的一条凭据摘要。
+///
+/// 自动选择 DNS 提供商时的候选清单：只需要「有哪些凭据可选」，
+/// 明文字段既不需要也不该带出——`Debug` 打印路径上不允许出现解密内容。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CredentialSummary {
+    /// 凭据记录主键。
+    pub id: i64,
+    /// 展示名称。
+    pub name: String,
+    /// 类型标识。
+    pub type_id: String,
+}
+
 /// 凭据的存储与还原。
 ///
 /// 三个协作者各司其职：库负责取记录，注册表负责认识类型，加密器负责解出明文。
@@ -150,6 +164,27 @@ impl<'db> CredentialStore<'db> {
             remark: record.remark,
             fields,
         })
+    }
+
+    /// 列出某类型下的全部凭据摘要（按 id 升序）。
+    ///
+    /// 自动选择 DNS 提供商时的候选来源：只取标识、名称与类型，
+    /// **不解密字段**——筛选阶段用不到明文，也没有理由让它离开加密层。
+    pub async fn list_by_type(&self, type_id: &str) -> Result<Vec<CredentialSummary>> {
+        let records = credential::Entity::find()
+            .filter(credential::Column::TypeId.eq(type_id))
+            .order_by_asc(credential::Column::Id)
+            .all(self.db)
+            .await?;
+
+        Ok(records
+            .into_iter()
+            .map(|record| CredentialSummary {
+                id: record.id,
+                name: record.name,
+                type_id: record.type_id,
+            })
+            .collect())
     }
 
     /// 该标识的凭据是否存在。

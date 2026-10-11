@@ -1,6 +1,6 @@
 //! 6.8 运行历史与步骤日志的落库与查询。
 //!
-//! spec 的两个要点：历史**按开始时间倒序**、日志**归属正确**（属于哪一步）。
+//! spec 的两个要点：历史**按 ID 倒序**、日志**归属正确**（属于哪一步）。
 //! 前者决定列表好不好用，后者决定排查时能不能顺着步骤读下去。
 
 use std::sync::Arc;
@@ -274,7 +274,9 @@ async fn history_is_listed_newest_first() {
     let repo = HistoryRepository::new(&db);
     let pipeline_id = insert_pipeline(&db, "甲流水线").await;
 
-    // 刻意乱序落库。
+    // 刻意乱序落库：middle(ID=1) → oldest(ID=2) → newest(ID=3)。
+    // ID 倒序为 newest, oldest, middle；时间倒序为 newest, middle, oldest——
+    // 两种排序在 oldest 与 middle 的先后上不同，据此区分。
     let now = Utc::now();
     let middle = record_at(&repo, pipeline_id, now - Duration::minutes(10)).await;
     let oldest = record_at(&repo, pipeline_id, now - Duration::minutes(30)).await;
@@ -283,7 +285,7 @@ async fn history_is_listed_newest_first() {
     let page = repo.list(HistoryQuery::default()).await.unwrap();
     let ids: Vec<i64> = page.items.iter().map(|item| item.id).collect();
 
-    assert_eq!(ids, vec![newest, middle, oldest], "应按开始时间倒序");
+    assert_eq!(ids, vec![newest, oldest, middle], "应按 ID 倒序");
 }
 
 #[tokio::test]

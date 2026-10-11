@@ -149,7 +149,9 @@ export function PipelineListPage() {
           params: { path: { id: row.id } },
         });
         if (result.error !== undefined) {
-          message.error("删除失败");
+          // 优先透传后端可诊断的中文消息（如 409 调度绑定冲突）。
+          const body = result.error as { error?: { message?: string } };
+          message.error(body?.error?.message ?? "删除失败");
           return;
         }
         message.success("已删除");
@@ -159,6 +161,12 @@ export function PipelineListPage() {
   };
 
   const columns: TableColumnsType<PipelineSummary> = [
+    {
+      title: "ID",
+      dataIndex: "id",
+      width: 80,
+      render: (id: number) => String(id),
+    },
     {
       title: "名称",
       dataIndex: "name",
@@ -198,17 +206,17 @@ export function PipelineListPage() {
       title: "操作",
       width: 280,
       render: (_, row) => (
-        <Space size={4}>
-          <Button size="small" type="link" loading={runningId === row.id} onClick={() => runNow(row)}>
+        <Space>
+          <Button size="small" loading={runningId === row.id} onClick={() => runNow(row)}>
             立即运行
           </Button>
-          <Button size="small" type="link" onClick={() => navigate(`/pipelines/${row.id}`)}>
+          <Button size="small" onClick={() => navigate(`/pipelines/${row.id}`)}>
             编辑
           </Button>
-          <Button size="small" type="link" onClick={() => handleCopy(row)}>
+          <Button size="small" onClick={() => handleCopy(row)}>
             复制
           </Button>
-          <Button size="small" type="link" danger onClick={() => confirmDelete(row)}>
+          <Button size="small" danger onClick={() => confirmDelete(row)}>
             删除
           </Button>
         </Space>
@@ -251,7 +259,7 @@ export function PipelineListPage() {
               }
             },
             showSizeChanger: true,
-            pageSizeOptions: [15, 20, 50, 100],
+            pageSizeOptions: [10, 15, 20, 50, 100],
             showTotal: (total) => `共 ${total} 条`,
           }}
         />

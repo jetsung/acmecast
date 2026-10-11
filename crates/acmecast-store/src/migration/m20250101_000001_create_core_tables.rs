@@ -366,11 +366,6 @@ fn create_cert_table() -> TableCreateStatement {
                 .date_time()
                 .not_null(),
         )
-        // 关键列：签发账号直接落在证书行上。
-        //
-        // 这是本实现相对 certd 的数据模型修正（见 design 决策 6）：
-        // certd 在吊销时要通过 `resolveRevokeParams` 反查流水线才能拿到 ACME 账号，
-        // 本实现从建表起就把它持久化在此，吊销时直接读表。
         .col(ColumnDef::new(cert::Column::AcmeAccountAccessId).big_integer())
         .col(ColumnDef::new(cert::Column::RevokedAt).date_time())
         .col(

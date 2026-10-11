@@ -219,6 +219,18 @@ impl DnsProvider for AliyunProvider {
             .collect())
     }
 
+    async fn probe_zone(&self, credentials: &Value, zone: &str) -> Result<()> {
+        let credentials: AliyunCredentials = parse_credentials(credentials)?;
+        // DescribeDomain 对不存在的域名直接报错，存在即托管——无需读响应内容。
+        self.call(
+            &credentials,
+            "DescribeDomain",
+            BTreeMap::from([("DomainName".to_owned(), zone.to_owned())]),
+        )
+        .await?;
+        Ok(())
+    }
+
     async fn delete_txt(&self, credentials: &Value, record: &TxtRecord) -> Result<()> {
         let credentials: AliyunCredentials = parse_credentials(credentials)?;
 

@@ -192,9 +192,9 @@ export function CredentialListPage() {
               setPage(newPage);
             }
           },
-          showSizeChanger: true,
-          pageSizeOptions: [15, 20, 50, 100],
-          showTotal: (total) => `共 ${total} 条`,
+            showSizeChanger: true,
+            pageSizeOptions: [10, 15, 20, 50, 100],
+            showTotal: (total) => `共 ${total} 条`,
         }}
       />
 
@@ -258,7 +258,7 @@ function CredentialEditorModal({
 
   // 编辑要回填本条记录的现值：PUT 是整体替换语义，空表单直接保存会把
   // 已存的密钥清成空。字段值只有详情接口带回（列表接口不带）。
-  const { data: detail } = useQuery({
+  const { data: detail, isFetching: detailLoading } = useQuery({
     queryKey: ["credential-detail", editingId],
     queryFn: async () => {
       if (editingId === null) throw new Error("编辑目标不存在");
@@ -267,27 +267,44 @@ function CredentialEditorModal({
       });
       // schema 重新生成后 fields 变成 unknown（字段结构由 type_id 决定），
       // 这里只消费「名字/类型 + 一组待回填的键值」，以 unknown 中转。
-      const detail = (await unwrapData<{ name: string; type_id: string; fields: unknown }>(
-        result,
-      )) as { name: string; type_id: string; fields: Record<string, unknown> };
+      const detail = (await unwrapData<{
+        id: number;
+        name: string;
+        type_id: string;
+        fields: unknown;
+        remark?: string | null;
+      }>(result)) as {
+        id: number;
+        name: string;
+        type_id: string;
+        fields: Record<string, unknown>;
+        remark?: string | null;
+      };
       return detail;
     },
     enabled: open && editingId !== null,
   });
 
+  // 切换编辑目标时立即重置表单，避免上一条记录的旧值在新详情到达前闪现。
   useEffect(() => {
     if (!open) return;
-    if (detail) {
+    form.resetFields();
+  }, [open, editingId, form]);
+
+  // 仅当详情对应当前 editingId 时回填；过期请求的响应不得覆盖当前弹窗。
+  useEffect(() => {
+    if (!open) return;
+    if (editingId === null) return;
+    if (detailLoading) return;
+    if (detail && detail.id === editingId) {
       form.setFieldsValue({
         name: detail.name,
         type_id: detail.type_id,
-        remark: (detail as { remark?: string }).remark ?? "",
+        remark: detail.remark ?? "",
         fields: detail.fields ?? {},
       });
-    } else if (editingId === null) {
-      form.resetFields();
     }
-  }, [open, detail, editingId, form]);
+  }, [open, detail, detailLoading, editingId, form]);
 
   const onTypeSelect = (typeId: string) => {
     onTypeChange(typeId);
@@ -302,22 +319,19 @@ function CredentialEditorModal({
   }) => {
     setSaving(true);
     try {
-      const body: Record<string, unknown> = {
+      const body = {
         name: values.name,
         type_id: selectedType ?? "",
         fields: values.fields ?? {},
-      };
-      // 备注非敏感、可为空；空串与缺省归一为空。
-      if (values.remark && values.remark.trim() !== "") {
-        body["remark"] = values.remark.trim();
-      }
+        ...(values.remark && values.remark.trim() !== "" ? { remark: values.remark.trim() } : {}),
+      } as { name: string; type_id: string; fields: unknown; remark?: string | null };
       const result =
         editingId === null
           ? await client.POST("/api/credentials", { body })
           : await client.PUT(`/api/credentials/${editingId}`, {
               params: { path: { id: editingId } },
               body,
-            });
+            } as never);
       if (result.error !== undefined) {
         const body = result.error as { error?: { message?: string; field?: string } };
         if (body?.error?.field) {
@@ -337,6 +351,9 @@ function CredentialEditorModal({
     }
   };
 
+  // 编辑模式下详情加载期间禁用保存，避免用空表单或陈旧数据提交。
+  const okDisabled = editingId !== null && detailLoading;
+
   return (
     <Modal
       open={open}
@@ -344,6 +361,7 @@ function CredentialEditorModal({
       width={720}
       onCancel={onClose}
       onOk={() => form.submit()}
+      okButtonProps={{ disabled: okDisabled }}
       confirmLoading={saving}
       destroyOnHidden
     >

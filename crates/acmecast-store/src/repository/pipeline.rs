@@ -233,10 +233,10 @@ impl<'db> PipelineRepository<'db> {
         }))
     }
 
-    /// 列出全部流水线概要，按主键升序。
+    /// 列出全部流水线概要，按主键降序。
     pub async fn list(&self) -> Result<Vec<PipelineSummary>> {
         let rows = pipeline::Entity::find()
-            .order_by_asc(pipeline::Column::Id)
+            .order_by_desc(pipeline::Column::Id)
             .all(self.db)
             .await?;
 

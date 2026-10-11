@@ -139,7 +139,7 @@ export function HistoryListPage() {
               }
             },
             showSizeChanger: true,
-            pageSizeOptions: [15, 20, 50, 100],
+            pageSizeOptions: [10, 15, 20, 50, 100],
             showTotal: (total) => `共 ${total} 条`,
           }}
         />

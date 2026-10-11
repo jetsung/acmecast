@@ -56,6 +56,8 @@ enum Commands {
         #[arg(short, long)]
         password: Option<String>,
     },
+    /// 存量证书归档迁移：将同一域名集合的多余证书归档到 certs/archived
+    MigrateCerts,
 }
 
 fn main() {
@@ -65,6 +67,18 @@ fn main() {
         match command {
             Commands::Init { force } => handle_init(args.config.as_deref(), force),
             Commands::HashPassword { password } => handle_hash_password(password),
+            Commands::MigrateCerts => {
+                let result = tokio::runtime::Builder::new_multi_thread()
+                    .enable_all()
+                    .build()
+                    .expect("应能构建 tokio 运行时")
+                    .block_on(handle_migrate_certs(args.config.as_deref()));
+                if let Err(error) = result {
+                    eprintln!("迁移失败: {error}");
+                    std::process::exit(1);
+                }
+                return;
+            }
         }
         return;
     }
@@ -115,6 +129,14 @@ async fn run(config_override: Option<&str>) -> Result<(), Box<dyn std::error::Er
     migrate(&db).await?;
     tracing::info!(database = %config.database_url(), "数据库就绪");
 
+    // 历史证书记录没有算法列的值：迁移完成后读私钥文件补齐。
+    // 失败只记日志不阻断启动（列表对空算法展示占位）。
+    acmecast_server::cert_backfill::backfill_key_algorithms(&db, &config.data_dir).await;
+
+    // 存量证书按「域名集合仅保留最新一个」收敛：多余归档到 certs/archived/<指纹>/。
+    // 幂等、逐条失败仅记日志，不阻断启动。
+    acmecast_server::cert_migrate::migrate_archived_certs(&db, &config.data_dir).await;
+
     // 鉴权状态在启动时就要说清楚：关闭是显式选择，缺失配置是错误，
     // 两者都不该让人在第一次请求被拒时才发现。
     let propagation = acmecast_dns::PropagationPolicy {
@@ -128,6 +150,7 @@ async fn run(config_override: Option<&str>) -> Result<(), Box<dyn std::error::Er
             acmecast_server::steps::default_dns_registry(),
             acmecast_server::steps::default_deploy_registry(),
             propagation,
+            config.resolvers.clone(),
         )),
     )?;
     match &runtime.auth {
@@ -290,4 +313,16 @@ fn handle_hash_password(password: Option<String>) {
             std::process::exit(1);
         }
     }
+}
+
+async fn handle_migrate_certs(config_override: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    let config = acmecast_server::config::ServerConfig::from_env_and_file_at(
+        config_override.map(Path::new),
+    )?;
+    tokio::fs::create_dir_all(&config.data_dir).await?;
+    let db = sea_orm::Database::connect(&config.database_url()).await?;
+    acmecast_store::migrate(&db).await?;
+    acmecast_server::cert_migrate::migrate_archived_certs(&db, &config.data_dir).await;
+    println!("存量证书归档迁移完成");
+    Ok(())
 }

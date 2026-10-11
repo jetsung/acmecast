@@ -257,7 +257,7 @@ impl<'db> HistoryRepository<'db> {
         Ok(())
     }
 
-    /// 分页查询历史，按开始时间倒序（同一时刻按主键倒序，保证顺序稳定）。
+    /// 分页查询历史，按主键倒序（保证顺序稳定）。
     pub async fn list(&self, query: HistoryQuery) -> Result<HistoryPage> {
         let page = query.page.max(1);
         let page_size = query.page_size.clamp(1, MAX_PAGE_SIZE);
@@ -268,9 +268,7 @@ impl<'db> HistoryRepository<'db> {
         }
 
         let paginator = select
-            .order_by_desc(history::Column::StartedAt)
-            // 开始时间相同的记录（同一次触发里并发跑起来的）靠主键定序，
-            // 否则翻页时同一条可能出现在两页里。
+            // 按主键倒序，ID 最大的记录排在最前；翻页不重不漏。
             .order_by_desc(history::Column::Id)
             .paginate(self.db, page_size);
 

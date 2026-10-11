@@ -41,7 +41,7 @@ export function ScheduleConfigPage() {
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingSchedule, setEditingSchedule] = useState<ScheduleRow | null>(null);
   const [triggerPage, setTriggerPage] = useState(1);
-  const [triggerPageSize, setTriggerPageSize] = useState(15);
+  const [triggerPageSize, setTriggerPageSize] = useState(10);
   const [triggerPipelineFilter, setTriggerPipelineFilter] = useState<number | null>(null);
 
   const { data: schedules } = useQuery({
@@ -277,7 +277,7 @@ export function ScheduleConfigPage() {
               }
             },
             showSizeChanger: true,
-            pageSizeOptions: [15, 20, 50, 100],
+            pageSizeOptions: [10, 15, 20, 50, 100],
           }}
           columns={[
             {

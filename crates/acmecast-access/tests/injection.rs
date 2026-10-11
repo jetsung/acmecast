@@ -346,3 +346,46 @@ async fn stale_fields_that_no_longer_validate_are_refused() {
         other => panic!("期望 Validation，实际 {other:?}"),
     }
 }
+
+// ---- 按类型列出凭据摘要（自动选择 DNS 提供商的候选来源） ----
+
+#[tokio::test]
+async fn list_by_type_returns_only_that_type_ordered_by_id() {
+    let db = setup().await;
+    let cipher = Arc::new(
+        CredentialCipher::from_base64(&CredentialCipher::generate_key_base64())
+            .expect("密钥应可用"),
+    );
+    let fields = serde_json::json!({ "ca": "letsencrypt" });
+
+    let first = insert_credential(&db, &cipher, "cloudflare", &fields).await;
+    let _other = insert_credential(&db, &cipher, "aliyun", &fields).await;
+    let second = insert_credential(&db, &cipher, "cloudflare", &fields).await;
+
+    let store = CredentialStore::new(&db, registry(), Arc::clone(&cipher));
+    let listed = store
+        .list_by_type("cloudflare")
+        .await
+        .expect("按类型列出应成功");
+
+    assert_eq!(listed.len(), 2, "只含 cloudflare 类型的两条");
+    assert_eq!(listed[0].id, first, "按 id 升序");
+    assert_eq!(listed[1].id, second);
+    assert!(listed.iter().all(|item| item.type_id == "cloudflare"));
+}
+
+#[tokio::test]
+async fn list_by_type_of_an_empty_type_is_empty() {
+    let db = setup().await;
+    let cipher = Arc::new(
+        CredentialCipher::from_base64(&CredentialCipher::generate_key_base64())
+            .expect("密钥应可用"),
+    );
+    let store = CredentialStore::new(&db, registry(), Arc::clone(&cipher));
+
+    let listed = store
+        .list_by_type("tencent")
+        .await
+        .expect("查询应成功");
+    assert!(listed.is_empty());
+}

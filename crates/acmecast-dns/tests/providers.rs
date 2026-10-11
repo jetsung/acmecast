@@ -824,3 +824,151 @@ fn an_unregistered_provider_is_rejected() {
     let err = registry.require("route53").expect_err("未注册应被拒绝");
     assert!(err.to_string().contains("route53"), "{err}");
 }
+
+// ---- probe_zone：自动选择 DNS 提供商时的托管探测 ----
+
+#[tokio::test]
+async fn cloudflare_probe_zone_hits_the_zone_lookup() {
+    let transport = ScriptedTransport::new(vec![cloudflare_zone()]);
+    let provider =
+        CloudflareProvider::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
+
+    provider
+        .probe_zone(&cloudflare_token(), "example.com")
+        .await
+        .expect("托管中的 zone 应探测通过");
+
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].url.contains("/zones?name=example.com"), "{}", requests[0].url);
+}
+
+#[tokio::test]
+async fn cloudflare_probe_zone_fails_when_zone_is_absent() {
+    let transport = ScriptedTransport::new(vec![HttpResponse::new(
+        200,
+        r#"{"success":true,"result":[]}"#,
+    )]);
+    let provider =
+        CloudflareProvider::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
+
+    let err = provider
+        .probe_zone(&cloudflare_token(), "example.com")
+        .await
+        .expect_err("未托管的 zone 应探测失败");
+    assert!(err.to_string().contains("example.com"), "{err}");
+}
+
+#[tokio::test]
+async fn aliyun_probe_zone_queries_the_domain() {
+    let transport = ScriptedTransport::new(vec![HttpResponse::new(
+        200,
+        r#"{"DomainInfo":{"DomainName":"example.com"}}"#,
+    )]);
+    let provider =
+        AliyunProvider::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
+
+    provider
+        .probe_zone(&aliyun_keys(), "example.com")
+        .await
+        .expect("托管中的域名应探测通过");
+
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].url.contains("Action=DescribeDomain"), "{}", requests[0].url);
+    assert!(requests[0].url.contains("DomainName=example.com"), "{}", requests[0].url);
+}
+
+#[tokio::test]
+async fn aliyun_probe_zone_fails_for_an_unmanaged_domain() {
+    let transport = ScriptedTransport::new(vec![HttpResponse::new(
+        400,
+        r#"{"Code":"InvalidDomainName.NoExist","Message":"域名不存在"}"#,
+    )]);
+    let provider =
+        AliyunProvider::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
+
+    let err = provider
+        .probe_zone(&aliyun_keys(), "example.com")
+        .await
+        .expect_err("未托管的域名应探测失败");
+    assert!(err.to_string().contains("InvalidDomainName"), "{err}");
+}
+
+#[tokio::test]
+async fn tencent_probe_zone_queries_dnspod() {
+    let transport = ScriptedTransport::new(vec![HttpResponse::new(
+        200,
+        r#"{"Response":{"DomainInfo":{"Domain":"example.com"},"RequestId":"req-1"}}"#,
+    )]);
+    let provider =
+        TencentProvider::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
+
+    provider
+        .probe_zone(&tencent_keys("cn"), "example.com")
+        .await
+        .expect("托管中的域名应探测通过");
+
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].url, "https://dnspod.tencentcloudapi.com/");
+    assert_eq!(requests[0].headers["X-TC-Action"], "DescribeDomain");
+    let body = requests[0].body.as_ref().expect("应带请求体");
+    assert_eq!(body["Domain"], "example.com");
+}
+
+#[tokio::test]
+async fn teo_probe_zone_reuses_the_zone_lookup() {
+    let transport = ScriptedTransport::new(vec![teo_zone()]);
+    let provider =
+        TencentEoProvider::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
+
+    provider
+        .probe_zone(&tencent_keys("cn"), "example.com")
+        .await
+        .expect("接入 EdgeOne 的 zone 应探测通过");
+
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].headers["X-TC-Action"], "DescribeZones");
+}
+
+#[tokio::test]
+async fn teo_probe_zone_fails_for_a_dnspod_only_domain() {
+    let transport = ScriptedTransport::new(vec![HttpResponse::new(
+        200,
+        r#"{"Response":{"Zones":[],"RequestId":"req-1"}}"#,
+    )]);
+    let provider =
+        TencentEoProvider::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
+
+    let err = provider
+        .probe_zone(&tencent_keys("cn"), "example.com")
+        .await
+        .expect_err("未接入 EdgeOne 的 zone 应探测失败");
+    assert!(err.to_string().contains("EdgeOne"), "{err}");
+}
+
+#[tokio::test]
+async fn the_default_probe_zone_reports_unsupported() {
+    // 无 zone 概念的提供商（此处以未覆盖 probe_zone 的测试替身验证）走默认实现。
+    #[derive(Debug, Default)]
+    struct NoProbeProvider;
+    #[async_trait]
+    impl acmecast_dns::DnsProvider for NoProbeProvider {
+        fn type_id(&self) -> &'static str { "no-probe" }
+        fn display_name(&self) -> &'static str { "无探测" }
+        fn credential_fields(&self) -> schemars::schema::RootSchema {
+            schemars::schema_for!(serde_json::Value)
+        }
+        async fn find_txt(&self, _: &Value, _: &TxtRecord) -> Result<Vec<String>> { Ok(vec![]) }
+        async fn create_txt(&self, _: &Value, _: &TxtRecord) -> Result<()> { Ok(()) }
+        async fn delete_txt(&self, _: &Value, _: &TxtRecord) -> Result<()> { Ok(()) }
+    }
+
+    let err = NoProbeProvider
+        .probe_zone(&json!({}), "example.com")
+        .await
+        .expect_err("默认实现应报不支持");
+    assert!(err.to_string().contains("no-probe"), "{err}");
+}

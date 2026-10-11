@@ -156,7 +156,7 @@ fn download_certificate() {}
 fn delete_certificate() {}
 
 /// 吊销端点的文档占位函数。
-#[utoipa::path(post, path = "/api/certificates/{id}/revoke", request_body = crate::handlers::RevokeRequest, responses((status = 200, body = ApiResponse<crate::handlers::RevokeResponse>), (status = 404, body = crate::response::ApiErrorBody), (status = 422, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
+#[utoipa::path(post, path = "/api/certificates/{id}/revoke", params(("id" = i64, Path, description = "证书标识")), request_body = crate::handlers::RevokeRequest, responses((status = 200, body = ApiResponse<crate::handlers::RevokeResponse>), (status = 404, body = crate::response::ApiErrorBody), (status = 422, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
 fn revoke_certificate() {}
 
 /// 手动归档端点的文档占位函数。

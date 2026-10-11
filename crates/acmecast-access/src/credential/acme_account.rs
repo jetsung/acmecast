@@ -34,7 +34,7 @@ pub const TYPE_ID: &str = "acme.account";
 /// CA 与 Directory URL 不是秘密，保留它们才能从日志里看出「这是哪一份凭据」。
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
 pub struct AcmeAccountFields {
-    /// CA 类型：内置别名（`letsencrypt`、`letsencrypt-staging`、`zerossl`、`google`、`sslcom`）
+    /// CA 类型：内置别名（`letsencrypt`、`letsencrypt-staging`、`zerossl`、`google`、`google-test`、`freessl`）
     /// 或 `custom`。
     pub ca: String,
 
@@ -127,7 +127,7 @@ impl AcmeAccountFields {
         // CA 别名必须认识；自定义 CA 必须给得出 Directory URL。
         self.resolve_directory()?;
 
-        // EAB 的两半要么都在，要么都不在——只给一半去请求，CA 只会回一个难懂的错。
+        // EAB 仅需成对校验，不再与 credentials 关联校验（EAB 过期后 credentials 可复用，编辑时不应因 credentials 格式问题误报）
         match (&self.eab_kid, &self.eab_hmac_key) {
             (Some(_), Some(_)) | (None, None) => {}
             _ => {
@@ -138,8 +138,12 @@ impl AcmeAccountFields {
             }
         }
 
-        // 已写入的账号凭据必须是可用形态，否则等到使用时才发现问题。
-        self.credentials()?;
+        // credentials 若已填，需为可用形态；但失败不应阻塞编辑，申请阶段会再次校验
+        if let Some(raw) = self.credentials.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            if serde_json::from_str::<serde_json::Value>(raw).is_err() && AccountCredentials::from_json(raw).is_err() {
+                // 视为未注册，允许保存，申请时再探测
+            }
+        }
         Ok(())
     }
 
@@ -263,6 +267,28 @@ impl CredentialType for AcmeAccountType {
         };
         if let Some(schemars::schema::Schema::Object(ca)) = object.properties.get_mut("ca") {
             ca.enum_values = Some(CaKind::ALL.iter().map(|alias| (*alias).into()).collect());
+            // 固定半宽，防止长名称被截断
+            // EAB 管理/文档入口按 ca 值展示
+            ca.extensions.insert(
+                "x-help-links".to_owned(),
+                serde_json::json!([
+                    {"value": "freessl", "url": "https://freessl.cn/automation/eab-manager", "label": "申请 EAB"},
+                    {"value": "zerossl", "url": "https://app.zerossl.com/developer", "label": "EAB 文档"},
+                    {"value": "google", "url": "https://docs.cloud.google.com/certificate-manager/docs/public-ca-tutorial#request-key-hmac", "label": "申请 HMAC"},
+                    {"value": "google-test", "url": "https://docs.cloud.google.com/certificate-manager/docs/public-ca-tutorial#request-key-hmac", "label": "申请 HMAC (测试)"}
+                ]),
+            );
+            let mut labels = std::collections::BTreeMap::new();
+            labels.insert("letsencrypt", "Let's Encrypt");
+            labels.insert("letsencrypt-staging", "Let's Encrypt (测试)");
+            labels.insert("zerossl", "ZeroSSL");
+            labels.insert("google", "Google Trust Services");
+            labels.insert("google-test", "Google Trust Services (测试)");
+            labels.insert("freessl", "FreeSSL");
+            labels.insert("custom", "自定义");
+            ca.extensions.insert("x-enum-labels".to_owned(), serde_json::to_value(labels).unwrap());
+            // 半宽 + 行尾空占位：CA 下拉半列，右侧 help-links 在同一行右侧
+            ca.extensions.insert("x-end-row".to_owned(), serde_json::Value::Bool(true));
         }
         if let Some(schemars::schema::Schema::Object(url)) =
             object.properties.get_mut("directory_url")
@@ -284,7 +310,6 @@ impl CredentialType for AcmeAccountType {
                 .extensions
                 .insert("x-multiline".to_owned(), serde_json::Value::Bool(true));
         }
-
         schema
     }
 
@@ -614,6 +639,22 @@ mod tests {
             order,
             ["ca", "directory_url", "eab_kid", "eab_hmac_key", "credentials"],
             "EAB 密钥对应按 kid 前、hmac 后相邻渲染"
+        );
+
+        // ca 是长标签下拉：固定半宽独占一行（半宽 + 行尾空占位），长名称不被挤压隐藏。
+        let schemars::schema::Schema::Object(ca) = &object.properties["ca"] else {
+            panic!("ca 应是对象型 schema");
+        };
+        assert_eq!(
+            ca.extensions.get("x-end-row"),
+            Some(&serde_json::Value::Bool(true)),
+            "ca 应标注 x-end-row 固定半宽独占一行: {:?}",
+            ca.extensions
+        );
+        assert!(
+            !ca.extensions.contains_key("x-full-width") && !ca.extensions.contains_key("x-multiline"),
+            "ca 不应被标成整行: {:?}",
+            ca.extensions
         );
 
         // credentials 是含私钥的 JSON：渲染成多行文本域。

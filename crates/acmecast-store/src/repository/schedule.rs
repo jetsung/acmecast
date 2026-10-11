@@ -9,7 +9,7 @@
 
 use chrono::{DateTime, Utc};
 use cron::Schedule as CronSchedule;
-use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
+use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder, Set};
 use std::str::FromStr;
 
 use crate::entity::schedule;
@@ -208,9 +208,12 @@ impl<'db> ScheduleRepository<'db> {
         Ok(existing.is_some())
     }
 
-    /// 读全部调度配置，供引擎装载。
+    /// 读全部调度配置，供引擎装载，按主键降序。
     pub async fn list_all(&self) -> Result<Vec<ScheduleConfig>> {
-        let rows = schedule::Entity::find().all(self.db).await?;
+        let rows = schedule::Entity::find()
+            .order_by_desc(schedule::Column::Id)
+            .all(self.db)
+            .await?;
         Ok(rows.into_iter().map(config_from_row).collect())
     }
 

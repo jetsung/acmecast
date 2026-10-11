@@ -20,8 +20,10 @@ use super::domain_error;
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct CertStoreInput {
     /// 签发该证书的 ACME 账号凭据标识；记录它之后吊销才知道用哪个账号。
-    /// 手动上传场景可以不填。
+    /// 流水线场景冗余于 `cert.apply.account_credential_id`，执行时自动接取，
+    /// 前端已隐藏该字段；仅手动上传（无 cert.apply）时可选填写。
     #[serde(default)]
+    #[schemars(description = "默认跟随 cert.apply.account_credential_id，可显式覆盖")]
     pub acme_account_credential_id: Option<i64>,
 }
 
@@ -164,6 +166,28 @@ impl PipelineStep for CertStoreStep {
         let key_algorithm = acmecast_cert::detect_algorithm(&key_pem)
             .ok()
             .map(|algo| algo.as_str().to_owned());
+        // ACME 账号推断：显式值 > 同流水线 cert.apply.account_credential_id > 库中同域名记录 > None
+        let pipeline_apply_account_id: Option<i64> = {
+            // 尝试从流水线定义中读取 cert.apply 的账号标识
+            use sea_orm::{ColumnTrait, EntityTrait, QueryFilter};
+            let pipeline_id = ctx.pipeline_id();
+            match acmecast_store::entity::pipeline_step::Entity::find()
+                .filter(acmecast_store::entity::pipeline_step::Column::PipelineId.eq(pipeline_id))
+                .filter(acmecast_store::entity::pipeline_step::Column::TypeId.eq("cert.apply"))
+                .one(&self.db)
+                .await
+            {
+                Ok(Some(row)) => row
+                    .input
+                    .get("account_credential_id")
+                    .and_then(|x| x.as_i64()),
+                _ => None,
+            }
+        };
+        let resolved_acme_account_id = input
+            .acme_account_credential_id
+            .or(pipeline_apply_account_id)
+            .or_else(|| existing.as_ref().and_then(|c| c.acme_account_access_id));
         if should_archive {
             // 指纹不同且已尝试归档：新建记录，不覆盖旧记录。
             // 若指纹已存在（并发/重试导致冲突），返回 Conflict 交由调用方感知。
@@ -176,8 +200,8 @@ impl PipelineStep for CertStoreStep {
                     issuer: (!leaf.issuer.is_empty()).then_some(leaf.issuer.clone()),
                     not_before: leaf.not_before,
                     not_after: leaf.not_after,
-                    acme_account_access_id: input.acme_account_credential_id,
-                    key_algorithm,
+                    acme_account_access_id: resolved_acme_account_id,
+                    key_algorithm: key_algorithm.clone(),
                     description: None,
                 })
                 .await
@@ -188,6 +212,14 @@ impl PipelineStep for CertStoreStep {
                 .with_artifact("cert_id", serde_json::json!(cert_id))
                 .with_artifact("fingerprint", serde_json::json!(fingerprint)));
         }
+        if let Some(existing_cert) = existing.as_ref() {
+            if existing_cert.fingerprint == fingerprint {
+                ctx.log_info(format!(
+                    "指纹一致，幂等入库（证书 #{}，指纹 {}）",
+                    existing_cert.id, fingerprint
+                ));
+            }
+        }
         let outcome = repository
             .save(CertInput {
                 domains: domains.clone(),
@@ -197,7 +229,7 @@ impl PipelineStep for CertStoreStep {
                 issuer: (!leaf.issuer.is_empty()).then_some(leaf.issuer.clone()),
                 not_before: leaf.not_before,
                 not_after: leaf.not_after,
-                acme_account_access_id: input.acme_account_credential_id,
+                acme_account_access_id: resolved_acme_account_id,
                 key_algorithm,
                 description: None,
             })

@@ -24,12 +24,20 @@ serde_json.workspace = true
 schemars.workspace = true
 sea-orm.workspace = true
 thiserror.workspace = true
+aws-sdk-s3.workspace = true
+aws-config.workspace = true
+aws-credential-types.workspace = true
+http-body-util.workspace = true
+aws-smithy-types.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
 # 用 acme 的进程内 mock 验证连通性测试的两条分支，不必依赖外网。
 acmecast-acme = { workspace = true, features = ["testing"] }
 tokio.workspace = true
+reqwest.workspace = true
 tracing-subscriber.workspace = true
 
 [lints]

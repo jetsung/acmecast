@@ -20,9 +20,6 @@ pub struct CertDeployInput {
     pub target: String,
     /// 目标的输入配置，结构与所选目标声明的 schema 一致。
     pub config: serde_json::Value,
-    /// 强制重写：跳过「指纹一致即跳过写入」的判断。
-    #[serde(default)]
-    pub force: bool,
 }
 
 /// 部署步骤。
@@ -113,18 +110,48 @@ impl PipelineStep for CertDeployStep {
             .require(input.target.trim())
             .map_err(|e| domain_error("部署目标", e))?;
         let deployer = Deployer::new(Arc::clone(&self.state));
+        // force 已移除：仅 tencent-ssl 走指纹幂等，其余每次都写入
+        let force = false;
         let outcome = deployer
             .deploy(
                 target,
                 &input.config,
                 &CertMaterials::new(cert_pem, key_pem, fingerprint),
                 ctx.credentials(),
-                input.force,
+                force,
             )
             .await
             .map_err(|e| domain_error("执行部署", e))?;
 
-        if outcome.skipped_write {
+        // 腾讯云 SSL：把云端证书 ID 以结构化输出写入运行历史，使单次运行可自包含回溯。
+        // 跳过写入时与普通日志合并为一条带 output 的日志，避免"跳过提示 + 结构化结果"两条冗余日志。
+        if target.type_id() == "tencent-ssl" {
+            if outcome.skipped_write {
+                ctx.log_info_with_output(
+                    format!(
+                        "目标 {} 指纹未变，跳过写入；重载已按配置执行",
+                        target.type_id()
+                    ),
+                    serde_json::json!({
+                        "cert_ids": outcome.paths,
+                        "skipped_write": true,
+                    }),
+                );
+            } else {
+                ctx.log_info(format!(
+                    "已部署到目标 {}，写入 {} 个路径",
+                    target.type_id(),
+                    outcome.paths.len()
+                ));
+                ctx.log_info_with_output(
+                    "腾讯云 SSL 部署结果",
+                    serde_json::json!({
+                        "cert_ids": outcome.paths,
+                        "skipped_write": false,
+                    }),
+                );
+            }
+        } else if outcome.skipped_write {
             ctx.log_info(format!(
                 "目标 {} 指纹未变，跳过写入；重载已按配置执行",
                 target.type_id()
@@ -135,18 +162,6 @@ impl PipelineStep for CertDeployStep {
                 target.type_id(),
                 outcome.paths.len()
             ));
-        }
-
-        // 腾讯云 SSL 部署的结构化输出：把云端证书 ID 写入运行历史日志，
-        // 使运维不经部署历史表即可回溯本次部署的云端证书标识。
-        if target.type_id() == "tencent-ssl" {
-            ctx.log_info_with_output(
-                "腾讯云 SSL 部署结果",
-                serde_json::json!({
-                    "cert_ids": outcome.paths,
-                    "skipped_write": outcome.skipped_write,
-                }),
-            );
         }
 
         Ok(StepOutput::empty()
@@ -392,4 +407,187 @@ mod tests {
             "非 tencent-ssl 目标不应产生结构化输出"
         );
     }
+
+    #[tokio::test]
+    async fn tencent_ssl_writes_multiple_cert_ids_for_update() {
+        let mut registry = DeploymentRegistry::new();
+        registry
+            .register(MockTarget {
+                type_id_val: "tencent-ssl",
+                cert_ids: vec!["cert-1".into(), "cert-2".into(), "cert-3".into()],
+            })
+            .expect("注册应成功");
+
+        let state = Arc::new(InMemoryDeploymentState::new());
+        let step = CertDeployStep::new(Arc::new(registry), state);
+
+        let db = mem_db().await;
+        let credentials = credential_store(&db);
+        let pipeline_state = MemoryState::default();
+        let artifacts = cert_artifacts();
+        let input = serde_json::json!({
+            "target": "tencent-ssl",
+            "config": {},
+            "force": false,
+        });
+
+        let mut ctx = StepContext::new(1, 1, 0, &input, &artifacts, &credentials, &pipeline_state);
+        step.execute(&mut ctx).await.expect("部署应成功");
+        let logs = ctx.take_logs();
+        let structured = logs
+            .iter()
+            .find(|log| log.output.is_some())
+            .expect("应有一条带结构化输出的日志");
+        let out = structured.output.as_ref().unwrap();
+        assert_eq!(out["cert_ids"].as_array().unwrap().len(), 3);
+        assert_eq!(out["cert_ids"][0], "cert-1");
+        assert_eq!(out["cert_ids"][1], "cert-2");
+        assert_eq!(out["cert_ids"][2], "cert-3");
+        assert_eq!(out["skipped_write"], false);
+        // output 不含凭据明文。
+        let serialized = out.to_string();
+        assert!(
+            !serialized.contains("secret"),
+            "output 不应包含凭据相关字段"
+        );
+    }
+
+    #[tokio::test]
+    async fn tencent_ssl_skipped_write_has_empty_cert_ids_and_single_log() {
+        #[derive(Debug)]
+        struct SkipTarget;
+        #[async_trait::async_trait]
+        impl DeploymentTarget for SkipTarget {
+            fn type_id(&self) -> &'static str {
+                "tencent-ssl"
+            }
+            fn display_name(&self) -> &'static str {
+                "mock-skip"
+            }
+            fn input_schema(&self) -> schemars::schema::RootSchema {
+                schemars::schema::RootSchema::default()
+            }
+            fn example_input(&self) -> serde_json::Value {
+                serde_json::json!({})
+            }
+            fn supports_skip_write(&self) -> bool {
+                true
+            }
+            async fn deploy(
+                &self,
+                _input: &serde_json::Value,
+                _materials: &CertMaterials,
+                _credentials: &CredentialStore<'_>,
+                mode: DeployMode,
+            ) -> acmecast_deploy::Result<DeployOutcome> {
+                // Deployer 在 fingerprint 一致时会传入 SkipWrite；此时应返回 skipped。
+                if mode == DeployMode::SkipWrite {
+                    return Ok(DeployOutcome::skipped(Vec::new()));
+                }
+                Ok(DeployOutcome::written(vec!["cert-abc123".into()]))
+            }
+        }
+
+        let mut registry = DeploymentRegistry::new();
+        registry.register(SkipTarget).expect("注册应成功");
+
+        let state = Arc::new(InMemoryDeploymentState::new());
+        // 预置已部署指纹，使下一次同指纹部署走 SkipWrite。
+        state
+            .record(acmecast_deploy::state::DeploymentEntry {
+                target: acmecast_deploy::state::target_ref_of("tencent-ssl", &serde_json::json!({})),
+                fingerprint: "sha256:abc".to_owned(),
+                skipped_write: false,
+                deployed_at: chrono::Utc::now(),
+                paths: vec!["cert-abc123".into()],
+                reload_output: None,
+            })
+            .await
+            .expect("预置部署记录应成功");
+
+        let db = mem_db().await;
+        let state: Arc<dyn acmecast_deploy::DeploymentStateStore> = state;
+        let step = CertDeployStep::new(Arc::new(registry), Arc::clone(&state));
+        let credentials = credential_store(&db);
+        let pipeline_state = MemoryState::default();
+        let artifacts = cert_artifacts();
+        let input = serde_json::json!({
+            "target": "tencent-ssl",
+            "config": {},
+            "force": false,
+        });
+
+        let mut ctx = StepContext::new(1, 1, 0, &input, &artifacts, &credentials, &pipeline_state);
+        step.execute(&mut ctx).await.expect("部署应成功");
+        let logs = ctx.take_logs();
+
+        // 跳过写入时应只有一条带 output 的日志，且内容为空列表 + skipped_write=true。
+        let structured: Vec<_> = logs.iter().filter(|l| l.output.is_some()).collect();
+        assert_eq!(structured.len(), 1, "跳过写入时应只有一条结构化日志");
+        let out = structured[0].output.as_ref().unwrap();
+        assert_eq!(out["cert_ids"].as_array().unwrap().len(), 0);
+        assert_eq!(out["skipped_write"], true);
+        assert!(
+            structured[0].message.contains("跳过写入"),
+            "跳过写入的结构化日志应包含跳过提示"
+        );
+    }
+
+    #[tokio::test]
+    async fn tencent_ssl_deploy_failure_produces_no_cert_ids_output() {
+        #[derive(Debug)]
+        struct FailingTarget;
+        #[async_trait::async_trait]
+        impl DeploymentTarget for FailingTarget {
+            fn type_id(&self) -> &'static str {
+                "tencent-ssl"
+            }
+            fn display_name(&self) -> &'static str {
+                "mock-failing"
+            }
+            fn input_schema(&self) -> schemars::schema::RootSchema {
+                schemars::schema::RootSchema::default()
+            }
+            fn example_input(&self) -> serde_json::Value {
+                serde_json::json!({})
+            }
+            async fn deploy(
+                &self,
+                _input: &serde_json::Value,
+                _materials: &CertMaterials,
+                _credentials: &CredentialStore<'_>,
+                _mode: DeployMode,
+            ) -> acmecast_deploy::Result<DeployOutcome> {
+                Err(acmecast_deploy::Error::Cloud {
+                    service: "ssl".into(),
+                    reason: "模拟 tencent-ssl 部署失败".into(),
+                })
+            }
+        }
+
+        let mut registry = DeploymentRegistry::new();
+        registry.register(FailingTarget).expect("注册应成功");
+        let state = Arc::new(InMemoryDeploymentState::new());
+        let step = CertDeployStep::new(Arc::new(registry), state);
+
+        let db = mem_db().await;
+        let credentials = credential_store(&db);
+        let pipeline_state = MemoryState::default();
+        let artifacts = cert_artifacts();
+        let input = serde_json::json!({
+            "target": "tencent-ssl",
+            "config": {},
+            "force": false,
+        });
+
+        let mut ctx = StepContext::new(1, 1, 0, &input, &artifacts, &credentials, &pipeline_state);
+        let result = step.execute(&mut ctx).await;
+        assert!(result.is_err(), "部署失败应返回错误");
+        let logs = ctx.take_logs();
+        assert!(
+            logs.iter().all(|l| l.output.is_none() || l.output.as_ref().unwrap().get("cert_ids").is_none()),
+            "失败路径不应产生含 cert_ids 的成功回显"
+        );
+    }
+
 }

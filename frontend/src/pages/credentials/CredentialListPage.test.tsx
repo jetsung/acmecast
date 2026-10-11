@@ -1,16 +1,9 @@
-/**
- * 凭据页「编辑」回填回归用例。
- *
- * 曾经的 bug：弹窗只记住了行 id 与类型，从不拉取该条记录的现值——
- * 表单永远空白，而 PUT 是整体替换语义，用户直接点保存会把已存密钥清成空。
- * 修复要点：编辑打开时 GET /api/credentials/{id}（带解密字段值）并回填
- * name / type_id / fields。
- */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { App } from "antd";
 import { MemoryRouter } from "react-router";
 import { describe, expect, it, vi } from "vitest";
+import { client } from "@/api/client";
 import { CredentialListPage } from "./CredentialListPage";
 
 const CLOUDFLARE_TYPE = {
@@ -37,6 +30,8 @@ const ACME_ACCOUNT_SCHEMA = {
       description: "CA 类型。",
       enum: ["letsencrypt", "letsencrypt-staging", "zerossl", "google", "sslcom", "custom"],
       type: "string",
+      // 固定半宽独占一行：长渠道名不被挤压隐藏（x-end-row → 半宽 + 空占位列）。
+      "x-end-row": true,
     },
     credentials: { description: "账号凭据。", type: ["string", "null"], "x-multiline": true },
     directory_url: {
@@ -299,29 +294,34 @@ describe("凭据编辑弹窗", () => {
     expect(labels[labels.length - 1]).toBe("private_key");
   });
 
-  it("acme.account：credentials 多行文本域，directory_url 整行，EAB 密钥对同行半宽", async () => {
+  it("acme.account：ca 固定半宽独占一行，directory_url/credentials 各占整行，EAB 密钥对同行半宽", async () => {
     await openEditorForRow(1);
 
-    // credentials（含私钥的 JSON）渲染成多行文本域，而不是单行输入框。
     await waitFor(() => {
       expect(document.querySelector("#fields_credentials")?.tagName).toBe("TEXTAREA");
     });
 
-    // 宽度由 schema 扩展驱动：标注 x-full-width 的占整行（24），
-    // 未标注的标量半宽（12）成对同行。col 链要跳过 Form.Item 内层的
-    // 控制列，从 .ant-form-item 向外找 SchemaForm 渲染的 Col。
-    const colOf = (id: string) =>
-      document
-        .querySelector(id)
-        ?.closest(".ant-form-item")
-        ?.closest(".ant-col")?.className ?? "";
-    expect(colOf("#fields_directory_url")).toContain("ant-col-24");
-    expect(colOf("#fields_credentials")).toContain("ant-col-24");
-    expect(colOf("#fields_eab_kid")).toContain("ant-col-12");
-    expect(colOf("#fields_eab_hmac_key")).toContain("ant-col-12");
+    expect(
+      document.querySelector("#fields_ca")?.closest(".ant-form-item")?.closest(".ant-col")?.className ?? "",
+    ).toContain("ant-col-12");
+    expect(document.querySelector(".ant-modal .ant-col[aria-hidden].ant-col-12")).toBeTruthy();
+    expect(
+      document.querySelector("#fields_directory_url")?.closest(".ant-form-item")?.closest(".ant-col")
+        ?.className ?? "",
+    ).toContain("ant-col-24");
+    expect(
+      document.querySelector("#fields_credentials")?.closest(".ant-form-item")?.closest(".ant-col")
+        ?.className ?? "",
+    ).toContain("ant-col-24");
+    expect(
+      document.querySelector("#fields_eab_kid")?.closest(".ant-form-item")?.closest(".ant-col")
+        ?.className ?? "",
+    ).toContain("ant-col-12");
+    expect(
+      document.querySelector("#fields_eab_hmac_key")?.closest(".ant-form-item")?.closest(".ant-col")
+        ?.className ?? "",
+    ).toContain("ant-col-12");
 
-    // 渲染顺序由 x-field-order 钉住：真实产物 properties 是字母序（hmac 会
-    // 排到 kid 前面），表单里 EAB 密钥对必须相邻且 kid 在前。
     const labels = Array.from(
       document.querySelectorAll<HTMLElement>(".ant-modal .ant-form-item"),
     )
@@ -375,5 +375,89 @@ describe("凭据编辑弹窗", () => {
     const spacers = document.querySelectorAll<HTMLElement>(".ant-modal .ant-col[aria-hidden]");
     expect(spacers).toHaveLength(1);
     expect(spacers[0].className).toContain("ant-col-12");
+  });
+
+  it("连续编辑两条不同凭据:第二次弹窗不含第一条的字段残留", async () => {
+    renderPage();
+    const editButtons = await screen.findAllByRole("button", { name: /编\s*辑/ });
+    fireEvent.click(editButtons[0]);
+    await waitFor(() => {
+      expect((document.querySelector("#fields_api_token") as HTMLInputElement | null)?.value).toBe(
+        "secret-tok",
+      );
+    });
+    // 不关闭弹窗直接切换到第二条：验证“切换编辑目标→重置并回填新记录”
+    // 对应用户在同一弹窗打开状态下连续点不同行的“编辑”
+    fireEvent.click(editButtons[1]);
+    await waitFor(() => {
+      const nameInput = document.querySelector("#name") as HTMLInputElement | null;
+      expect(nameInput?.value).toBe("le-account");
+    });
+    await waitFor(() => {
+      expect(document.querySelector("#fields_ca")).toBeTruthy();
+      expect(document.querySelector("#fields_api_token")).toBeNull();
+    });
+    vi.mocked(client.PUT).mockClear();
+    fireEvent.click(document.querySelector(".ant-modal .ant-btn-primary")!);
+    await waitFor(() => {
+      expect(client.PUT).toHaveBeenCalledTimes(1);
+    });
+    const putCall = vi.mocked(client.PUT).mock.calls[0] as [
+      string,
+      { body: { fields: Record<string, unknown> } },
+    ];
+    const putFields = putCall[1].body.fields;
+    expect(putFields).not.toHaveProperty("api_token");
+    expect(putFields).toHaveProperty("ca", "letsencrypt");
+  });
+
+  it("详情加载期间不展示上一条记录的旧值且保存被禁用", async () => {
+    let resolveDetail: (v: unknown) => void = () => {};
+    const delayedDetail = new Promise<unknown>((resolve) => {
+      resolveDetail = resolve as (v: unknown) => void;
+    });
+    const originalGet = vi.mocked(client.GET);
+    const baseGet = originalGet.getMockImplementation()!;
+    vi.mocked(client.GET).mockImplementation(async (path: string) => {
+      if (path === "/api/credentials/5") {
+        await delayedDetail;
+        return {
+          data: {
+            data: {
+              id: 5,
+              name: "cf-main",
+              type_id: "cloudflare",
+              fields: { api_token: "secret-tok" },
+              created_at: "2026-09-19T00:00:00Z",
+              updated_at: "2026-09-19T00:00:00Z",
+            },
+          },
+          response: new Response(),
+        };
+      }
+      return baseGet(path);
+    });
+    try {
+      renderPage();
+      const editButtons = await screen.findAllByRole("button", { name: /编\s*辑/ });
+      fireEvent.click(editButtons[0]);
+      await waitFor(() => {
+        expect(document.querySelector(".ant-modal")).toBeTruthy();
+      });
+      await waitFor(() => {
+        const okBtn = document.querySelector(".ant-modal .ant-btn-primary") as HTMLButtonElement | null;
+        expect(okBtn?.disabled).toBe(true);
+      });
+      resolveDetail({});
+      await waitFor(() => {
+        expect((document.querySelector("#name") as HTMLInputElement | null)?.value).toBe("cf-main");
+      });
+      await waitFor(() => {
+        const okBtn = document.querySelector(".ant-modal .ant-btn-primary") as HTMLButtonElement | null;
+        expect(okBtn?.disabled).toBe(false);
+      });
+    } finally {
+      vi.mocked(client.GET).mockImplementation(baseGet);
+    }
   });
 });

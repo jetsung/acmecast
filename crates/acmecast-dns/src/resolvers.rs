@@ -17,7 +17,7 @@ use crate::propagation::{DnsResolver, DohResolver};
 ///
 /// 字段经 `serde` 直接反序列化，端点的语义校验（如 DoH 须 `https://`）
 /// 在合并时进行，非法条目跳过并告警。
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 pub struct ResolverEntry {
     /// 解析器类型：`doh`/`dot`/`dns`。
     #[serde(rename = "type")]

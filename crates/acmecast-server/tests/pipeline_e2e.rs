@@ -36,11 +36,18 @@ use support::*;
 #[derive(Debug, Default, Clone)]
 struct MemoryDns {
     records: Arc<Mutex<BTreeMap<String, Vec<String>>>>,
+    /// 每次写入/删除时收到的 (zone, 写入名, CA 查询名)，供跨 zone 委派场景断言。
+    calls: Arc<Mutex<Vec<(String, String, String)>>>,
 }
 
 impl MemoryDns {
     fn snapshot(&self) -> BTreeMap<String, Vec<String>> {
         self.records.lock().expect("测试锁不会中毒").clone()
+    }
+
+    /// 写过的记录（zone、写入名、CA 查询名）。删除也留痕，便于确认清理用的是哪个名字。
+    fn calls(&self) -> Vec<(String, String, String)> {
+        self.calls.lock().expect("测试锁不会中毒").clone()
     }
 }
 
@@ -77,6 +84,11 @@ impl DnsProvider for MemoryDns {
         _credentials: &serde_json::Value,
         record: &TxtRecord,
     ) -> acmecast_dns::Result<()> {
+        self.calls.lock().expect("测试锁不会中毒").push((
+            record.zone.clone(),
+            record.name.clone(),
+            record.ca_name.clone(),
+        ));
         self.records
             .lock()
             .expect("测试锁不会中毒")
@@ -91,6 +103,11 @@ impl DnsProvider for MemoryDns {
         _credentials: &serde_json::Value,
         record: &TxtRecord,
     ) -> acmecast_dns::Result<()> {
+        self.calls.lock().expect("测试锁不会中毒").push((
+            record.zone.clone(),
+            record.name.clone(),
+            record.ca_name.clone(),
+        ));
         if let Some(values) = self
             .records
             .lock()
@@ -99,6 +116,15 @@ impl DnsProvider for MemoryDns {
         {
             values.retain(|value| value != &record.value);
         }
+        Ok(())
+    }
+
+    // 自动选择会探测每个候选提供商；测试提供商总是可用。
+    async fn probe_zone(
+        &self,
+        _credentials: &serde_json::Value,
+        _zone: &str,
+    ) -> acmecast_dns::Result<()> {
         Ok(())
     }
 }
@@ -113,7 +139,7 @@ struct MemoryDnsType;
 #[async_trait]
 impl CredentialType for MemoryDnsType {
     fn type_id(&self) -> &'static str {
-        "dns.memory"
+        "memory"
     }
 
     fn display_name(&self) -> &'static str {
@@ -386,7 +412,7 @@ async fn the_full_pipeline_applies_stores_and_deploys_a_certificate() {
     let encrypted = cipher.encrypt_string(&dns_fields.to_string()).unwrap();
     acmecast_store::entity::credential::ActiveModel {
         name: Set("内存 DNS".to_owned()),
-        type_id: Set("dns.memory".to_owned()),
+        type_id: Set("memory".to_owned()),
         encrypted_fields: Set(encrypted),
         created_at: Set(chrono::Utc::now()),
         updated_at: Set(chrono::Utc::now()),
@@ -545,6 +571,127 @@ async fn zone_derivation_failure_fails_before_any_dns_call() {
     assert!(
         memory_dns.snapshot().is_empty(),
         "zone 推导失败不得触发任何 DNS 调用"
+    );
+}
+
+/// 跨 zone CNAME 委派：`domains` 为 `*.delegated.test`，而挑战记录经 CNAME
+/// 委派到独立托管的 `challenges.test`（流水线 #12 的真实形态）。
+///
+/// DNS 提供商必须收到 zone=`challenges.test` + 写入名
+/// `_acme-challenge.challenges.test`——把 `_acme-challenge.delegated.test`
+/// 写进这个 zone 是历史 bug（histories/77 等待 600 秒后超时）。清理阶段
+/// 同样用这个写入名定位。
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cname_delegated_zone_writes_and_cleans_the_write_name() {
+    let pebble = match start_pebble() {
+        Ok(pebble) => pebble,
+        Err(reason) => {
+            eprintln!("跳过 CNAME 委派 zone 测试：{reason}");
+            return;
+        }
+    };
+
+    let db = a_database().await;
+    let cipher = Arc::new(
+        CredentialCipher::from_base64(&CredentialCipher::generate_key_base64())
+            .expect("密钥应可用"),
+    );
+    let mut credential_registry = CredentialRegistry::new();
+    credential_registry
+        .register(acmecast_access::AcmeAccountType::new())
+        .expect("ACME 账号类型不应重复");
+    credential_registry
+        .register(MemoryDnsType)
+        .expect("内存 DNS 类型不应重复");
+    let credentials = CredentialStore::new(
+        &db,
+        Arc::new(credential_registry),
+        Arc::clone(&cipher),
+    );
+
+    let account_id = an_acme_account_credential(&db, &cipher, &pebble.directory_url).await;
+    let dns_credential_id = a_memory_dns_credential(&db, &cipher).await;
+
+    let memory_dns = MemoryDns::default();
+    let mut dns_registry = DnsProviderRegistry::new();
+    dns_registry
+        .register(memory_dns.clone())
+        .expect("内存 DNS 提供商不应重复");
+    let dns_registry = Arc::new(dns_registry);
+
+    let mut steps = StepRegistry::new();
+    steps
+        .register(CertApplyStep::new(Arc::clone(&dns_registry)))
+        .expect("cert.apply 不应重复");
+
+    let definition = PipelineDefinition {
+        id: 1,
+        steps: vec![acmecast_pipeline::StepDefinition {
+            order_index: 0,
+            type_id: "cert.apply".to_owned(),
+            input: serde_json::json!({
+                "domains": ["*.delegated.test"],
+                "challenge": "dns-01",
+                "account_credential_id": account_id,
+                "dns_provider": "memory",
+                "dns_credential_id": dns_credential_id,
+                // 记录实际托管的 zone——CNAME 委派的终点。
+                "dns_zone": "challenges.test",
+                "wait_propagation": false,
+                "insecure_skip_verify": true
+            }),
+            enabled: true,
+        }],
+    };
+
+    let leaked: &'static DatabaseConnection = Box::leak(Box::new(db.clone()));
+    let state = acmecast_pipeline::DatabaseStateStore::new(leaked);
+    let runner = PipelineRunner::new(&steps, &credentials, &state);
+    let outcome = runner.run(&definition, 1).await.expect("流水线应能执行");
+
+    assert!(
+        outcome.is_success(),
+        "CNAME 委派场景应能签发成功，失败原因：{:?}",
+        outcome.failure
+    );
+
+    let calls = memory_dns.calls();
+    assert!(
+        calls.iter().all(|(zone, _, _)| zone == "challenges.test"),
+        "所有 DNS 调用都应发生在 challenges.test zone：{calls:?}"
+    );
+    assert!(
+        calls
+            .iter()
+            .all(|(_, write_name, _)| write_name == "_acme-challenge.challenges.test"),
+        "写入名应为 _acme-challenge.challenges.test：{calls:?}"
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|(_, _, ca_name)| ca_name == "_acme-challenge.delegated.test"),
+        "CA 查询名应留在授权域名一侧：{calls:?}"
+    );
+    // 清理用的是同一个写入名——记录不残留。
+    let remaining = memory_dns
+        .snapshot()
+        .get("_acme-challenge.challenges.test")
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|value| !value.is_empty())
+        .count();
+    assert_eq!(
+        remaining,
+        0,
+        "挑战记录应已按写入名清理：{:?}",
+        memory_dns.snapshot()
+    );
+    assert!(
+        !memory_dns
+            .snapshot()
+            .contains_key("_acme-challenge.delegated.test"),
+        "不应把记录写到 CA 查询名下"
     );
 }
 
@@ -809,7 +956,8 @@ async fn renewal_scan_triggers_a_single_reissue() {
         "重签后的指纹应不同（pebble 每次签发都是新证书）"
     );
 
-    // 证书记录仍是同一条：按域名集合去重更新，而不是新增。
+    // 重签语义（归档式）：旧证书记录保留并标记 archived_at，新证书新建一条，
+    // 因此该域名集合下共 2 条记录；活跃（未归档）的只有新签那条。
     let records = repository
         .list(CertQuery {
             domain: Some("e2e.acmecast.test".to_owned()),
@@ -817,7 +965,13 @@ async fn renewal_scan_triggers_a_single_reissue() {
         })
         .await
         .expect("应能查询证书");
-    assert_eq!(records.items.len(), 1, "重签应更新原记录而非新增");
+    assert_eq!(records.items.len(), 2, "重签应归档旧记录并新增一条新记录");
+    let active: Vec<_> = records.items.iter().filter(|row| row.archived_at.is_none()).collect();
+    assert_eq!(active.len(), 1, "活跃记录应恰好一条");
+    assert_ne!(
+        active[0].fingerprint, first_fingerprint,
+        "活跃记录应是重签后的新证书"
+    );
 
     // 触发记录恰好一条续期触发。
     let logs = acmecast_store::repository::TriggerLogRepository::new(&db)
@@ -849,7 +1003,7 @@ async fn a_memory_dns_credential(db: &DatabaseConnection, cipher: &CredentialCip
         .expect("应能加密凭据");
     acmecast_store::entity::credential::ActiveModel {
         name: Set("内存 DNS".to_owned()),
-        type_id: Set("dns.memory".to_owned()),
+        type_id: Set("memory".to_owned()),
         encrypted_fields: Set(encrypted),
         created_at: Set(chrono::Utc::now()),
         updated_at: Set(chrono::Utc::now()),
@@ -1192,4 +1346,169 @@ async fn revocation_updates_ca_and_local_state() {
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let body = json(response).await;
     assert_eq!(body["error"]["code"], "missing_account");
+}
+
+// ---- 11.x DNS 提供商自动选择 ----
+//
+// cert.apply 未指定 dns_provider/dns_credential_id 时自动选择：注册表里
+// 只有内存提供商（探测总是通过），应自动选定它并走完整链路。
+
+#[tokio::test(flavor = "multi_thread")]
+async fn auto_selected_dns_provider_completes_the_pipeline() {
+    let pebble = match start_pebble() {
+        Ok(pebble) => pebble,
+        Err(reason) => {
+            eprintln!("跳过自动选择测试：{reason}");
+            return;
+        }
+    };
+
+    let db = a_database().await;
+    let cipher = Arc::new(
+        CredentialCipher::from_base64(&CredentialCipher::generate_key_base64())
+            .expect("密钥应可用"),
+    );
+
+    let mut credential_registry = CredentialRegistry::new();
+    credential_registry
+        .register(acmecast_access::AcmeAccountType::new())
+        .expect("ACME 账号类型不应重复");
+    credential_registry
+        .register(MemoryDnsType)
+        .expect("内存 DNS 类型不应重复");
+    let credential_registry = Arc::new(credential_registry);
+    let credentials =
+        CredentialStore::new(&db, Arc::clone(&credential_registry), Arc::clone(&cipher));
+
+    let account_id = an_acme_account_credential(&db, &cipher, &pebble.directory_url).await;
+    // 自动选择的候选凭据：不给 dns_credential_id，靠类型枚举找到它。
+    // 类型标识与提供商 type_id 对齐（内置凭据类型的同一约定）。
+    let _dns_credential_id = {
+        let encrypted = cipher
+            .encrypt_string(&serde_json::json!({}).to_string())
+            .expect("应能加密凭据");
+        acmecast_store::entity::credential::ActiveModel {
+            name: Set("内存 DNS".to_owned()),
+            type_id: Set("memory".to_owned()),
+            encrypted_fields: Set(encrypted),
+            created_at: Set(chrono::Utc::now()),
+            updated_at: Set(chrono::Utc::now()),
+            ..Default::default()
+        }
+        .insert(&db)
+        .await
+        .expect("DNS 凭据应能写入")
+        .id
+    };
+
+    let memory_dns = MemoryDns::default();
+    let mut dns_registry = DnsProviderRegistry::new();
+    dns_registry
+        .register(memory_dns.clone())
+        .expect("内存 DNS 提供商不应重复");
+    let dns_registry = Arc::new(dns_registry);
+
+    let data_dir = TempDir::new("e2e-data");
+    let deploy_dir = TempDir::new("e2e-deploy");
+
+    let mut deploy_registry = DeploymentRegistry::new();
+    deploy_registry
+        .register(acmecast_deploy::LocalTarget)
+        .expect("本地目标不应重复");
+    let deploy_registry = Arc::new(deploy_registry);
+
+    let mut steps = StepRegistry::new();
+    steps
+        .register(CertApplyStep::with_policy_and_db(
+            Arc::clone(&dns_registry),
+            acmecast_dns::PropagationPolicy::default(),
+            db.clone(),
+        ))
+        .expect("cert.apply 不应重复");
+    steps
+        .register(CertStoreStep::new(
+            db.clone(),
+            data_dir.path().to_path_buf(),
+        ))
+        .expect("cert.store 不应重复");
+    steps
+        .register(CertDeployStep::new(
+            Arc::clone(&deploy_registry),
+            Arc::new(InMemoryDeploymentState::new()),
+        ))
+        .expect("cert.deploy 不应重复");
+    let steps = Arc::new(steps);
+
+    let definition = PipelineDefinition {
+        id: 1,
+        steps: vec![
+            acmecast_pipeline::StepDefinition {
+                order_index: 0,
+                type_id: "cert.apply".to_owned(),
+                input: serde_json::json!({
+                    "domains": ["auto.acmecast.test"],
+                    "challenge": "dns-01",
+                    "account_credential_id": account_id,
+                    "wait_propagation": false,
+                    "insecure_skip_verify": true
+                }),
+                enabled: true,
+            },
+            acmecast_pipeline::StepDefinition {
+                order_index: 1,
+                type_id: "cert.store".to_owned(),
+                input: serde_json::json!({ "acme_account_credential_id": account_id }),
+                enabled: true,
+            },
+            acmecast_pipeline::StepDefinition {
+                order_index: 2,
+                type_id: "cert.deploy".to_owned(),
+                input: serde_json::json!({
+                    "target": "local",
+                    "config": {
+                        "cert_path": deploy_dir.path().join("cert.pem").display().to_string(),
+                        "key_path": deploy_dir.path().join("key.pem").display().to_string(),
+                        "cert_mode": "0644",
+                        "key_mode": "0600"
+                    },
+                    "force": false
+                }),
+                enabled: true,
+            },
+        ],
+    };
+
+    let leaked: &'static DatabaseConnection = Box::leak(Box::new(db.clone()));
+    let state = acmecast_pipeline::DatabaseStateStore::new(leaked);
+    let runner = PipelineRunner::new(&steps, &credentials, &state);
+    let outcome = runner.run(&definition, 1).await.expect("流水线应能执行");
+
+    assert!(
+        outcome.is_success(),
+        "自动选择下端到端流水线应成功，失败原因：{:?}",
+        outcome.failure
+    );
+
+    // 证书已入库：自动选择确实选到了能管理该 zone 的提供商并走完挑战。
+    let repository = CertRepository::new(&db);
+    let records = repository
+        .list(CertQuery {
+            domain: Some("acmecast.test".to_owned()),
+            ..Default::default()
+        })
+        .await
+        .expect("应能查询证书");
+    assert_eq!(records.items.len(), 1, "入库应恰好一条记录");
+
+    // 挑战 TXT 记录已被清理。
+    let snapshot = memory_dns.snapshot();
+    let record_name = challenge_record_name("auto.acmecast.test");
+    let remaining = snapshot
+        .get(&record_name)
+        .cloned()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|value| !value.is_empty())
+        .count();
+    assert_eq!(remaining, 0, "挑战 TXT 记录应在完成后清理：{snapshot:?}");
 }

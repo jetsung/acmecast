@@ -443,7 +443,7 @@ async fn list_reports_step_counts() {
     let summaries = repo.list().await.unwrap();
     assert_eq!(summaries.len(), 2);
     let names: Vec<&str> = summaries.iter().map(|s| s.name.as_str()).collect();
-    assert_eq!(names, vec!["甲", "乙"], "列表按主键升序");
-    assert_eq!(summaries[0].step_count, 1);
-    assert_eq!(summaries[1].step_count, 3);
+    assert_eq!(names, vec!["乙", "甲"], "列表按主键降序");
+    assert_eq!(summaries[0].step_count, 3);
+    assert_eq!(summaries[1].step_count, 1);
 }

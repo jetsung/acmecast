@@ -121,6 +121,34 @@ async fn lists_all_logs_in_reverse_order() {
 }
 
 #[tokio::test]
+async fn default_page_size_fallback_is_10() {
+    let (app, _db) = app_with_seeded_logs(&[
+        (1, TriggerSource::Cron),
+        (2, TriggerSource::Renewal),
+    ])
+    .await;
+    let token = authorized_token(&app).await;
+
+    // 不传 page_size，验证 fallback 为 10。
+    let response = send(
+        &app,
+        with_bearer(
+            Request::get("/api/schedules/trigger-logs")
+                .body(Body::empty())
+                .unwrap(),
+            &token,
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let body = json(response).await;
+    assert_eq!(body["data"]["page_size"].as_u64(), Some(10));
+    assert_eq!(body["data"]["total"].as_u64(), Some(2));
+    assert_eq!(body["data"]["page"].as_u64(), Some(1));
+}
+
+#[tokio::test]
 async fn filters_by_pipeline_and_paginates() {
     let (app, _db) = app_with_seeded_logs(&[
         (1, TriggerSource::Cron),

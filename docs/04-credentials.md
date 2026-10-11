@@ -27,10 +27,10 @@
 
 | 字段 | 必需 | 说明 |
 |---|---|---|
-| `ca` | 是 | CA 别名：`letsencrypt`、`letsencrypt-staging`、`zerossl`、`google`、`sslcom`、`custom` |
+| `ca` | 是 | CA 别名：`letsencrypt`、`letsencrypt-staging`、`zerossl`、`google`、`google-test`、`freessl`、`custom` |
 | `directory_url` | 条件 | `ca=custom` 时必填；在内置 CA 上填写会**覆盖内置端点**（可走自建反代） |
-| `eab_kid` / `eab_hmac_key` | 条件 | EAB（外部账号绑定）必须**成对**提供，只给一半会报错。`hmac_key` 为 base64url（兼容标准 base64） |
-| `credentials` | 否 | ACME 账号凭据 JSON（KID、账号私钥、目录端点）。**不要手填**：首次使用时自动注册并写回 |
+| `eab_kid` / `eab_hmac_key` | 条件 | `zerossl`/`google`/`google-test`/`freessl` 在 `credentials` 为空时必填且必须成对；已有有效 `credentials` 时由其复用，EAB 不再必填。`hmac_key` 为 base64url（兼容标准 base64） |
+| `credentials` | 否 | ACME 账号凭据 JSON（KID、账号私钥、目录端点）。**不要手填**：首次使用时自动注册并写回；有值时后续签发复用，不再使用 EAB 重新注册 |
 
 内置 CA 端点：
 
@@ -38,13 +38,14 @@
 |---|---|
 | `letsencrypt` / `le` | `https://acme-v02.api.letsencrypt.org/directory` |
 | `letsencrypt-staging` / `le-staging` | `https://acme-staging-v02.api.letsencrypt.org/directory` |
-| `zerossl` | `https://acme.zerossl.com/v2/DV90`（要求 EAB） |
-| `google` / `gts` | `https://dv.acme-v02.api.pki.goog/directory`（要求 EAB） |
-| `sslcom` / `ssl.com` | `https://acme.ssl.com/ssl/v2/DV` |
+| `zerossl` | `https://acme.zerossl.com/v2/DV90`（要求 EAB，管理入口：https://app.zerossl.com/developer ） |
+| `google` / `gts` | `https://dv.acme-v02.api.pki.goog/directory`（要求 EAB，HMAC 文档：https://docs.cloud.google.com/certificate-manager/docs/public-ca-tutorial#request-key-hmac ） |
+| `google-test` / `gts-test` | `https://dv.acme-v02.test-api.pki.goog/directory`（要求 EAB，同上文档） |
+| `freessl` / `free-ssl` | `https://acme.litessl.com/acme/v2/directory`（要求 EAB，管理入口：https://freessl.cn/automation/eab-manager ） |
 
 账号生命周期：凭据中 `credentials` 为空 = 尚未在 CA 侧建立账号，首次被
-`cert.apply` 使用时注册（`terms_of_service_agreed=true`），签发的账号凭据
-写回记录；之后的运行一律复用同一账号。多条流水线引用同一份凭据时共享同一
+`cert.apply` 使用时注册（`terms_of_service_agreed=true`，有 EAB 时一并携带），签发的账号凭据
+写回记录；之后的运行一律复用同一账号（不再使用 EAB）。多条流水线引用同一份凭据时共享同一
 CA 账号，不会重复注册（也避免撞上 CA 的账号配额）。
 
 连通性测试：已注册账号会恢复会话并取一次 Directory（真实探测 CA 连通性）；

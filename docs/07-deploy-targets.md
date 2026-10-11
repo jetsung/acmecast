@@ -97,6 +97,40 @@ CDN / WAF 等云资源引用。**国内站与国际站同构**：凭据的 `acco
 - **跳过写入时零云端调用**：指纹一致且未 `force` 时不查询、不上传、不更新；
   云端证书被人手动删除时，`force` 重跑一次即恢复。
 
+
+## `s3` — S3 兼容存储
+
+把证书链与私钥写入 S3 兼容对象存储（MinIO / R2 / OSS / COS 等）。
+
+| 字段 | 必需 | 默认 | 说明 |
+|---|---|---|---|
+| `credential_id` | 是 | — | 引用 `s3` 类型凭据（含 `access_key`/`secret_key`，可选 `session_token`） |
+| `endpoint` | 是 | — | S3 endpoint（含 scheme），如 `https://s3.example.com` |
+| `region` | 是 | — | 区域，如 `us-east-1` |
+| `bucket` | 是 | — | 桶名 |
+| `prefix` | 否 | — | 对象键前缀，如 `certs/` |
+| `cert_filename` | 否 | — | 证书对象键模板，含 `{domain}` 占位，未填时为 `<prefix>/<domain>.cert.pem` |
+| `key_filename` | 否 | — | 私钥对象键模板，未填时为 `<prefix>/<domain>.key.pem` |
+| `force_path_style` | 否 | `false` | 强制 path-style（MinIO 等自建存储） |
+| `insecure_skip_verify` | 否 | `false` | 跳过 TLS 证书校验 |
+
+细节：幂等同 `local`/`ssh`（`Deployer` 的 `config` 摘要 + `fingerprint`），失败不写部署记录、不污染主存储；凭据仅存 `credential_id`，日志不打密钥。
+
+## `webdav` — WebDAV
+
+把证书链与私钥 PUT 到 WebDAV 资源。
+
+| 字段 | 必需 | 默认 | 说明 |
+|---|---|---|---|
+| `credential_id` | 是 | — | 引用 `webdav` 类型凭据（含 `username`/`password`） |
+| `url` | 是 | — | WebDAV 基地址，如 `https://dav.example.com/` |
+| `base_path` | 否 | — | 基路径，归一化后拼接 |
+| `cert_path` | 否 | — | 证书对象路径模板，含 `{domain}` |
+| `key_path` | 否 | — | 私钥对象路径模板 |
+| `insecure_skip_verify` | 否 | `false` | 跳过 TLS 证书校验 |
+
+细节：PUT 覆盖上传，幂等与失败语义同上。
+
 ## 部署记录
 
 每次部署（含跳过写入的）成功后落一条记录：目标键、指纹、是否跳过写入、

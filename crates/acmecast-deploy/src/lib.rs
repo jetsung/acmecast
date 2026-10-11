@@ -20,7 +20,8 @@ pub use state::{
     DeploymentStateStore, InMemoryDeploymentState, target_key_for, target_ref_of,
 };
 pub use target::{CertMaterials, DeployMode, DeployOutcome, DeploymentTarget, parse_input};
-pub use targets::{
+pub use targets::{S3Target, WebdavTarget,
+    
     LocalInput, LocalTarget, ResolvedSshConfig, RusshConnector, SshAuth, SshAuthSource,
     SshConnector, SshInput, SshTarget, SshTransport, TencentSslInput, TencentSslTarget,
     probe_host,

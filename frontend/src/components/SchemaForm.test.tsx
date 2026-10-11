@@ -87,6 +87,33 @@ describe("SchemaForm", () => {
     expect(spacers[0].className).toContain("ant-col-12");
   });
 
+  it("acme ca 固定半宽：ca（x-end-row）半宽独占一行，directory_url（x-full-width）另起整行", () => {
+    render(
+      <Harness
+        onFinish={vi.fn()}
+        schema={objectSchema({
+          ca: { type: "string", enum: ["letsencrypt", "google", "custom"], "x-end-row": true },
+          directory_url: { type: ["string", "null"], "x-full-width": true },
+          eab_kid: { type: ["string", "null"] },
+          eab_hmac_key: { type: ["string", "null"] },
+        })}
+      />,
+    );
+
+    // ca 固定半宽：Form.Item 外层的 Col 为 12，其后有空占位列把后续字段推到新行。
+    const cols = Array.from(document.querySelectorAll<HTMLElement>(".ant-form-item")).map(
+      (item) => item.closest(".ant-col")?.className ?? "",
+    );
+    expect(cols).toHaveLength(4);
+    expect(cols[0]).toContain("ant-col-12");
+    expect(cols[1]).toContain("ant-col-24");
+    expect(cols[2]).toContain("ant-col-12");
+    expect(cols[3]).toContain("ant-col-12");
+    const spacers = document.querySelectorAll<HTMLElement>(".ant-col[aria-hidden]");
+    expect(spacers).toHaveLength(1);
+    expect(spacers[0].className).toContain("ant-col-12");
+  });
+
   it("x-multiline：标注的字段占整行（既有机制不回归）", () => {
     render(
       <Harness
