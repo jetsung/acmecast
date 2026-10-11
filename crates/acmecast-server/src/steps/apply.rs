@@ -85,12 +85,10 @@ pub struct AcmeApplyInput {
     pub challenge: DnsChallengeKind,
     /// ACME 账号凭据标识（`acme.account` 类型）。
     pub account_credential_id: i64,
-    /// DNS 提供商标识（如 `cloudflare`）；与 `dns_credential_id` 同时省略
-    /// （或留空）时自动选择，只给其一时报错。DNS-01 时需要。
-    #[serde(default)]
-    pub dns_provider: Option<String>,
-    /// DNS 提供商凭据标识；与 `dns_provider` 同时省略时自动选择，
-    /// 只给其一时报错。DNS-01 时需要。
+    /// DNS 提供商凭据标识；提供商由凭据 `type_id` 决定（如 `cloudflare`
+    /// 类型凭据 → Cloudflare 提供商）。留空（或未填）时自动选择——
+    /// 遍历凭据库中 DNS 类凭据，逐个探测 zone 托管，取第一个通过的。
+    /// DNS-01 时需要。
     #[serde(default)]
     pub dns_credential_id: Option<i64>,
     /// DNS zone；显式配置优先。`domains` 配置多个域名时必须显式配置
@@ -454,11 +452,22 @@ impl PipelineStep for CertApplyStep {
 
         let service = self.account_service(ctx, &input).await?;
 
-        ctx.log_info(format!("向 CA 下单：{}", input.domains.join(", ")));
-        let mut order = service
-            .new_order(&input.domains)
-            .await
-            .map_err(|e| domain_error("创建订单", e))?;
+        let mut order = match service.new_order(&input.domains).await {
+            Ok(o) => {
+                ctx.log_info(format!(
+                    "向 CA 下单（order created）：domains={}",
+                    input.domains.join(", ")
+                ));
+                o
+            }
+            Err(e) => {
+                let (kind, retryable, hint) = classify_acme_error(&e);
+                ctx.log_error(format!(
+                    "向 CA 下单失败：classification={kind}, retryable={retryable}, hint={hint}, reason={e}"
+                ));
+                return Err(domain_error("创建订单", e));
+            }
+        };
 
         for authorization in order
             .authorizations()
@@ -476,20 +485,48 @@ impl PipelineStep for CertApplyStep {
         ctx.log_info(format!("生成本次申请的密钥：{}", input.key_algorithm.as_str()));
         let (key_pem, csr_der) = generate_key_and_csr(&input.domains, input.key_algorithm)?;
         wait_for_ready(&mut order).await?;
-        ctx.log_info("提交 CSR 并等待签发");
-        let cert_pem = order
-            .finalize_and_download(&csr_der)
-            .await
-            .map_err(|e| domain_error("下载证书", e))?;
+        ctx.log_info("订单就绪（order ready），可以提交 CSR");
+
+        ctx.log_info("提交 CSR（csr submitted）并等待签发");
+        if let Err(e) = order.finalize(&csr_der).await {
+            let (kind, retryable, hint) = classify_acme_error(&e);
+            ctx.log_error(format!(
+                "提交 CSR 失败：classification={kind}, retryable={retryable}, hint={hint}, reason={e}"
+            ));
+            return Err(domain_error("提交 CSR", e));
+        }
+        if let Err(e) = order.wait_for_valid().await {
+            let (kind, retryable, hint) = classify_acme_error(&e);
+            ctx.log_error(format!(
+                "等待订单生效失败：classification={kind}, retryable={retryable}, hint={hint}, reason={e}"
+            ));
+            return Err(domain_error("等待订单生效", e));
+        }
+        ctx.log_info("订单已生效（order valid）");
+
+        let cert_pem = match order.download_certificate().await {
+            Ok(pem) => {
+                ctx.log_info("下载证书链（certificate downloaded）");
+                pem
+            }
+            Err(e) => {
+                let (kind, retryable, hint) = classify_acme_error(&e);
+                ctx.log_error(format!(
+                    "下载证书链失败：classification={kind}, retryable={retryable}, hint={hint}, reason={e}"
+                ));
+                return Err(domain_error("下载证书", e));
+            }
+        };
 
         let leaf =
             acmecast_cert::parse_pem_leaf(&cert_pem).map_err(|e| domain_error("解析证书", e))?;
         let fingerprint = leaf.fingerprint_sha256.clone();
         ctx.log_info(format!(
-            "证书已签发：{}（有效期至 {}，SHA-256 指纹 {}）",
+            "证书已签发：{}（有效期至 {}，SHA-256 指纹 {}，issuer={}）",
             leaf.domains.join(", "),
             leaf.not_after.format("%Y-%m-%d"),
-            fingerprint
+            fingerprint,
+            leaf.issuer
         ));
 
         Ok(StepOutput::empty()
@@ -501,11 +538,10 @@ impl PipelineStep for CertApplyStep {
 }
 
 impl CertApplyStep {
-    /// 未指定 `dns_provider`/`dns_credential_id` 时自动选择对接提供商。
+    /// 未指定 `dns_credential_id` 时自动选择对接提供商。
     ///
-    /// 候选序：`tencent` → `tencent-eo` → `aliyun` → `cloudflare` → 其余已注册
-    /// 且库中有凭据的提供商。逐个探测 zone 托管情况，命中即用——域名托管在
-    /// 某家时对齐的那家自然排最前且探测通过，不在四家时按序回退。
+    /// 遍历凭据库中所有 DNS 类凭据（凭据 `type_id` 即候选标识），
+    /// 按注册表稳定序逐个探测 zone 托管情况，命中即用。
     ///
     /// 通配授权的真实 zone 在选定提供商后由 `resolve_wildcard_zone` 逐级推导；
     /// 此处先用授权 identifier 的 base domain 做托管探测。
@@ -515,7 +551,7 @@ impl CertApplyStep {
         ctx: &mut StepContext<'_>,
         zone: &str,
     ) -> Result<super::provider_select::Selected> {
-        let mut log = |message: String| ctx.log_info(message);
+        let log = |message: String| ctx.log_info(message);
         let candidates =
             super::provider_select::build_candidates(&self.dns, ctx.credentials(), log).await?;
         super::provider_select::pick(candidates, zone, log).await
@@ -544,13 +580,19 @@ impl CertApplyStep {
             .credentials()
             .map_err(|e| domain_error("账号凭据字段", e))?
         {
-            ctx.log_info(format!("复用已有 ACME 账号（KID {:?}）", stored.kid()));
+            ctx.log_info(format!("ACME 账号（account）：复用已有账号（KID {:?}，reused=true）", stored.kid()));
             return AcmeService::from_credentials(&stored, Some(&transport))
                 .await
-                .map_err(|e| domain_error("恢复 ACME 账号会话", e));
+                .map_err(|e| {
+                    let (kind, retryable, hint) = classify_acme_error(&e);
+                    ctx.log_error(format!(
+                        "恢复 ACME 账号失败：classification={kind}, retryable={retryable}, hint={hint}, reason={e}"
+                    ));
+                    domain_error("恢复 ACME 账号会话", e)
+                });
         }
 
-        ctx.log_info(format!("首次使用，注册新 ACME 账号：{directory_url}"));
+        ctx.log_info(format!("ACME 账号（account）：首次使用，注册新账号（directory_url={directory_url}）"));
         let external_account = match (fields.eab_kid.as_deref().map(str::trim).filter(|s| !s.is_empty()), fields.eab_hmac_key.as_deref().map(str::trim).filter(|s| !s.is_empty())) {
             (Some(kid), Some(hmac)) => Some(acmecast_acme::ExternalAccountBinding { kid: kid.to_owned(), hmac_key: hmac.to_owned() }),
             (Some(_), None) | (None, Some(_)) => {
@@ -568,9 +610,16 @@ impl CertApplyStep {
             },
             external_account: external_account.as_ref(),
         };
-        let (service, credentials) = AcmeService::establish(&established, Some(&transport))
-            .await
-            .map_err(|e| domain_error("注册 ACME 账号", e))?;
+        let (service, credentials) = match AcmeService::establish(&established, Some(&transport)).await {
+            Ok(pair) => pair,
+            Err(e) => {
+                let (kind, retryable, hint) = classify_acme_error(&e);
+                ctx.log_error(format!(
+                    "注册 ACME 账号失败：classification={kind}, retryable={retryable}, hint={hint}, reason={e}"
+                ));
+                return Err(domain_error("注册 ACME 账号", e));
+            }
+        };
 
         // 凭据写回是账号复用的前提：写回失败只警告不断流程——本次运行
         // 已拿到可用会话，但下次会再注册一个账号，日志里能看到。
@@ -610,46 +659,23 @@ impl CertApplyStep {
         }
         let acme_kind = acmecast_acme::ChallengeKind::Dns01;
 
-        // 提供商与凭据的三种形态：两者齐备走显式配置（行为不变）；
-        // 两者均缺走自动选择；只给其一直接报错并指出缺哪一项——
-        // 自动补另一项容易造成「提供商 A + 凭据 B」的错配。
-        // 空串按「未填写」处理（与 dns_zone 的空白语义一致）：
-        // 前端下拉的「自动选择」选项提交的就是空值。
-        let dns_provider = input
-            .dns_provider
-            .as_deref()
-            .map(str::trim)
-            .filter(|provider| !provider.is_empty());
-        let (provider, credentials) = match (dns_provider, input.dns_credential_id)
-        {
-            (Some(provider_id), Some(dns_credential_id)) => {
-                let provider = self
-                    .dns
-                    .require(provider_id)
-                    .map_err(|e| domain_error("DNS 提供商", e))?;
-                let credentials = ctx
+        // 提供商由凭据 type_id 决定：dns_credential_id 给了就按凭据类型取提供商，
+        // 没给就自动选择（遍历凭据库逐个探测 zone 托管）。
+        // 不再接受独立的 dns_provider 参数——凭据类型即提供商，避免错配。
+        let (provider, credentials) = match input.dns_credential_id {
+            Some(dns_credential_id) => {
+                let resolved = ctx
                     .credentials()
                     .resolve(dns_credential_id)
                     .await
-                    .map_err(|e| domain_error("读取 DNS 凭据", e))?
-                    .fields;
-                (provider, credentials)
+                    .map_err(|e| domain_error("读取 DNS 凭据", e))?;
+                let provider = self
+                    .dns
+                    .require(&resolved.type_id)
+                    .map_err(|e| domain_error("DNS 提供商", e))?;
+                (provider, resolved.fields)
             }
-            (Some(provider_id), None) => {
-                return Err(acmecast_pipeline::Error::Core(
-                    acmecast_core::Error::Internal(format!(
-                        "已指定 dns_provider（{provider_id}）但缺少 dns_credential_id；请补齐凭据标识，或两者都留空以启用自动选择"
-                    )),
-                ));
-            }
-            (None, Some(dns_credential_id)) => {
-                return Err(acmecast_pipeline::Error::Core(
-                    acmecast_core::Error::Internal(format!(
-                        "已指定 dns_credential_id（{dns_credential_id}）但缺少 dns_provider；请补齐提供商标识，或两者都留空以启用自动选择"
-                    )),
-                ));
-            }
-            (None, None) => {
+            None => {
                 let selected = self
                     .auto_select_provider(ctx, &authorization.identifier.to_string())
                     .await?;
@@ -692,10 +718,35 @@ impl CertApplyStep {
             ctx.log_info(format!("写入挑战记录 {}", record.name));
         }
 
+        ctx.log_info(format!(
+            "向 DNS 提供商提交挑战记录：provider={}, zone={}, record={}, record_name={}, action=create, txt_value={}",
+            provider.type_id(),
+            zone,
+            record.name,
+            record.name,
+            materials.dns_txt_value
+        ));
+
         let ready = order.set_challenge_ready(&authorization.identifier, acme_kind);
+        ctx.log_info(format!(
+            "通知 CA 挑战就绪（challenge ready）：identifier={}",
+            authorization.identifier
+        ));
+
+        let mut record_created = false;
         // 记录存在期间做「等传播 + 通知 CA」；无论成败，退出时记录都会被清理。
         // action 的错误类型随 with_txt_record 的约定是 DNS 错误，转成流水线错误放在外层。
         let action = async {
+            record_created = true;
+            ctx.log_info(format!(
+                "DNS 挑战记录提交成功：provider={}, zone={}, record={}, record_name={}, action=create, txt_value={}, result=ok",
+                provider.type_id(),
+                zone,
+                record.name,
+                record.name,
+                materials.dns_txt_value
+            ));
+
             if input.wait_propagation {
                 let http = Arc::new(acmecast_dns::ReqwestTransport::new().map_err(|e| {
                     acmecast_dns::Error::provider(format!("构造解析器客户端: {e}"))
@@ -710,11 +761,8 @@ impl CertApplyStep {
 
                 // 阶段 2/3：全量 DNS + DoH，均由 load_extended_resolvers 构建
                 // （内置 DoH 四家 + config.toml 扩展条目，按 endpoint 去重），
-                // 再按 dns_provider 做优先级排序：
-                //   tencent/tencen-eo → 腾讯优先
-                //   aliyun → 阿里优先
-                //   cloudflare → Cloudflare 优先
-                //   其他 → Cloudflare → 阿里 → 其余
+                // 再按提供商类型做 DoH 优先级排序（提供商对应 DoH 优先，
+                // 其余按 Cloudflare → 阿里 → 腾讯 → Google 兜底序）：
                 let extended_raw = load_extended_resolvers(http, &self.resolver_entries);
                 let extended =
                     acmecast_dns::prioritize_for_provider(extended_raw, Some(provider.type_id()));
@@ -725,7 +773,7 @@ impl CertApplyStep {
                     provider = provider.type_id(),
                     authoritative = auth_refs.len(),
                     extended = ext_refs.len(),
-                    "分阶段传播等待：权威 NS → 全量 DNS → DoH",
+                    "分阶段传播等待：命中单家 → 权威 NS → 全量 DNS → DoH（末段先单后全）",
                 );
 
                 wait_until_visible_phased(
@@ -736,6 +784,9 @@ impl CertApplyStep {
                     &ext_refs,
                     &ext_refs,
                     &self.propagation,
+                    |msg| {
+                        ctx.log_info(msg);
+                    },
                 )
                 .await?;
                 ctx.log_info(format!(
@@ -747,9 +798,28 @@ impl CertApplyStep {
                 .await
                 .map_err(|e| acmecast_dns::Error::provider(e.to_string()))
         };
-        acmecast_dns::with_txt_record(provider, &credentials, &record, action)
-            .await
-            .map_err(|e| domain_error("完成 DNS-01 挑战", e))?;
+        let outcome = acmecast_dns::with_txt_record(provider, &credentials, &record, action).await;
+        if let (Err(e), false) = (&outcome, record_created) {
+            let error_kind = classify_dns_error(e);
+            ctx.log_error(format!(
+                "向 DNS 提供商提交挑战记录失败：provider={}, zone={}, record={}, record_name={}, action=create, error_kind={}, reason={}",
+                provider.type_id(),
+                zone,
+                record.name,
+                record.name,
+                error_kind,
+                e
+            ));
+        }
+        outcome.map_err(|e| domain_error("完成 DNS-01 挑战", e))?;
+
+        ctx.log_info(format!(
+            "清理 DNS 挑战记录：provider={}, zone={}, record={}, record_name={}, action=delete, result=ok",
+            provider.type_id(),
+            zone,
+            record.name,
+            record.name,
+        ));
 
         Ok(())
     }
@@ -891,9 +961,9 @@ fn zone_of(domain: &str) -> Option<String> {
     (rest.contains('.') && !rest.starts_with('.') && !rest.ends_with('.')).then(|| rest.to_owned())
 }
 
-/// 通配授权的 zone 解析：对 `x.idev.top` 逐级探测提供商侧是否存在，
-/// 取最长匹配的已托管 zone；皆不存在时回退到原始 identifier 并让创建阶段
-/// 报可诊断错误，不在此处吞掉。
+/// 通配授权的 zone 解析：对 base domain 逐级探测提供商侧是否存在，
+/// 取最长匹配的已托管 zone；皆不存在时回退到剥离 `*.` 后的 base domain，
+/// 让创建阶段报可诊断错误，不在此处吞掉。
 async fn resolve_wildcard_zone(
     provider: &dyn acmecast_dns::DnsProvider,
     credentials: &serde_json::Value,
@@ -951,11 +1021,11 @@ async fn resolve_wildcard_zone(
             }
         }
     }
-    // 皆未命中，回退到最具体的 identifier，让 create 阶段报原始错误
+    // 皆未命中，回退到最具体的候选（base domain），让 create 阶段报原始错误
     if let Some(msg) = last_not_found {
-        tracing::warn!(identifier, candidates = ?candidates, error = %msg, "通配 zone 逐级探测均未命中，回退到 identifier 本身");
+        tracing::warn!(identifier, candidates = ?candidates, error = %msg, "通配 zone 逐级探测均未命中，回退到 base domain");
     }
-    Ok(identifier.to_owned())
+    Ok(base.to_owned())
 }
 
 /// 把联系人统一补全为 `mailto:` URI 形式。
@@ -977,6 +1047,67 @@ fn normalize_contacts(contacts: &[String]) -> Vec<String> {
             }
         })
         .collect()
+}
+
+/// 将 ACME 错误分类并给出是否可重试和操作建议。
+fn classify_acme_error(e: &acmecast_acme::AcmeError) -> (&'static str, bool, &'static str) {
+    match e {
+        acmecast_acme::AcmeError::Problem {
+            is_bad_nonce,
+            requires_external_account,
+            kind,
+            ..
+        } => {
+            if *is_bad_nonce {
+                ("bad_nonce", true, "CA 随机数失效，可安全重试")
+            } else if *requires_external_account {
+                ("external_account_required", false, "CA 要求提供 EAB 凭据，请配置 eab_kid 与 eab_hmac_key")
+            } else if kind.contains("rateLimited") {
+                ("rate_limited", true, "请求达到 CA 频率限制，请等待一段时间后重试")
+            } else {
+                ("ca_problem", false, "CA 校验或请求被拒绝")
+            }
+        }
+        acmecast_acme::AcmeError::Timeout(_) => ("timeout", true, "等待 CA 响应超时，可重试"),
+        acmecast_acme::AcmeError::Transport(_) => ("network_error", true, "网络连接失败，可重试"),
+        acmecast_acme::AcmeError::Account(_) => ("account_error", false, "ACME 账号操作失败"),
+        acmecast_acme::AcmeError::Order(_) => ("order_error", false, "订单操作失败"),
+        acmecast_acme::AcmeError::Challenge(_) => ("challenge_error", false, "挑战校验失败"),
+        acmecast_acme::AcmeError::Crypto(_) => ("crypto_error", false, "密钥或 CSR 计算失败"),
+        acmecast_acme::AcmeError::Revocation(_) => ("revocation_error", false, "证书吊销失败"),
+        acmecast_acme::AcmeError::Directory(_) => ("directory_error", false, "CA 目录解析失败"),
+        acmecast_acme::AcmeError::UnknownCa(_, _) => ("unknown_ca", false, "未知的 CA 标识"),
+        acmecast_acme::AcmeError::Other(_) => ("other", false, "其他 ACME 错误"),
+        _ => ("other", false, "其他 ACME 错误"),
+    }
+}
+
+/// 将 DNS 错误分类。
+fn classify_dns_error(err: &acmecast_dns::Error) -> &'static str {
+    match err {
+        acmecast_dns::Error::InvalidCredentials { .. } => "invalid_credentials",
+        acmecast_dns::Error::UnknownProviderType { .. } => "unknown_provider_type",
+        acmecast_dns::Error::DuplicateProviderType(_) => "duplicate_provider_type",
+        acmecast_dns::Error::UnsupportedChallenge(_) => "unsupported_challenge",
+        acmecast_dns::Error::Provider(msg) => {
+            let lower = msg.to_ascii_lowercase();
+            if lower.contains("timeout") || lower.contains("timed out") {
+                "timeout"
+            } else if lower.contains("auth")
+                || lower.contains("forbidden")
+                || lower.contains("unauthorized")
+                || lower.contains("permission")
+            {
+                "authentication_failure"
+            } else if lower.contains("rate") || lower.contains("limit") {
+                "rate_limited"
+            } else {
+                "provider_api_error"
+            }
+        }
+        acmecast_dns::Error::Core(_) => "core_error",
+        _ => "provider_api_error",
+    }
 }
 
 #[cfg(test)]
@@ -1233,5 +1364,117 @@ mod tests {
                 "mailto:security@example.com",
             ]
         );
+    }
+
+    /// 探测永远报「zone 不存在」的替身：模拟提供商侧未托管任何候选 zone。
+    #[derive(Debug)]
+    struct AllNotFoundProvider;
+
+    #[async_trait::async_trait]
+    impl acmecast_dns::DnsProvider for AllNotFoundProvider {
+        fn type_id(&self) -> &'static str {
+            "all-not-found"
+        }
+
+        fn display_name(&self) -> &'static str {
+            "全未命中替身"
+        }
+
+        fn credential_fields(&self) -> schemars::schema::RootSchema {
+            schemars::schema_for!(String)
+        }
+
+        async fn find_txt(
+            &self,
+            _: &serde_json::Value,
+            _: &acmecast_dns::TxtRecord,
+        ) -> acmecast_dns::Result<Vec<String>> {
+            Err(acmecast_dns::Error::provider("zone not exist".to_owned()))
+        }
+
+        async fn create_txt(&self, _: &serde_json::Value, _: &acmecast_dns::TxtRecord) -> acmecast_dns::Result<()> {
+            Ok(())
+        }
+
+        async fn delete_txt(&self, _: &serde_json::Value, _: &acmecast_dns::TxtRecord) -> acmecast_dns::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn wildcard_second_level_probes_miss_fall_back_to_base_domain() {
+        // `*.asfd.cn` 探测全未命中时，zone 应回退为 `asfd.cn`（剥离 `*.`），
+        // 而非原始 identifier `*.asfd.cn`——后者会导致写入名 `_acme-challenge.*.asfd.cn`。
+        use super::resolve_wildcard_zone;
+
+        let zone = resolve_wildcard_zone(&AllNotFoundProvider, &serde_json::json!({}), "*.asfd.cn")
+            .await
+            .expect("探测全未命中应回退而非报错");
+        assert_eq!(zone, "asfd.cn");
+    }
+
+    #[tokio::test]
+    async fn wildcard_multi_level_probes_miss_fall_back_to_most_specific_candidate() {
+        // `*.x.idev.top` 逐级探测（`x.idev.top` → `idev.top`）全未命中时，
+        // 回退到最具体候选 `x.idev.top`，而非原始 identifier `*.x.idev.top`。
+        use super::resolve_wildcard_zone;
+
+        let zone = resolve_wildcard_zone(&AllNotFoundProvider, &serde_json::json!({}), "*.x.idev.top")
+            .await
+            .expect("探测全未命中应回退而非报错");
+        assert_eq!(zone, "x.idev.top");
+    }
+
+    #[tokio::test]
+    async fn fallback_paths_never_return_a_wildcard_prefix() {
+        // 无论 identifier 形态如何，任何 fallback 路径的返回值都不得含 `*` 字符。
+        use super::resolve_wildcard_zone;
+
+        for identifier in ["*.asfd.cn", "*.x.idev.top", "*.gcli.cn"] {
+            let zone = resolve_wildcard_zone(&AllNotFoundProvider, &serde_json::json!({}), identifier)
+                .await
+                .unwrap_or_else(|e| panic!("{identifier} 回退应成功: {e}"));
+            assert!(!zone.contains('*'), "{identifier} 回退值 `{zone}` 不应含 `*`");
+        }
+    }
+
+    #[test]
+    fn schema_has_no_dns_provider_field() {
+        use std::sync::Arc;
+
+        use super::CertApplyStep;
+        use acmecast_dns::DnsProviderRegistry;
+        use acmecast_pipeline::PipelineStep as _;
+
+        let step = CertApplyStep::new(Arc::new(DnsProviderRegistry::new()));
+        let schema = step.input_schema().expect("cert.apply 应声明输入结构");
+        let properties = &schema
+            .schema
+            .object
+            .as_ref()
+            .expect("顶层应是对象")
+            .properties;
+        assert!(
+            !properties.contains_key("dns_provider"),
+            "schema 不应包含 dns_provider 字段"
+        );
+        assert!(
+            properties.contains_key("dns_credential_id"),
+            "schema 应包含 dns_credential_id 字段"
+        );
+    }
+
+    #[test]
+    fn residual_dns_provider_is_silently_ignored() {
+        use super::AcmeApplyInput;
+        let input: AcmeApplyInput = serde_json::from_value(serde_json::json!({
+            "domains": ["example.com"],
+            "challenge": "dns-01",
+            "account_credential_id": 1,
+            "dns_provider": "cloudflare",
+            "dns_credential_id": 4,
+        }))
+        .expect("残留 dns_provider 应被静默忽略，不报错");
+        assert_eq!(input.dns_credential_id, Some(4));
     }
 }

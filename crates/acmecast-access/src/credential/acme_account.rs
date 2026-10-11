@@ -503,14 +503,15 @@ mod tests {
     }
 
     #[test]
-    fn a_malformed_stored_credential_is_rejected() {
+    fn a_malformed_stored_credential_is_tolerated_until_use() {
+        // credentials 形态错误不再阻塞保存/编辑；视为未注册，申请时再探测。
         let fields = AcmeAccountFields {
             credentials: Some("不是 JSON".to_owned()),
             ..letsencrypt_fields()
         };
 
-        let err = fields.check().unwrap_err();
-        assert!(err.to_string().contains("credentials"), "{err}");
+        fields.check().expect("非法的 credentials 应视为未注册而非校验失败");
+        assert!(fields.credentials().is_err(), "credentials() 仍应报错以便调用方感知形态问题");
     }
 
     #[test]

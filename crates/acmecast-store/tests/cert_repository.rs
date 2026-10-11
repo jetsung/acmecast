@@ -50,10 +50,13 @@ async fn setup() -> (DatabaseConnection, i64) {
 /// 构造一条证书输入；除域名集合、指纹与到期天数外均取固定值。
 fn input(domains: &[&str], fingerprint: &str, valid_days: i64, account_id: i64) -> CertInput {
     let now = Utc::now();
-    CertInput {
-        domains: domains.iter().map(|domain| (*domain).to_owned()).collect(),
+    CertInput { domains: domains.iter().map(|domain| (*domain).to_owned()).collect(),
         cert_pem_path: format!("certs/ssl/{fingerprint}.cert.pem"),
         key_pem_path: format!("certs/ssl/{fingerprint}.key.pem"),
+        cert_path: None,
+        ca_path: None,
+        fullchain_path: None,
+        key_path: None,
         fingerprint: fingerprint.to_owned(),
         issuer: Some("CN=Test CA".to_owned()),
         not_before: now,
@@ -995,6 +998,10 @@ async fn updating_paths_moves_the_recorded_material_location() {
     repo.update_paths(
         saved.id,
         &CertFilePaths {
+            cert: "certs/revoked/fp-1/cert.cer".to_owned(),
+            ca: "certs/revoked/fp-1/cert.ca.cer".to_owned(),
+            fullchain: "certs/revoked/fp-1/cert.fullchain.cer".to_owned(),
+            key: "certs/revoked/fp-1/cert.key".to_owned(),
             cert_pem: "certs/revoked/fp-1/cert.pem".to_owned(),
             key_pem: "certs/revoked/fp-1/key.pem".to_owned(),
         },
@@ -1019,6 +1026,10 @@ async fn updating_paths_of_a_missing_certificate_reports_not_found() {
     let (db, _account) = setup().await;
     let repo = CertRepository::new(&db);
     let paths = acmecast_store::CertFilePaths {
+        cert: "certs/revoked/fp-x/cert.cer".to_owned(),
+        ca: "certs/revoked/fp-x/cert.ca.cer".to_owned(),
+        fullchain: "certs/revoked/fp-x/cert.fullchain.cer".to_owned(),
+        key: "certs/revoked/fp-x/cert.key".to_owned(),
         cert_pem: "certs/revoked/fp-x/cert.pem".to_owned(),
         key_pem: "certs/revoked/fp-x/key.pem".to_owned(),
     };

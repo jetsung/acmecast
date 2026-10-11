@@ -20,6 +20,7 @@ acmecast-server 的配置合并优先级为 **内置默认 < config.toml < 环�
 | 数据目录 | `server.data_dir` | `ACMECAST_DATA_DIR` | `./data` | 数据库、证书文件、凭据密文均在此 |
 | 数据库连接串 | `server.database_url` | `ACMECAST_DATABASE_URL` | `sqlite://<data_dir>/acmecast.db?mode=rwc` | 支持 sqlite/mysql/postgres，见[数据库与数据目录](11-database.md) |
 | 前端静态目录 | `server.static_dir` | `ACMECAST_STATIC_DIR` | 未设置 | 未设置时不托管前端（仅 API） |
+| 缓存连接串 | `server.redis_url` | `ACMECAST_REDIS_URL` | 未设置 | Redis / Valkey 缓存连接串（支持别名 `ACMECAST_VALKEY_URL`、`REDIS_URL`），加速执行历史与实时日志；未设置时直写数据库 |
 | 关闭鉴权 | `server.auth_disabled` | `ACMECAST_AUTH_DISABLED` | `false` | `1/true/yes`（大小写不敏感）为真；仅限本地单机 |
 | 请求体上限 | `server.body_limit_bytes` | `ACMECAST_BODY_LIMIT_BYTES` | `2097152`（2 MiB） | 超出返回 413 `payload_too_large`；env 须 > 0 |
 | 跳过 CA 证书校验 | `server.accept_invalid_acme_certs` | `ACMECAST_INSECURE_SKIP_VERIFY` | `false` | 仅供自建测试 CA（pebble 等）使用 |

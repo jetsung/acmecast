@@ -13,19 +13,28 @@ const ACME_ACCOUNT_TYPE_ID = "acme.account";
 /** SSH 主机档案凭据：cert.deploy 的 SSH 配置按标识引用它。 */
 const SSH_HOST_TYPE_ID = "ssh";
 
+const DNS_CREDENTIAL_TYPE_IDS: Record<string, true> = {
+  cloudflare: true,
+  aliyun: true,
+  tencent: true,
+  "tencent-eo": true,
+};
+
+/** 与后端 acmecast_store::capability::CONTROLLED_TYPES 保持一致。 */
+const CAPABILITY_CONTROLLED_TYPES = ["tencent", "cloudflare", "aliyun"];
+
 /**
- * 内置 DNS 提供商（与 `steps::default_dns_registry()` 对齐）。
- * 后端没有「列出 DNS 提供商」的接口，这份清单只能前端维护。
+ * 能力过滤：受控类型（tencent/cloudflare/aliyun）需声明指定能力；
+ * 能力缺省（旧数据 / 非受控类型如 tencent-eo）视为双能力，不因能力被过滤。
  */
-const DNS_PROVIDERS = [
-  // 空值 = 留空自动选择：后端按域名托管商对齐（腾讯云 → 阿里云 → Cloudflare → 其它）探测后选定。
-  { value: "", label: "自动选择" },
-  { value: "cloudflare", label: "Cloudflare" },
-  { value: "aliyun", label: "阿里云" },
-  { value: "tencent", label: "腾讯云" },
-  { value: "tencent-eo", label: "腾讯云 EdgeOne" },
-];
-const DNS_PROVIDER_TYPE_IDS = new Set(DNS_PROVIDERS.map((provider) => provider.value));
+function hasCapability(
+  credential: components["schemas"]["CredentialResponse"],
+  capability: "dns" | "deploy",
+): boolean {
+  if (!CAPABILITY_CONTROLLED_TYPES.includes(credential.type_id)) return true;
+  const caps = credential.capabilities ?? [];
+  return caps.length === 0 || caps.includes(capability);
+}
 
 /** 内置部署目标（与 `steps::default_deploy_registry()` 对齐）。 */
 const DEPLOY_TARGETS = [
@@ -50,14 +59,17 @@ interface FieldOption {
  */
 const FIELD_OPTIONS: Record<
   string,
-  { fromCredentials: (typeId: string) => boolean } | { fixed: FieldOption[] }
+  { fromCredentials: (credential: components["schemas"]["CredentialResponse"]) => boolean }
+  | { fixed: FieldOption[] }
 > = {
-  account_credential_id: { fromCredentials: (typeId) => typeId === ACME_ACCOUNT_TYPE_ID },
-  acme_account_credential_id: { fromCredentials: (typeId) => typeId === ACME_ACCOUNT_TYPE_ID },
-  dns_credential_id: { fromCredentials: (typeId) => DNS_PROVIDER_TYPE_IDS.has(typeId) },
+  account_credential_id: { fromCredentials: (c) => c.type_id === ACME_ACCOUNT_TYPE_ID },
+  acme_account_credential_id: { fromCredentials: (c) => c.type_id === ACME_ACCOUNT_TYPE_ID },
+  // DNS-01 挑战凭据：类型白名单 + 需声明 dns 能力（缺省视为具备）。
+  dns_credential_id: {
+    fromCredentials: (c) => !!DNS_CREDENTIAL_TYPE_IDS[c.type_id] && hasCapability(c, "dns"),
+  },
   // cert.deploy SSH 配置里的凭据引用：主机档案（顶层）与认证凭据（auth 内）。
-  credential_id: { fromCredentials: (typeId) => typeId === SSH_HOST_TYPE_ID },
-  dns_provider: { fixed: DNS_PROVIDERS },
+  credential_id: { fromCredentials: (c) => c.type_id === SSH_HOST_TYPE_ID },
   // 部署目标类型；当前只有 cert.deploy 用它。
   target: { fixed: DEPLOY_TARGETS },
 };
@@ -136,7 +148,7 @@ export function PipelineEditorPage() {
         "fixed" in source
           ? source.fixed
           : items
-              .filter((credential) => source.fromCredentials(credential.type_id))
+              .filter((credential) => source.fromCredentials(credential))
               .map((credential) => ({
                 value: credential.id,
                 label: credential.remark
@@ -643,8 +655,12 @@ function withFieldOptions(
         | undefined;
       if (Array.isArray(allowlist) && allowlist.length > 0) {
         const allow = new Set(allowlist);
+        // 类型白名单之外再按能力过滤：tencent-ssl 部署需凭据声明 deploy 能力
+        // （受控类型缺省视为双能力，非受控类型本就不会命中白名单）。
         const filtered = rawCredentials
-          .filter((credential) => allow.has(credential.type_id))
+          .filter(
+            (credential) => allow.has(credential.type_id) && hasCapability(credential, "deploy"),
+          )
           .map((credential) => ({
             value: credential.id,
             label: credential.remark

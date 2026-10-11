@@ -57,7 +57,6 @@ test.beforeEach(async ({ page }) => {
             },
             account_credential_id: { type: "integer", description: "ACME 账号凭据标识。" },
             dns_credential_id: { type: "integer", description: "DNS 提供商凭据标识。" },
-            dns_provider: { type: "string", description: "DNS 提供商标识。" },
           },
         },
       },
@@ -121,7 +120,7 @@ test("必填任务输入为空时提示必填，而不是字段说明", async ({
   await expect(page.locator(".ant-form-item-explain-error", { hasText: "要下发的规则列表" })).toHaveCount(0);
 });
 
-test("按字段语义选控件：凭据按类型过滤、DNS 提供商为固定枚举", async ({ page }) => {
+test("按字段语义选控件：凭据按类型过滤", async ({ page }) => {
   await openJsonEditor(page);
 
   const account = page.locator('[id$="_account_credential_id"]');
@@ -140,13 +139,6 @@ test("按字段语义选控件：凭据按类型过滤、DNS 提供商为固定�
   // 用可见性判断：antd 关闭过的下拉 DOM 仍在，只是隐藏。
   await expect(page.locator('.ant-select-item-option[title="le-prod（id=7）"]')).toBeHidden();
   await page.keyboard.press("Escape");
-
-  // dns_provider 是固定枚举，选项不来自凭据列表。
-  const provider = page.locator('[id$="_dns_provider"]');
-  await expect(provider).toHaveAttribute("role", "combobox");
-  await provider.click();
-  await expect(page.locator('.ant-select-item-option[title="Cloudflare"]')).toBeVisible();
-  await expect(page.locator('.ant-select-item-option[title="阿里云"]')).toBeVisible();
 });
 
 test("保存时把任务输入按类型解析后提交", async ({ page }) => {

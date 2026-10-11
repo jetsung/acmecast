@@ -143,7 +143,7 @@ async fn run(config_override: Option<&str>) -> Result<(), Box<dyn std::error::Er
         interval: std::time::Duration::from_secs(config.propagation.interval_secs),
         timeout: std::time::Duration::from_secs(config.propagation.timeout_secs),
     };
-    let mut runtime = acmecast_server::RuntimeState::from_environment_with_steps(
+    let mut runtime = acmecast_server::RuntimeState::from_environment_with_steps_and_redis_url(
         std::sync::Arc::new(acmecast_server::steps::default_steps(
             db.clone(),
             config.data_dir.clone(),
@@ -152,7 +152,9 @@ async fn run(config_override: Option<&str>) -> Result<(), Box<dyn std::error::Er
             propagation,
             config.resolvers.clone(),
         )),
-    )?;
+        config.redis_url.as_deref(),
+    )
+    .await?;
     match &runtime.auth {
         AuthMode::Disabled => {
             tracing::warn!("鉴权已关闭（ACMECAST_AUTH_DISABLED），仅适用于本地单机场景");
@@ -197,6 +199,7 @@ async fn run(config_override: Option<&str>) -> Result<(), Box<dyn std::error::Er
         std::sync::Arc::clone(&runtime.credential_registry),
         runtime.cipher.as_ref(),
         runtime.notifier.clone(),
+        runtime.redis.clone(),
         http_shutdown.clone(),
     );
 

@@ -17,9 +17,11 @@ base64.workspace = true
 instant-acme = { version = "0.8.5", default-features = false, features = ["ring", "hyper-rustls"] }
 rustls-pki-types = "1.15.1"
 http = "1.5.0"
+tracing.workspace = true
 http-body-util = "0.1.5"
 bytes = "1.12.1"
 reqwest.workspace = true
+tokio.workspace = true
 
 [features]
 # 开放进程内的 mock ACME 服务器与可注入的 HTTP 传输层，供**其它 crate 的测试**使用。

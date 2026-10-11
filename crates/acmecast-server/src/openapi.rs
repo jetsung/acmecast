@@ -57,7 +57,9 @@ use crate::response::ApiResponse;
         create_schedule,
         delete_schedule,
         list_trigger_logs,
-        history_logs
+        history_logs,
+        history_events,
+        pipeline_history_events
     ),
     components(
         schemas(
@@ -227,3 +229,25 @@ fn run_pipeline() {}
 
 #[utoipa::path(get, path = "/api/histories/{id}/logs", params(("id" = i64, Path, description = "历史主键")), responses((status = 200, body = ApiResponse<Vec<crate::handlers::HistoryLogResponse>>, description = "步骤日志"), (status = 404, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
 fn history_logs() {}
+
+/// 运行历史实时事件流的文档占位函数。
+#[utoipa::path(get, path = "/api/histories/{id}/events", params(("id" = i64, Path, description = "历史主键")), responses((status = 200, description = "Server-Sent Events 实时事件流"), (status = 404, body = crate::response::ApiErrorBody), (status = 406, body = crate::response::ApiErrorBody), (status = 429, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
+fn history_events() {}
+
+/// 流水线运行历史实时事件流的文档占位函数。
+#[utoipa::path(get, path = "/api/pipelines/{pipeline_id}/histories/{id}/events", params(("pipeline_id" = i64, Path, description = "流水线标识"), ("id" = i64, Path, description = "历史主键")), responses((status = 200, description = "Server-Sent Events 实时事件流"), (status = 404, body = crate::response::ApiErrorBody), (status = 406, body = crate::response::ApiErrorBody), (status = 429, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
+fn pipeline_history_events() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn credential_schemas_expose_capabilities() {
+        // 凭据相关 DTO 已透传 capabilities；utoipa 由 derive 生成 schema，
+        // 直接断言文档 JSON 里含该字段（请求与响应两侧）。
+        let doc = ApiDoc::openapi();
+        let json = serde_json::to_string(&doc).expect("OpenAPI 文档应可序列化");
+        assert!(json.contains("capabilities"), "OpenAPI 应含 capabilities 字段");
+    }
+}

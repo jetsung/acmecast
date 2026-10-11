@@ -12,6 +12,10 @@
 # 直接报错退出，不会带着空密钥把服务拉起来。长期使用建议写进 docker/.env，否则每开一个
 # 新 shell 都要重新 export，连 logs、down 都用不了。
 #
+# 可选缓存变量（调试环境可指向 valkey:6379 或 redis://127.0.0.1:6379）：
+#   ACMECAST_REDIS_URL / ACMECAST_VALKEY_URL
+# 未配置时行为不变（默认直写数据库）。
+#
 # 数据落在仓库根的 data/（与 docker run 写法一致）。容器以 uid 65532 运行，目录需可写：
 #   mkdir -p data && chmod 0777 data
 
@@ -34,3 +38,13 @@ services:
       ACMECAST_JWT_SECRET: "${ACMECAST_JWT_SECRET:?未设置：先 export，或写入 docker/.env}"
       ACMECAST_CREDENTIAL_KEY: "${ACMECAST_CREDENTIAL_KEY:?未设置：先 export，或写入 docker/.env}"
       ACMECAST_ADMIN_PASSWORD_HASH: "${ACMECAST_ADMIN_PASSWORD_HASH:?未设置：先 export，或写入 docker/.env}"
+      # 可选：Redis / Valkey 缓存（未配置时默认直写数据库；调试环境可指向 valkey:6379）
+      # ACMECAST_REDIS_URL: "redis://valkey:6379"
+
+  # 可选：本地 Valkey 缓存服务（取消注释启用）
+  # valkey:
+  #   image: valkey/valkey:8-alpine
+  #   container_name: acmecast-valkey
+  #   restart: unless-stopped
+  #   ports:
+  #     - "6379:6379"

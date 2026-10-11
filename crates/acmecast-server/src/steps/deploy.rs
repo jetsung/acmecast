@@ -112,16 +112,26 @@ impl PipelineStep for CertDeployStep {
         let deployer = Deployer::new(Arc::clone(&self.state));
         // force 已移除：仅 tencent-ssl 走指纹幂等，其余每次都写入
         let force = false;
-        let outcome = deployer
+        let deploy_result = deployer
             .deploy(
                 target,
                 &input.config,
-                &CertMaterials::new(cert_pem, key_pem, fingerprint),
+                &CertMaterials::new(cert_pem, key_pem, fingerprint.clone()),
                 ctx.credentials(),
                 force,
             )
-            .await
-            .map_err(|e| domain_error("执行部署", e))?;
+            .await;
+        let outcome = match deploy_result {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                ctx.log_error(format!(
+                    "部署失败：target={}, error={}",
+                    target.type_id(),
+                    error
+                ));
+                return Err(domain_error("执行部署", error));
+            }
+        };
 
         // 腾讯云 SSL：把云端证书 ID 以结构化输出写入运行历史，使单次运行可自包含回溯。
         // 跳过写入时与普通日志合并为一条带 output 的日志，避免"跳过提示 + 结构化结果"两条冗余日志。
@@ -129,8 +139,9 @@ impl PipelineStep for CertDeployStep {
             if outcome.skipped_write {
                 ctx.log_info_with_output(
                     format!(
-                        "目标 {} 指纹未变，跳过写入；重载已按配置执行",
-                        target.type_id()
+                        "目标 {} 指纹未变，跳过写入：target={}, skipped_write=true, reason=fingerprint unchanged, fingerprint={fingerprint}；重载已按配置执行",
+                        target.type_id(),
+                        target.type_id(),
                     ),
                     serde_json::json!({
                         "cert_ids": outcome.paths,
@@ -139,9 +150,11 @@ impl PipelineStep for CertDeployStep {
                 );
             } else {
                 ctx.log_info(format!(
-                    "已部署到目标 {}，写入 {} 个路径",
+                    "已部署到目标 {}，写入 {} 个路径：target={}, fingerprint={}",
                     target.type_id(),
-                    outcome.paths.len()
+                    outcome.paths.len(),
+                    target.type_id(),
+                    fingerprint,
                 ));
                 ctx.log_info_with_output(
                     "腾讯云 SSL 部署结果",
@@ -152,15 +165,23 @@ impl PipelineStep for CertDeployStep {
                 );
             }
         } else if outcome.skipped_write {
-            ctx.log_info(format!(
-                "目标 {} 指纹未变，跳过写入；重载已按配置执行",
-                target.type_id()
-            ));
+            ctx.log_info_with_output(
+                format!(
+                    "目标 {} 指纹未变，跳过写入：target={}, skipped_write=true, reason=fingerprint unchanged, fingerprint={fingerprint}；重载已按配置执行",
+                    target.type_id(),
+                    target.type_id(),
+                ),
+                serde_json::json!({
+                    "skipped_write": true,
+                }),
+            );
         } else {
             ctx.log_info(format!(
-                "已部署到目标 {}，写入 {} 个路径",
+                "已部署到目标 {}，写入 {} 个路径：target={}, fingerprint={}",
                 target.type_id(),
-                outcome.paths.len()
+                outcome.paths.len(),
+                target.type_id(),
+                fingerprint,
             ));
         }
 

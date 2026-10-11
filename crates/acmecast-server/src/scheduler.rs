@@ -23,6 +23,10 @@ pub struct PipelineRunLauncher {
     credentials: acmecast_access::CredentialStore<'static>,
     /// webhook 通知订阅端；与 HTTP 层共用同一实例。
     notifier: Option<Arc<acmecast_notify::WebhookEventSink>>,
+    /// Redis / Valkey 缓存连接管理器。
+    redis: Option<Arc<redis::aio::ConnectionManager>>,
+    /// 流水线运行历史 SSE 广播器。
+    broadcaster: Option<Arc<crate::history_stream::SseBroadcaster>>,
 }
 
 impl std::fmt::Debug for PipelineRunLauncher {
@@ -48,6 +52,7 @@ impl PipelineRunLauncher {
         credential_registry: Arc<acmecast_access::CredentialRegistry>,
         cipher: Option<&Arc<acmecast_core::CredentialCipher>>,
         notifier: Option<Arc<acmecast_notify::WebhookEventSink>>,
+        redis: Option<Arc<redis::aio::ConnectionManager>>,
     ) -> Self {
         let leaked: &'static DatabaseConnection = Box::leak(Box::new(db.clone()));
         let cipher = cipher.cloned().or_else(|| {
@@ -68,7 +73,16 @@ impl PipelineRunLauncher {
             db: leaked,
             credentials,
             notifier,
+            redis,
+            broadcaster: None,
         }
+    }
+
+    /// 设置 SSE 广播器。
+    #[must_use]
+    pub fn with_broadcaster(mut self, broadcaster: Arc<crate::history_stream::SseBroadcaster>) -> Self {
+        self.broadcaster = Some(broadcaster);
+        self
     }
 }
 
@@ -95,10 +109,17 @@ impl PipelineLauncher for PipelineRunLauncher {
         // 创建运行历史、执行、写回终态都与手动触发共用同一条链路（见 crate::run）：
         // 终态**原地更新**进同一条历史，另插一行会让原 running 记录永远停在
         // running，所有「查运行中」的判定都会把流水线当成还在跑。
+        let cache = crate::history_cache::HistoryCache::new(self.redis.clone());
         let definition = crate::run::definition_of(&pipeline);
-        let history_id = crate::run::start_run(self.db, request.pipeline_id, request.source)
-            .await
-            .map_err(Error::Pipeline)?;
+        let history_id = crate::run::start_run(
+            self.db,
+            &pipeline,
+            request.source,
+            Some(&cache),
+            self.broadcaster.as_deref(),
+        )
+        .await
+        .map_err(Error::Pipeline)?;
         let events: Option<&dyn acmecast_pipeline::EventSink> =
             self.notifier.as_deref().map(|sink| sink as _);
         let outcome = crate::run::execute_run(
@@ -109,6 +130,8 @@ impl PipelineLauncher for PipelineRunLauncher {
             history_id,
             request.source,
             events,
+            Some(&cache),
+            self.broadcaster.as_deref(),
         )
         .await?;
 
@@ -142,6 +165,7 @@ pub fn spawn_scheduler(
     credential_registry: Arc<acmecast_access::CredentialRegistry>,
     cipher: Option<&std::sync::Arc<acmecast_core::CredentialCipher>>,
     notifier: Option<Arc<acmecast_notify::WebhookEventSink>>,
+    redis: Option<Arc<redis::aio::ConnectionManager>>,
     shutdown: watch::Receiver<bool>,
 ) -> JoinHandle<()> {
     let cipher = cipher.cloned();
@@ -152,6 +176,7 @@ pub fn spawn_scheduler(
             credential_registry,
             cipher.as_ref(),
             notifier,
+            redis,
         );
         let engine = SchedulerEngine::new(&db, &launcher, SchedulerConfig::default());
 

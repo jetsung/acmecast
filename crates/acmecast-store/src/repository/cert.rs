@@ -33,10 +33,15 @@ pub const MAX_PAGE_SIZE: u64 = 100;
 pub struct CertInput {
     /// 该证书覆盖的域名。顺序与大小写不限，仓储会规范化后再比较。
     pub domains: Vec<String>,
-    /// 证书 PEM 在数据目录下的相对路径。
+    /// 证书 PEM 在数据目录下的相对路径（旧布局，兼容保留）。
     pub cert_pem_path: String,
-    /// 私钥 PEM 在数据目录下的相对路径。
+    /// 私钥 PEM 在数据目录下的相对路径（旧布局，兼容保留）。
     pub key_pem_path: String,
+    /// 四文件新布局的各路径（对齐 acme.sh）。
+    pub cert_path: Option<String>,
+    pub ca_path: Option<String>,
+    pub fullchain_path: Option<String>,
+    pub key_path: Option<String>,
     /// 证书 SHA-256 指纹。
     pub fingerprint: String,
     /// 签发者主题名。
@@ -400,6 +405,10 @@ impl<'db> CertRepository<'db> {
             id: Set(row.id),
             cert_pem_path: Set(paths.cert_pem.clone()),
             key_pem_path: Set(paths.key_pem.clone()),
+            cert_path: Set(Some(paths.cert.clone())),
+            ca_path: Set(Some(paths.ca.clone())),
+            fullchain_path: Set(Some(paths.fullchain.clone())),
+            key_path: Set(Some(paths.key.clone())),
             updated_at: Set(Utc::now()),
             ..Default::default()
         }
@@ -428,6 +437,10 @@ impl<'db> CertRepository<'db> {
             id: Set(row.id),
             cert_pem_path: Set(paths.cert_pem.clone()),
             key_pem_path: Set(paths.key_pem.clone()),
+            cert_path: Set(Some(paths.cert.clone())),
+            ca_path: Set(Some(paths.ca.clone())),
+            fullchain_path: Set(Some(paths.fullchain.clone())),
+            key_path: Set(Some(paths.key.clone())),
             archived_at: Set(Some(archived_at)),
             updated_at: Set(archived_at),
             ..Default::default()
@@ -500,6 +513,10 @@ impl<'db> CertRepository<'db> {
             domains: Set(encoded),
             cert_pem_path: Set(input.cert_pem_path),
             key_pem_path: Set(input.key_pem_path),
+            cert_path: Set(input.cert_path),
+            ca_path: Set(input.ca_path),
+            fullchain_path: Set(input.fullchain_path),
+            key_path: Set(input.key_path),
             fingerprint: Set(input.fingerprint),
             issuer: Set(input.issuer),
             not_before: Set(input.not_before),
@@ -525,6 +542,10 @@ impl<'db> CertRepository<'db> {
             id: Set(id),
             cert_pem_path: Set(input.cert_pem_path),
             key_pem_path: Set(input.key_pem_path),
+            cert_path: Set(input.cert_path),
+            ca_path: Set(input.ca_path),
+            fullchain_path: Set(input.fullchain_path),
+            key_path: Set(input.key_path),
             fingerprint: Set(input.fingerprint),
             issuer: Set(input.issuer),
             not_before: Set(input.not_before),

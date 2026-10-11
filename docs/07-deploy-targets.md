@@ -109,8 +109,8 @@ CDN / WAF 等云资源引用。**国内站与国际站同构**：凭据的 `acco
 | `region` | 是 | — | 区域，如 `us-east-1` |
 | `bucket` | 是 | — | 桶名 |
 | `prefix` | 否 | — | 对象键前缀，如 `certs/` |
-| `cert_filename` | 否 | — | 证书对象键模板，含 `{domain}` 占位，未填时为 `<prefix>/<domain>.cert.pem` |
-| `key_filename` | 否 | — | 私钥对象键模板，未填时为 `<prefix>/<domain>.key.pem` |
+| `cert_filename` | 否 | — | 证书对象键模板，含 `{domain}` 占位，未填时为 `<prefix>/<domain>.cer` |
+| `key_filename` | 否 | — | 私钥对象键模板，未填时为 `<prefix>/<domain>.key` |
 | `force_path_style` | 否 | `false` | 强制 path-style（MinIO 等自建存储） |
 | `insecure_skip_verify` | 否 | `false` | 跳过 TLS 证书校验 |
 

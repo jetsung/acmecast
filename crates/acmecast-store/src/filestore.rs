@@ -23,18 +23,32 @@ const ACTIVE_CERT_DIR: &str = "certs/ssl";
 const ARCHIVED_CERT_DIR: &str = "certs/archived";
 /// 已吊销证书的归档目录名：`certs/revoked/<指纹>/`。
 const REVOKED_CERT_DIR: &str = "certs/revoked";
-/// 证书链文件的固定后缀：`<主域名>.cert.pem`。
+/// 叶子证书文件的后缀：`<主域名>.cer`，对齐 `acme.sh $CERT_PATH`。
+const CERT_SUFFIX: &str = "cer";
+/// 中间链文件的后缀：`<主域名>.ca.cer`，对齐 `acme.sh $CA_CERT_PATH`（带前缀以支持扁平多域）。
+const CA_SUFFIX: &str = "ca.cer";
+/// 完整链文件的后缀：`<主域名>.fullchain.cer`，对齐 `acme.sh $CERT_FULLCHAIN_PATH`。
+const FULLCHAIN_SUFFIX: &str = "fullchain.cer";
+/// 私钥文件的后缀：`<主域名>.key`，对齐 `acme.sh $CERT_KEY_PATH`。
+const KEY_SUFFIX: &str = "key";
+/// 证书链文件的固定后缀（旧布局，兼容读取）：`<主域名>.cert.pem`。
 const CERT_PEM_SUFFIX: &str = "cert.pem";
-/// 私钥文件的固定后缀：`<主域名>.key.pem`。
+/// 私钥文件的固定后缀（旧布局，兼容读取）：`<主域名>.key.pem`。
 const KEY_PEM_SUFFIX: &str = "key.pem";
 
 /// 主域名 → 文件名前缀。
 ///
-/// 通配符的 `*` 与其他文件名不安全字符一律换成 `_`（`*.hello.example.com`
-/// → `_.hello.example.com`）；字母数字与 `.`、`-`、`_` 原样保留。空域名
-/// 兜底为 `certificate`，保证路径始终可用。
+/// `*` 显式映射为 `_wildcard`（`*.hello.example.com` → `_wildcard.hello.example.com`），
+/// 而非模糊的 `_`；字母数字与 `.`、`-`、`_` 原样保留。空域名兜底为 `certificate`。
 fn domain_file_prefix(domain: &str) -> String {
-    let cleaned: String = domain
+    let normalized = if let Some(stripped) = domain.strip_prefix("*.") {
+        format!("_wildcard.{stripped}")
+    } else if domain == "*" {
+        "_wildcard".to_owned()
+    } else {
+        domain.to_owned()
+    };
+    let cleaned: String = normalized
         .chars()
         .map(|c| match c {
             'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '-' | '_' => c,
@@ -48,6 +62,25 @@ fn domain_file_prefix(domain: &str) -> String {
     }
 }
 
+/// 复刻 `acme.sh _split_cert_chain` 的拆链：首个 `END CERTIFICATE` 为界。
+///
+/// 返回 `(leaf_pem, ca_pem)`：`leaf` 为首块（含头尾），`ca` 为剩余；单块时 `ca` 为空。
+pub fn split_pem_chain(chain_pem: &str) -> (String, String) {
+    const END_MARKER: &str = "-----END CERTIFICATE-----";
+    if let Some(idx) = chain_pem.find(END_MARKER) {
+        let end = idx + END_MARKER.len();
+        let leaf = chain_pem[..end].trim().to_owned() + "\n";
+        let rest = chain_pem[end..].trim();
+        if rest.is_empty() {
+            (leaf, String::new())
+        } else {
+            (leaf, format!("{rest}\n"))
+        }
+    } else {
+        (chain_pem.to_owned(), String::new())
+    }
+}
+
 /// 相对路径的文件名部分；库中路径总有文件名，兜底原样返回仅是防御。
 fn base_name_of(relative: &str) -> &str {
     Path::new(relative)
@@ -57,11 +90,22 @@ fn base_name_of(relative: &str) -> &str {
 }
 
 /// 一条证书在数据目录中的位置（均为相对路径）。
+///
+/// 对齐 `acme.sh` 的三文件布局：`cer`（叶子）/ `ca.cer`（中间链）/ `fullchain.cer`（完整链）+ `key`（私钥）。
+/// 旧布局的 `cert_pem`/`key_pem` 字段保留作兼容读取，新布局以 `cert`/`ca`/`fullchain`/`key` 为准。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CertFilePaths {
-    /// 证书链 PEM 的相对路径。
+    /// 叶子证书相对路径（`<prefix>.cer`）。
+    pub cert: String,
+    /// 中间链相对路径（`<prefix>.ca.cer`），单证书时为空文件。
+    pub ca: String,
+    /// 完整链相对路径（`<prefix>.fullchain.cer`）。
+    pub fullchain: String,
+    /// 私钥相对路径（`<prefix>.key`）。
+    pub key: String,
+    /// 兼容：旧布局证书链路径（`<prefix>.cert.pem`）。
     pub cert_pem: String,
-    /// 私钥 PEM 的相对路径。
+    /// 兼容：旧布局私钥路径（`<prefix>.key.pem`）。
     pub key_pem: String,
 }
 
@@ -102,6 +146,10 @@ impl FileStore {
     pub fn cert_paths(_fingerprint: &str, primary_domain: &str) -> CertFilePaths {
         let prefix = domain_file_prefix(primary_domain);
         CertFilePaths {
+            cert: format!("{ACTIVE_CERT_DIR}/{prefix}.{CERT_SUFFIX}"),
+            ca: format!("{ACTIVE_CERT_DIR}/{prefix}.{CA_SUFFIX}"),
+            fullchain: format!("{ACTIVE_CERT_DIR}/{prefix}.{FULLCHAIN_SUFFIX}"),
+            key: format!("{ACTIVE_CERT_DIR}/{prefix}.{KEY_SUFFIX}"),
             cert_pem: format!("{ACTIVE_CERT_DIR}/{prefix}.{CERT_PEM_SUFFIX}"),
             key_pem: format!("{ACTIVE_CERT_DIR}/{prefix}.{KEY_PEM_SUFFIX}"),
         }
@@ -137,22 +185,51 @@ impl FileStore {
         fingerprint: &str,
     ) -> Result<Option<CertFilePaths>> {
         let archived_dir = Self::archived_cert_dir(fingerprint);
+        // 从旧路径反推 prefix，构造新布局 archived 目标
+        let prefix = base_name_of(cert_pem_relative)
+            .strip_suffix(&format!(".{CERT_PEM_SUFFIX}"))
+            .or_else(|| base_name_of(cert_pem_relative).strip_suffix(&format!(".{CERT_SUFFIX}")))
+            .or_else(|| base_name_of(cert_pem_relative).strip_suffix(&format!(".{FULLCHAIN_SUFFIX}")))
+            .unwrap_or(base_name_of(cert_pem_relative))
+            .to_owned();
         let target = CertFilePaths {
+            cert: format!("{archived_dir}/{prefix}.{CERT_SUFFIX}"),
+            ca: format!("{archived_dir}/{prefix}.{CA_SUFFIX}"),
+            fullchain: format!("{archived_dir}/{prefix}.{FULLCHAIN_SUFFIX}"),
+            key: format!("{archived_dir}/{prefix}.{KEY_SUFFIX}"),
             cert_pem: format!("{archived_dir}/{}", base_name_of(cert_pem_relative)),
             key_pem: format!("{archived_dir}/{}", base_name_of(key_pem_relative)),
         };
         if cert_pem_relative == target.cert_pem && key_pem_relative == target.key_pem {
             return Ok(Some(target));
         }
-        let sources = [cert_pem_relative, key_pem_relative];
-        for source in sources {
-            if tokio::fs::metadata(self.resolve(source)?).await.is_err() {
-                return Ok(None);
+        // 兼容：若活跃目录已有新布局文件，一并归档
+        let active_prefix = prefix.clone();
+        let active_candidates = [
+            format!("{ACTIVE_CERT_DIR}/{active_prefix}.{CERT_SUFFIX}"),
+            format!("{ACTIVE_CERT_DIR}/{active_prefix}.{CA_SUFFIX}"),
+            format!("{ACTIVE_CERT_DIR}/{active_prefix}.{FULLCHAIN_SUFFIX}"),
+            format!("{ACTIVE_CERT_DIR}/{active_prefix}.{KEY_SUFFIX}"),
+        ];
+        let mut any = false;
+        for c in [cert_pem_relative, key_pem_relative].iter().copied().chain(active_candidates.iter().map(|s| s.as_str())) {
+            if tokio::fs::metadata(self.resolve(c)?).await.is_ok() { any = true; break; }
+        }
+        if !any { return Ok(None); }
+        self.ensure_archived_dir(fingerprint).await?;
+        // 新布局 4 文件
+        for src in active_candidates.iter() {
+            if tokio::fs::metadata(self.resolve(src)?).await.is_ok() {
+                let dst = format!("{archived_dir}/{}", base_name_of(src));
+                if src != &dst { let _ = self.move_within(src, &dst).await; }
             }
         }
-        self.ensure_archived_dir(fingerprint).await?;
-        for (source, target) in sources.iter().zip([&target.cert_pem, &target.key_pem]) {
-            self.move_within(source, target).await?;
+        // 旧布局 2 文件
+        for (src, dst) in [(cert_pem_relative, &target.cert_pem), (key_pem_relative, &target.key_pem)] {
+            if src == dst { continue; }
+            if tokio::fs::metadata(self.resolve(src)?).await.is_ok() {
+                let _ = self.move_within(src, dst).await;
+            }
         }
         Ok(Some(target))
     }
@@ -192,7 +269,16 @@ impl FileStore {
         fingerprint: &str,
     ) -> Result<Option<CertFilePaths>> {
         let revoked_dir = Self::revoked_cert_dir(fingerprint);
+        let prefix = base_name_of(cert_pem_relative)
+            .strip_suffix(&format!(".{CERT_PEM_SUFFIX}"))
+            .or_else(|| base_name_of(cert_pem_relative).strip_suffix(&format!(".{CERT_SUFFIX}")))
+            .unwrap_or(base_name_of(cert_pem_relative))
+            .to_owned();
         let target = CertFilePaths {
+            cert: format!("{revoked_dir}/{prefix}.{CERT_SUFFIX}"),
+            ca: format!("{revoked_dir}/{prefix}.{CA_SUFFIX}"),
+            fullchain: format!("{revoked_dir}/{prefix}.{FULLCHAIN_SUFFIX}"),
+            key: format!("{revoked_dir}/{prefix}.{KEY_SUFFIX}"),
             cert_pem: format!("{revoked_dir}/{}", base_name_of(cert_pem_relative)),
             key_pem: format!("{revoked_dir}/{}", base_name_of(key_pem_relative)),
         };
@@ -200,12 +286,17 @@ impl FileStore {
             return Ok(Some(target));
         }
 
-        let sources = [cert_pem_relative, key_pem_relative];
-        for source in sources {
-            if tokio::fs::metadata(self.resolve(source)?).await.is_err() {
-                return Ok(None);
-            }
+        let active_candidates = [
+            format!("{ACTIVE_CERT_DIR}/{prefix}.{CERT_SUFFIX}"),
+            format!("{ACTIVE_CERT_DIR}/{prefix}.{CA_SUFFIX}"),
+            format!("{ACTIVE_CERT_DIR}/{prefix}.{FULLCHAIN_SUFFIX}"),
+            format!("{ACTIVE_CERT_DIR}/{prefix}.{KEY_SUFFIX}"),
+        ];
+        let mut any = false;
+        for c in [cert_pem_relative, key_pem_relative].iter().copied().chain(active_candidates.iter().map(|s| s.as_str())) {
+            if tokio::fs::metadata(self.resolve(c)?).await.is_ok() { any = true; break; }
         }
+        if !any { return Ok(None); }
 
         if self
             .try_move_whole_dir(cert_pem_relative, key_pem_relative, &revoked_dir)
@@ -215,21 +306,22 @@ impl FileStore {
         }
 
         self.ensure_revoked_dir(fingerprint).await?;
-        for (source, target) in sources.iter().zip([&target.cert_pem, &target.key_pem]) {
-            self.move_within(source, target).await?;
+        for src in active_candidates.iter() {
+            if tokio::fs::metadata(self.resolve(src)?).await.is_ok() {
+                let dst = format!("{revoked_dir}/{}", base_name_of(src));
+                if src != &dst { let _ = self.move_within(src, &dst).await; }
+            }
+        }
+        for (src, dst) in [(cert_pem_relative, &target.cert_pem), (key_pem_relative, &target.key_pem)] {
+            if src == dst { continue; }
+            if tokio::fs::metadata(self.resolve(src)?).await.is_ok() { let _ = self.move_within(src, dst).await; }
         }
         // 扁平活跃目录为共享目录，不应因单条证书归档而尝试删除。
         let active_dir = self.resolve(ACTIVE_CERT_DIR)?;
-        for source in sources {
-            let Ok(parent) = self.resolve(source).map(|p| p.parent().unwrap().to_path_buf()) else {
-                continue;
-            };
-            if parent == active_dir {
-                continue;
-            }
-            if let Err(error) = self.remove_parent_dir_if_empty(source).await {
-                tracing::debug!(source, %error, "归档后清理源目录失败，忽略");
-            }
+        for source in [cert_pem_relative, key_pem_relative] {
+            let Ok(parent) = self.resolve(source).map(|p| p.parent().unwrap().to_path_buf()) else { continue; };
+            if parent == active_dir { continue; }
+            let _ = self.remove_parent_dir_if_empty(source).await;
         }
         Ok(Some(target))
     }
@@ -247,14 +339,20 @@ impl FileStore {
         if self.try_restore_whole_dir(archived, original).await? {
             return Ok(());
         }
-        self.move_within(&archived.cert_pem, &original.cert_pem)
-            .await?;
-        self.move_within(&archived.key_pem, &original.key_pem)
-            .await?;
-        for file in [&archived.cert_pem, &archived.key_pem] {
-            if let Err(error) = self.remove_parent_dir_if_empty(file).await {
-                tracing::debug!(file, %error, "回退后清理吊销目录失败，忽略");
+        for (src, dst) in [
+            (&archived.cert, &original.cert),
+            (&archived.ca, &original.ca),
+            (&archived.fullchain, &original.fullchain),
+            (&archived.key, &original.key),
+            (&archived.cert_pem, &original.cert_pem),
+            (&archived.key_pem, &original.key_pem),
+        ] {
+            if tokio::fs::metadata(self.resolve(src)?).await.is_ok() {
+                if src != dst { let _ = self.move_within(src, dst).await; }
             }
+        }
+        for file in [&archived.cert_pem, &archived.key_pem, &archived.cert, &archived.key] {
+            let _ = self.remove_parent_dir_if_empty(file).await;
         }
         Ok(())
     }
@@ -381,8 +479,15 @@ impl FileStore {
         key_pem: &str,
     ) -> Result<CertFilePaths> {
         let paths = Self::cert_paths(fingerprint, primary_domain);
-        self.write(&paths.cert_pem, cert_chain_pem).await?;
-        self.write(&paths.key_pem, key_pem).await?;
+        let (_leaf, ca) = split_pem_chain(cert_chain_pem);
+        // B 方案：仅三文件（ca.cer / fullchain.cer / key），不再落叶子 cer 与兼容 pem
+        self.write(&paths.ca, &ca).await?;
+        self.write(&paths.fullchain, cert_chain_pem).await?;
+        self.write(&paths.key, key_pem).await?;
+        // 清理可能残留的叶子 cer 与旧 pem（幂等、无害）
+        let _ = self.delete(&paths.cert).await;
+        let _ = self.delete(&paths.cert_pem).await;
+        let _ = self.delete(&paths.key_pem).await;
         Ok(paths)
     }
 
@@ -427,8 +532,23 @@ impl FileStore {
         cert_pem_relative: &str,
         key_pem_relative: &str,
     ) -> Result<()> {
+        // 同时清理新布局的 4 文件（若存在）
+        let prefix = base_name_of(cert_pem_relative)
+            .strip_suffix(&format!(".{CERT_PEM_SUFFIX}"))
+            .or_else(|| base_name_of(cert_pem_relative).strip_suffix(&format!(".{CERT_SUFFIX}")))
+            .unwrap_or(base_name_of(cert_pem_relative))
+            .to_owned();
+        let parent_dir = std::path::Path::new(cert_pem_relative).parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+        let extra = if parent_dir.is_empty() { vec![] } else {
+            vec![
+                format!("{parent_dir}/{prefix}.{CERT_SUFFIX}"),
+                format!("{parent_dir}/{prefix}.{CA_SUFFIX}"),
+                format!("{parent_dir}/{prefix}.{FULLCHAIN_SUFFIX}"),
+                format!("{parent_dir}/{prefix}.{KEY_SUFFIX}"),
+            ]
+        };
         let delete_files_individually = async {
-            for rel in [cert_pem_relative, key_pem_relative] {
+            for rel in [cert_pem_relative, key_pem_relative].iter().copied().chain(extra.iter().map(|s| s.as_str())) {
                 let _ = self.delete(rel).await;
             }
         };

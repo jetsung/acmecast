@@ -61,6 +61,16 @@ pub enum PipelineEvent {
         /// 失败摘要。
         reason: String,
     },
+
+    /// 步骤产生了一条增量日志。
+    Log {
+        /// 流水线主键。
+        pipeline_id: i64,
+        /// 本次运行的标识。
+        run_id: i64,
+        /// 日志详情。
+        log: crate::history::StepLogRecord,
+    },
 }
 
 impl PipelineEvent {
@@ -71,6 +81,7 @@ impl PipelineEvent {
     pub fn pipeline_id(&self) -> i64 {
         match self {
             Self::Started { pipeline_id, .. }
+            | Self::Log { pipeline_id, .. }
             | Self::StepFinished { pipeline_id, .. }
             | Self::Succeeded { pipeline_id, .. }
             | Self::Failed { pipeline_id, .. } => *pipeline_id,
@@ -82,6 +93,7 @@ impl PipelineEvent {
     pub fn run_id(&self) -> i64 {
         match self {
             Self::Started { run_id, .. }
+            | Self::Log { run_id, .. }
             | Self::StepFinished { run_id, .. }
             | Self::Succeeded { run_id, .. }
             | Self::Failed { run_id, .. } => *run_id,

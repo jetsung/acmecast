@@ -788,3 +788,55 @@ async fn multiple_existing_certificates_are_updated_one_by_one() {
     assert_eq!(requests[1].headers["X-TC-Action"], "UploadUpdateCertificateInstance");
     assert_eq!(requests[2].headers["X-TC-Action"], "UploadUpdateCertificateInstance");
 }
+
+// ---- 需求：能力校验 ----
+//
+// 凭据仅声明 dns 能力（capabilities=["dns"]）时，tencent-ssl 部署在
+// 任何云端调用之前以可读输入错误失败；传输层零请求证明没有云端调用。
+
+#[tokio::test]
+async fn deploy_fails_without_cloud_requests_when_deploy_capability_is_missing() {
+    let (db, store, cipher) = setup().await;
+    let sealed = cipher
+        .encrypt_string(&tencent_fields(None).to_string())
+        .expect("应能加密");
+    let now = Utc::now();
+    let id = credential::ActiveModel {
+        name: Set("仅 DNS 凭据".to_owned()),
+        type_id: Set("tencent".to_owned()),
+        encrypted_fields: Set(sealed),
+        capabilities: Set(r#"["dns"]"#.to_owned()),
+        created_at: Set(now),
+        updated_at: Set(now),
+        ..Default::default()
+    }
+    .insert(db)
+    .await
+    .expect("应能插入凭据")
+    .id;
+
+    let (chain, key) = self_signed_pem("example.com");
+    // 空脚本：任何云端请求都会因「没有更多响应」报错，若发生即失败暴露。
+    let transport = ScriptedTransport::new(vec![]);
+    let target = TencentSslTarget::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
+
+    let error = target
+        .deploy(
+            &json!({ "credential_id": id, "alias": "acmecast example.com" }),
+            &materials(&chain, &key),
+            &store,
+            DeployMode::Write,
+        )
+        .await
+        .expect_err("仅 DNS 能力的凭据部署应失败");
+
+    let message = error.to_string();
+    assert!(
+        message.contains(&id.to_string()) && message.contains("部署"),
+        "错误应提示凭据标识与缺失能力：{message}"
+    );
+    assert!(
+        transport.requests().is_empty(),
+        "能力缺失时不得发起任何云端请求"
+    );
+}

@@ -56,7 +56,7 @@ impl CredentialType for S3CredentialType {
     }
 
     fn fields_schema(&self) -> RootSchema {
-        schema_for!(S3Fields)
+        s3_fields_schema()
     }
 
     async fn test_connectivity(&self, fields: &serde_json::Value) -> ConnectivityOutcome {
@@ -96,6 +96,66 @@ impl CredentialType for S3CredentialType {
             return Err(acmecast_core::Error::validation("bucket", "不能为空"));
         }
         Ok(())
+    }
+}
+
+/// S3 凭据字段 schema：注入 `x-field-order` 钉住渲染顺序（serde_json Map 会按
+/// 字母序重排 `properties`），使三组成对字段按业务分组两两成行；不注入宽度扩展。
+#[must_use]
+pub fn s3_fields_schema() -> RootSchema {
+    let mut schema = schema_for!(S3Fields);
+    schema.schema.extensions.insert(
+        "x-field-order".to_owned(),
+        serde_json::json!([
+            "access_key",
+            "secret_key",
+            "endpoint",
+            "bucket",
+            "region",
+            "prefix",
+            "session_token"
+        ]),
+    );
+    schema
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn s3_fields_schema_pins_field_order() {
+        let schema = s3_fields_schema();
+        let order = schema
+            .schema
+            .extensions
+            .get("x-field-order")
+            .and_then(|v| v.as_array())
+            .expect("应注入 x-field-order");
+        let names: Vec<&str> = order
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "access_key",
+                "secret_key",
+                "endpoint",
+                "bucket",
+                "region",
+                "prefix",
+                "session_token"
+            ]
+        );
+        let props = schema
+            .schema
+            .object
+            .expect("应为对象 schema")
+            .properties;
+        for key in names {
+            assert!(props.contains_key(key), "properties 缺少字段 {key}");
+        }
     }
 }
 

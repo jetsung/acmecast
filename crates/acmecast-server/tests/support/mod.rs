@@ -239,5 +239,5 @@ pub async fn certificate_fixture() -> (TempDir, String, String, String) {
         )
         .await
         .expect("应能写入证书");
-    (dir, paths.cert_pem, paths.key_pem, chain_pem)
+    (dir, paths.fullchain, paths.key, chain_pem)
 }

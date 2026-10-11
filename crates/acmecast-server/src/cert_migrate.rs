@@ -107,6 +107,10 @@ pub async fn migrate_archived_certs(
                         tracing::warn!(cert_id = old.id, "存量证书归档后更新路径失败");
                         // 回退文件
                         let original = acmecast_store::CertFilePaths {
+                            cert: old.cert_path.clone().unwrap_or_else(|| old.cert_pem_path.clone()),
+                            ca: old.ca_path.clone().unwrap_or_default(),
+                            fullchain: old.fullchain_path.clone().unwrap_or_else(|| old.cert_pem_path.clone()),
+                            key: old.key_path.clone().unwrap_or_else(|| old.key_pem_path.clone()),
                             cert_pem: old.cert_pem_path.clone(),
                             key_pem: old.key_pem_path.clone(),
                         };
@@ -119,6 +123,10 @@ pub async fn migrate_archived_certs(
                     // 文件缺失：仍把 DB 路径指向 archived/<指纹>/ 的预期位置，
                     // 保证「活跃扁平」与数据库一致，不阻断
                     let expected = acmecast_store::CertFilePaths {
+                        cert: format!("certs/archived/{}/{}", old.fingerprint, basename(&old.cert_path.clone().unwrap_or_else(|| old.cert_pem_path.clone()))),
+                        ca: format!("certs/archived/{}/{}", old.fingerprint, basename(&old.ca_path.clone().unwrap_or_else(|| "ca.cer".to_owned()))),
+                        fullchain: format!("certs/archived/{}/{}", old.fingerprint, basename(&old.fullchain_path.clone().unwrap_or_else(|| old.cert_pem_path.clone()))),
+                        key: format!("certs/archived/{}/{}", old.fingerprint, basename(&old.key_path.clone().unwrap_or_else(|| old.key_pem_path.clone()))),
                         cert_pem: format!("certs/archived/{}/{}", old.fingerprint, basename(&old.cert_pem_path)),
                         key_pem: format!("certs/archived/{}/{}", old.fingerprint, basename(&old.key_pem_path)),
                     };
@@ -177,6 +185,10 @@ async fn ensure_flat_paths(
         let base_cert = basename(&row.cert_pem_path);
         let base_key = basename(&row.key_pem_path);
         acmecast_store::CertFilePaths {
+            cert: format!("certs/archived/{}/{}", row.fingerprint, base_cert.replace(".cert.pem", ".cer")),
+            ca: format!("certs/archived/{}/{}", row.fingerprint, base_cert.replace(".cert.pem", ".ca.cer")),
+            fullchain: format!("certs/archived/{}/{}", row.fingerprint, base_cert.replace(".cert.pem", ".fullchain.cer")),
+            key: format!("certs/archived/{}/{}", row.fingerprint, base_key.replace(".key.pem", ".key")),
             cert_pem: format!("certs/archived/{}/{}", row.fingerprint, base_cert),
             key_pem: format!("certs/archived/{}/{}", row.fingerprint, base_key),
         }
@@ -210,6 +222,10 @@ async fn ensure_flat_paths(
                         let _ = store.delete(&moved.cert_pem).await;
                         let _ = store.delete(&moved.key_pem).await;
                         acmecast_store::CertFilePaths {
+                            cert: ssl_cert.replace(".cert.pem", ".cer"),
+                            ca: ssl_cert.replace(".cert.pem", ".ca.cer"),
+                            fullchain: ssl_cert.replace(".cert.pem", ".fullchain.cer"),
+                            key: ssl_key.replace(".key.pem", ".key"),
                             cert_pem: ssl_cert.clone(),
                             key_pem: ssl_key.clone(),
                         }

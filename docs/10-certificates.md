@@ -35,10 +35,10 @@
 | `pfx` | `p12` | `application/x-pkcs12` | PKCS#12，默认 AES-256 加密（PBES2 + HMAC-SHA256）；口令默认 `changeit`，alias `acmecast` |
 | `jks` | — | `application/x-java-keystore` | JKS，口令最短 6 位（Java 自身约束）；alias 统一转小写 |
 | `p7b` | — | `application/pkcs7-mime` | PKCS#7 certs-only |
-| `key` | `private-key`、`key-pem`（大小写不敏感） | `application/x-pem-file` | 私钥 PEM（原样返回 `key_pem_path`，不做格式转换，文件名 `*.key.pem`） |
+| `key` | `private-key`、`key-pem`（大小写不敏感） | `application/x-pem-file` | 私钥 PEM（原样返回新布局 `key`，不做格式转换，文件名 `*.key`） |
 
 转换全部在内存中完成（纯 Rust，无 OpenSSL 依赖），不改持久化的 PEM（私钥 `key` 分支原样返回，不经转换）。
-下载文件名取首个域名（仅保留字母数字与 `.`、`-`、`_`），私钥分支追加 `.key.pem`。
+下载文件名取首个域名（仅保留字母数字与 `.`、`-`、`_`），私钥分支追加 `.key`。
 
 ## 详情页展示
 
@@ -58,9 +58,9 @@
 
 ## 手动归档
 
-`POST /api/certificates/{id}/archive`：将活跃目录 `certs/ssl/<主域名>.*.pem`
+`POST /api/certificates/{id}/archive`：将活跃目录 `certs/ssl/<主域名>.*`
 移至归档目录 `certs/archived/<指纹>/`（按该证书记录的指纹分子目录，文件名
-不变），并同步更新数据库记录的 `cert_pem_path` / `key_pem_path`。归档为本地
+不变），并同步更新数据库记录的 `cert`/`ca`/`fullchain`/`key`（兼容旧 `cert_pem_path`/`key_pem_path`）。归档为本地
 文件移动，不触及吊销状态与 CA，证书详情与下载（`format=pem|key`）仍从新
 路径读取。
 

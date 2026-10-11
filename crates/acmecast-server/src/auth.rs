@@ -408,8 +408,27 @@ pub(crate) async fn require_token(
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
         .map(str::trim)
-        .filter(|token| !token.is_empty());
-    let Some(token) = token else {
+        .filter(|token| !token.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| {
+            // 兼容浏览器 EventSource 无法自定义请求头场景，允许从查询参数提取 token
+            request.uri().query().and_then(|query| {
+                query.split('&').find_map(|pair| {
+                    let mut parts = pair.splitn(2, '=');
+                    if parts.next()? == "token" {
+                        let val = parts.next()?;
+                        if !val.trim().is_empty() {
+                            Some(val.trim().to_owned())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                })
+            })
+        });
+    let Some(token) = token.as_deref() else {
         return unauthorized("缺少访问令牌");
     };
     match verify_token(&auth.config, token, Utc::now()) {

@@ -25,10 +25,18 @@ pub struct Model {
     /// 不是展示用的域名顺序。证书里 SAN 的原始顺序才是权威的申请顺序，
     /// 需要展示时应当从证书本身解析。
     pub domains: String,
-    /// 证书 PEM 文件在数据目录下的相对路径。
+    /// 证书 PEM 文件在数据目录下的相对路径（旧布局，兼容保留）。
     pub cert_pem_path: String,
-    /// 私钥 PEM 文件在数据目录下的相对路径。
+    /// 私钥 PEM 文件在数据目录下的相对路径（旧布局，兼容保留）。
     pub key_pem_path: String,
+    /// 叶子证书相对路径（`certs/ssl/<prefix>.cer`，对齐 acme.sh $CERT_PATH）。
+    pub cert_path: Option<String>,
+    /// 中间链相对路径（`certs/ssl/<prefix>.ca.cer`，对齐 acme.sh $CA_CERT_PATH）。
+    pub ca_path: Option<String>,
+    /// 完整链相对路径（`certs/ssl/<prefix>.fullchain.cer`，对齐 acme.sh $CERT_FULLCHAIN_PATH）。
+    pub fullchain_path: Option<String>,
+    /// 私钥相对路径（`certs/ssl/<prefix>.key`，对齐 acme.sh $CERT_KEY_PATH）。
+    pub key_path: Option<String>,
     /// 证书 SHA-256 指纹，全局唯一。
     #[sea_orm(unique)]
     pub fingerprint: String,
@@ -194,6 +202,10 @@ mod tests {
             domains: "example.com".to_owned(),
             cert_pem_path: "certs/1/cert.pem".to_owned(),
             key_pem_path: "certs/1/key.pem".to_owned(),
+            cert_path: Some("certs/ssl/example.com.cer".to_owned()),
+            ca_path: Some("certs/ssl/example.com.ca.cer".to_owned()),
+            fullchain_path: Some("certs/ssl/example.com.fullchain.cer".to_owned()),
+            key_path: Some("certs/ssl/example.com.key".to_owned()),
             fingerprint: "ab".repeat(32),
             issuer: Some("CN=Test CA".to_owned()),
             not_before: not_after - Duration::days(90),

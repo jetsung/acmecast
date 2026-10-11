@@ -2,6 +2,7 @@
 //!
 //! 支持 SQLite、MySQL、PostgreSQL 三种方言，业务逻辑在三方言上行为等价。
 
+pub mod capability;
 pub mod db;
 pub mod entity;
 pub mod error;

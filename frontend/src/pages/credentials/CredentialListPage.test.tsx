@@ -8,7 +8,7 @@ import { CredentialListPage } from "./CredentialListPage";
 
 const CLOUDFLARE_TYPE = {
   type_id: "cloudflare",
-  display_name: "Cloudflare（DNS）",
+  display_name: "Cloudflare",
   schema: {
     type: "object",
     properties: {
@@ -78,7 +78,7 @@ const ACME_TYPE = {
 /** SSH 主机类型:schema 键序故意打乱,渲染顺序应来自前端注入的 x-field-order。 */
 const SSH_HOST_TYPE = {
   type_id: "ssh",
-  display_name: "SSH 主机（部署）",
+  display_name: "SSH 主机",
   schema: {
     type: "object",
     properties: {
@@ -90,6 +90,33 @@ const SSH_HOST_TYPE = {
       key_mode: { type: ["string", "null"], description: "私钥权限。" },
       cert_mode: { type: ["string", "null"], description: "证书权限。" },
     },
+  },
+};
+
+/** S3 兼容存储类型：schema 含后端注入的 x-field-order（properties 本身是字母序）。 */
+const S3_TYPE = {
+  type_id: "s3",
+  display_name: "S3 兼容存储",
+  schema: {
+    type: "object",
+    properties: {
+      access_key: { type: "string", description: "Access Key。" },
+      secret_key: { type: "string", description: "Secret Key。" },
+      session_token: { type: ["string", "null"], description: "Session Token（临时凭据，可选）。" },
+      endpoint: { type: "string", description: "Endpoint。" },
+      bucket: { type: "string", description: "存储桶。" },
+      region: { type: "string", description: "区域。" },
+      prefix: { type: ["string", "null"], description: "对象键前缀（可选）。" },
+    },
+    "x-field-order": [
+      "access_key",
+      "secret_key",
+      "endpoint",
+      "bucket",
+      "region",
+      "prefix",
+      "session_token",
+    ],
   },
 };
 
@@ -106,6 +133,7 @@ vi.mock("@/api/client", () => ({
                   id: 5,
                   name: "cf-main",
                   type_id: "cloudflare",
+                  capabilities: ["dns", "deploy"],
                   created_at: "2026-09-19T00:00:00Z",
                   updated_at: "2026-09-19T00:00:00Z",
                 },
@@ -127,7 +155,7 @@ vi.mock("@/api/client", () => ({
       }
       if (path === "/api/credential-types") {
         return {
-          data: { data: [CLOUDFLARE_TYPE, ACME_TYPE, TENCENT_TYPE, SSH_HOST_TYPE] },
+          data: { data: [CLOUDFLARE_TYPE, ACME_TYPE, TENCENT_TYPE, SSH_HOST_TYPE, S3_TYPE] },
           response: new Response(),
         };
       }
@@ -274,7 +302,7 @@ describe("凭据编辑弹窗", () => {
       return el!;
     });
     fireEvent.click(
-      typeDropdown.querySelector('.ant-select-item-option[title="SSH 主机（部署）"]')!,
+      typeDropdown.querySelector('.ant-select-item-option[title="SSH 主机"]')!,
     );
 
     // 打开类型下拉→选中 SSH 主机后,字段卡按 SSH_HOST_FIELD_ORDER 渲染:
@@ -326,7 +354,10 @@ describe("凭据编辑弹窗", () => {
       document.querySelectorAll<HTMLElement>(".ant-modal .ant-form-item"),
     )
       .map((item) => item.querySelector("label")?.textContent)
-      .filter((text): text is string => !!text && !["名称", "类型", "备注"].includes(text));
+      .filter(
+        (text): text is string =>
+          !!text && !["名称", "类型", "可用权限", "备注"].includes(text),
+      );
     expect(labels).toEqual(["ca", "directory_url", "eab_kid", "eab_hmac_key", "credentials"]);
   });
 
@@ -359,7 +390,10 @@ describe("凭据编辑弹窗", () => {
     const items = Array.from(document.querySelectorAll<HTMLElement>(".ant-modal .ant-form-item"));
     const labels = items
       .map((item) => item.querySelector("label")?.textContent)
-      .filter((text): text is string => !!text && !["名称", "类型", "备注"].includes(text));
+      .filter(
+        (text): text is string =>
+          !!text && !["名称", "类型", "可用权限", "备注"].includes(text),
+      );
     expect(labels).toEqual(["account_site", "secret_id", "secret_key"]);
 
     const colOf = (id: string) =>
@@ -375,6 +409,100 @@ describe("凭据编辑弹窗", () => {
     const spacers = document.querySelectorAll<HTMLElement>(".ant-modal .ant-col[aria-hidden]");
     expect(spacers).toHaveLength(1);
     expect(spacers[0].className).toContain("ant-col-12");
+  });
+
+  it("S3 兼容存储：字段按 x-field-order 渲染，三组成对字段两两成行，session_token 置末", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: /新\s*建/ }));
+
+    const typeSelect = await waitFor(() => {
+      const el = document.querySelector("#type_id");
+      expect(el).toBeTruthy();
+      return el as HTMLElement;
+    });
+    fireEvent.mouseDown(typeSelect);
+    const typeDropdown = await waitFor(() => {
+      const el = document.querySelector(".ant-select-dropdown:not(.ant-select-dropdown-hidden)");
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    fireEvent.click(
+      typeDropdown.querySelector('.ant-select-item-option[title="S3 兼容存储"]')!,
+    );
+
+    await waitFor(() => {
+      expect(document.querySelector("#fields_access_key")).toBeTruthy();
+    });
+    // 渲染顺序由 x-field-order 钉住（mock 的 properties 是字母序），
+    // 三组成对字段相邻成对，session_token 保持半宽、自然落末尾。
+    const items = Array.from(document.querySelectorAll<HTMLElement>(".ant-modal .ant-form-item"));
+    const labels = items
+      .map((item) => item.querySelector("label")?.textContent)
+      .filter(
+        (text): text is string =>
+          !!text && !["名称", "类型", "可用权限", "备注"].includes(text),
+      );
+    expect(labels).toEqual([
+      "access_key",
+      "secret_key",
+      "endpoint",
+      "bucket",
+      "region",
+      "prefix",
+      "session_token",
+    ]);
+
+    const adjacent = (a: string, b: string) =>
+      labels.indexOf(b) === labels.indexOf(a) + 1;
+    expect(adjacent("access_key", "secret_key")).toBe(true);
+    expect(adjacent("endpoint", "bucket")).toBe(true);
+    expect(adjacent("region", "prefix")).toBe(true);
+    expect(labels[labels.length - 1]).toBe("session_token");
+
+    // 前六字段均为半宽（两列一行自然成对），无整行/行尾占位扩展。
+    const colOf = (id: string) =>
+      document
+        .querySelector(id)
+        ?.closest(".ant-form-item")
+        ?.closest(".ant-col")?.className ?? "";
+    for (const id of [
+      "#fields_access_key",
+      "#fields_secret_key",
+      "#fields_endpoint",
+      "#fields_bucket",
+      "#fields_region",
+      "#fields_prefix",
+      "#fields_session_token",
+    ]) {
+      expect(colOf(id)).toContain("ant-col-12");
+      expect(colOf(id)).not.toContain("ant-col-24");
+    }
+    expect(
+      document.querySelectorAll(".ant-modal .ant-col[aria-hidden]"),
+    ).toHaveLength(0);
+  });
+
+  it("列表“可用权限”列居左，多能力以「DNS、部署」字符串展示", async () => {
+    renderPage();
+    // 列不设 align：表头与单元格都不应有 antd 注入的居中内联样式。
+    const th = await waitFor(() => {
+      const el = [...document.querySelectorAll<HTMLElement>("thead th")].find(
+        (cell) => cell.textContent === "可用权限",
+      );
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    expect(th.style.textAlign).not.toBe("center");
+    // 受控类型行：能力以「、」连接的字符串居左展示（等行数据渲染完成）。
+    const td = await waitFor(() => {
+      const el = [...document.querySelectorAll<HTMLElement>("tbody td")].find(
+        (cell) => cell.textContent === "DNS、部署",
+      );
+      expect(el).toBeTruthy();
+      return el!;
+    });
+    expect(td.style.textAlign).not.toBe("center");
+    expect(td.querySelector(".ant-tag")).toBeNull();
   });
 
   it("连续编辑两条不同凭据:第二次弹窗不含第一条的字段残留", async () => {
@@ -417,8 +545,12 @@ describe("凭据编辑弹窗", () => {
       resolveDetail = resolve as (v: unknown) => void;
     });
     const originalGet = vi.mocked(client.GET);
-    const baseGet = originalGet.getMockImplementation()!;
-    vi.mocked(client.GET).mockImplementation(async (path: string) => {
+    // mock 的 GET 返回分支较多，vi.mocked 的窄化类型在这里不便精确表达，
+    // 用宽松签名承接并回放原实现。
+    const baseGet = originalGet.getMockImplementation() as unknown as (
+      path: string,
+    ) => Promise<unknown>;
+    vi.mocked(client.GET).mockImplementation((async (path: string) => {
       if (path === "/api/credentials/5") {
         await delayedDetail;
         return {
@@ -436,7 +568,7 @@ describe("凭据编辑弹窗", () => {
         };
       }
       return baseGet(path);
-    });
+    }) as unknown as typeof client.GET);
     try {
       renderPage();
       const editButtons = await screen.findAllByRole("button", { name: /编\s*辑/ });
@@ -457,7 +589,9 @@ describe("凭据编辑弹窗", () => {
         expect(okBtn?.disabled).toBe(false);
       });
     } finally {
-      vi.mocked(client.GET).mockImplementation(baseGet);
+      vi.mocked(client.GET).mockImplementation(
+        baseGet as unknown as typeof client.GET,
+      );
     }
   });
 });

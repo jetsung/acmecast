@@ -21,6 +21,9 @@ pub struct Model {
     pub encrypted_fields: String,
     /// 人类可读的备注（用途/归属/环境说明），非敏感，可为空。
     pub remark: String,
+    /// 能力标记（JSON 数组文本）：`dns` / `deploy` 的归一化子集，
+    /// 仅受控类型（tencent/cloudflare/aliyun）有意义，其余类型为空数组。
+    pub capabilities: String,
     /// 记录创建时间。
     pub created_at: chrono::DateTime<chrono::Utc>,
     /// 记录更新时间。
@@ -59,6 +62,7 @@ mod tests {
             Column::TypeId,
             Column::EncryptedFields,
             Column::Remark,
+            Column::Capabilities,
             Column::CreatedAt,
             Column::UpdatedAt,
         ];

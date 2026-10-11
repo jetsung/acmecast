@@ -13,7 +13,7 @@ use crate::runner::RunOutcome;
 use crate::step::StepLogLevel;
 
 /// 一条待落库或已读出的步骤日志。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StepLogRecord {
     /// 属于哪一步，与流水线步骤的 `order_index` 对应。
     pub step_index: i32,
@@ -203,6 +203,22 @@ impl<'db> HistoryRepository<'db> {
 
         transaction.commit().await?;
         Ok(history_id)
+    }
+
+    /// 往已有运行追加单条日志（如启动日志）。
+    pub async fn append_log(&self, history_id: i64, log: StepLogRecord) -> Result<()> {
+        history_log::ActiveModel {
+            history_id: Set(history_id),
+            step_index: Set(log.step_index),
+            level: Set(log.level.as_str().to_owned()),
+            message: Set(log.message),
+            output: Set(log.output),
+            created_at: Set(log.created_at),
+            ..Default::default()
+        }
+        .insert(self.db)
+        .await?;
+        Ok(())
     }
 
     /// 把一条**运行中**的历史更新为终态，并补写日志。

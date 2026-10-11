@@ -138,11 +138,12 @@ async fn the_failure_event_is_emitted_right_after_the_failing_step() {
     let events = sink.events();
     let kinds: Vec<&str> = events
         .iter()
-        .map(|event| match event {
-            PipelineEvent::Started { .. } => "started",
-            PipelineEvent::StepFinished { .. } => "step",
-            PipelineEvent::Succeeded { .. } => "succeeded",
-            PipelineEvent::Failed { .. } => "failed",
+        .filter_map(|event| match event {
+            PipelineEvent::Started { .. } => Some("started"),
+            PipelineEvent::StepFinished { .. } => Some("step"),
+            PipelineEvent::Succeeded { .. } => Some("succeeded"),
+            PipelineEvent::Failed { .. } => Some("failed"),
+            PipelineEvent::Log { .. } => None,
         })
         .collect();
 
@@ -164,7 +165,11 @@ async fn a_successful_run_emits_start_step_and_success_events_in_order() {
     .await;
     assert!(outcome.is_success());
 
-    let events = sink.events();
+    let events: Vec<PipelineEvent> = sink
+        .events()
+        .into_iter()
+        .filter(|e| !matches!(e, PipelineEvent::Log { .. }))
+        .collect();
     assert_eq!(events.len(), 4, "开始 + 两步完成 + 成功: {events:?}");
 
     assert!(matches!(
@@ -291,4 +296,62 @@ fn the_shared_accessors_work_for_every_variant() {
     };
     assert_eq!(failed.pipeline_id(), 5);
     assert_eq!(failed.run_id(), 6);
+
+    let log = PipelineEvent::Log {
+        pipeline_id: 7,
+        run_id: 8,
+        log: acmecast_pipeline::history::StepLogRecord {
+            step_index: 0,
+            level: acmecast_pipeline::step::StepLogLevel::Info,
+            message: "hi".to_owned(),
+            created_at: chrono::Utc::now(),
+            output: None,
+        },
+    };
+    assert_eq!(log.pipeline_id(), 7);
+    assert_eq!(log.run_id(), 8);
+}
+
+#[derive(Debug)]
+struct LoggingStep;
+
+#[async_trait]
+impl PipelineStep for LoggingStep {
+    fn type_id(&self) -> &'static str {
+        "test.logging"
+    }
+
+    async fn execute(&self, ctx: &mut StepContext<'_>) -> Result<StepOutput> {
+        ctx.log_info("progress milestone 1");
+        ctx.log_warn("progress milestone 2");
+        Ok(StepOutput::empty())
+    }
+}
+
+#[tokio::test]
+async fn a_run_emits_step_logs_as_streamed_events() {
+    let mut reg = StepRegistry::new();
+    reg.register(LoggingStep).unwrap();
+    let sink = RecordingSink::default();
+
+    let outcome = run_with_events(
+        &reg,
+        &sink,
+        &pipeline(10, vec![step(0, "test.logging")]),
+    )
+    .await;
+    assert!(outcome.is_success());
+
+    let log_messages: Vec<String> = sink
+        .events()
+        .into_iter()
+        .filter_map(|e| match e {
+            PipelineEvent::Log { log, .. } => Some(log.message),
+            _ => None,
+        })
+        .collect();
+
+    assert!(log_messages.iter().any(|m| m.contains("progress milestone 1")));
+    assert!(log_messages.iter().any(|m| m.contains("progress milestone 2")));
+    assert!(sink.events().iter().any(|e| matches!(e, PipelineEvent::Succeeded { .. })));
 }

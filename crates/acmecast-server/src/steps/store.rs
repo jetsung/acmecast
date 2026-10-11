@@ -27,6 +27,13 @@ pub struct CertStoreInput {
     pub acme_account_credential_id: Option<i64>,
 }
 
+/// 由实际写入的三文件路径合成日志简写：`certs/ssl/<prefix>{.key,.ca.cer,.fullchain.cer}`。
+/// `.cer` 叶子证书不会被写入磁盘，日志不应引用它。
+fn paths_shorthand(paths: &acmecast_store::CertFilePaths) -> String {
+    let prefix = paths.key.strip_suffix(".key").unwrap_or(&paths.key);
+    format!("{prefix}.{{key,ca.cer,fullchain.cer}}")
+}
+
 /// 证书入库步骤。
 #[derive(Debug)]
 pub struct CertStoreStep {
@@ -158,8 +165,8 @@ impl PipelineStep for CertStoreStep {
             .await
             .map_err(|e| domain_error("写入证书文件", e))?;
         ctx.log_info(format!(
-            "证书文件已写入数据目录：{}、{}",
-            paths.cert_pem, paths.key_pem
+            "证书文件已写入数据目录：{}（.key、.ca.cer、.fullchain.cer）",
+            paths_shorthand(&paths)
         ));
 
         // 从私钥检测算法展示名（RSA / ECDSA P-256 等）；检测失败不阻断入库，留空展示。
@@ -194,8 +201,12 @@ impl PipelineStep for CertStoreStep {
             let cert = repository
                 .create(CertInput {
                     domains: domains.clone(),
-                    cert_pem_path: paths.cert_pem,
-                    key_pem_path: paths.key_pem,
+                    cert_pem_path: paths.cert_pem.clone(),
+                    key_pem_path: paths.key_pem.clone(),
+                    cert_path: Some(paths.cert.clone()),
+                    ca_path: Some(paths.ca.clone()),
+                    fullchain_path: Some(paths.fullchain.clone()),
+                    key_path: Some(paths.key.clone()),
                     fingerprint: fingerprint.clone(),
                     issuer: (!leaf.issuer.is_empty()).then_some(leaf.issuer.clone()),
                     not_before: leaf.not_before,
@@ -207,7 +218,11 @@ impl PipelineStep for CertStoreStep {
                 .await
                 .map_err(|e| domain_error("入库证书记录", e))?;
             let cert_id = cert.id;
-            ctx.log_info(format!("新证书已入库：#{cert_id}（旧证书 {} 已归档）", old_fingerprint.unwrap_or_default()));
+            ctx.log_info(format!(
+                "新证书已入库：#{cert_id}（旧证书 {} 已归档），fingerprint={fingerprint}, target_path={}, target_type=local, archived_old=true",
+                old_fingerprint.unwrap_or_default(),
+                paths_shorthand(&paths)
+            ));
             return Ok(StepOutput::empty()
                 .with_artifact("cert_id", serde_json::json!(cert_id))
                 .with_artifact("fingerprint", serde_json::json!(fingerprint)));
@@ -215,16 +230,22 @@ impl PipelineStep for CertStoreStep {
         if let Some(existing_cert) = existing.as_ref() {
             if existing_cert.fingerprint == fingerprint {
                 ctx.log_info(format!(
-                    "指纹一致，幂等入库（证书 #{}，指纹 {}）",
-                    existing_cert.id, fingerprint
+                    "指纹一致，幂等入库：cert_id={}, fingerprint={}, target_path={}, target_type=local, skipped_write=true, reason=fingerprint unchanged, archived_old=false",
+                    existing_cert.id,
+                    fingerprint,
+                    paths_shorthand(&paths)
                 ));
             }
         }
         let outcome = repository
             .save(CertInput {
                 domains: domains.clone(),
-                cert_pem_path: paths.cert_pem,
-                key_pem_path: paths.key_pem,
+                cert_pem_path: paths.cert_pem.clone(),
+                key_pem_path: paths.key_pem.clone(),
+                cert_path: Some(paths.cert.clone()),
+                ca_path: Some(paths.ca.clone()),
+                fullchain_path: Some(paths.fullchain.clone()),
+                key_path: Some(paths.key.clone()),
                 fingerprint: fingerprint.clone(),
                 issuer: (!leaf.issuer.is_empty()).then_some(leaf.issuer.clone()),
                 not_before: leaf.not_before,
@@ -238,9 +259,15 @@ impl PipelineStep for CertStoreStep {
         let created = matches!(outcome, acmecast_store::repository::SaveOutcome::Created(_));
         let cert_id = outcome.model().id;
         if created {
-            ctx.log_info(format!("新证书已入库：#{cert_id}"));
+            ctx.log_info(format!(
+                "新证书已入库：#{cert_id}，fingerprint={fingerprint}, target_path={}, target_type=local, archived_old=false",
+                paths_shorthand(&paths)
+            ));
         } else {
-            ctx.log_info(format!("同域名集合的证书已更新：#{cert_id}"));
+            ctx.log_info(format!(
+                "同域名集合的证书已更新：#{cert_id}，fingerprint={fingerprint}, target_path={}, target_type=local, archived_old=false",
+                paths_shorthand(&paths)
+            ));
         }
 
         Ok(StepOutput::empty()

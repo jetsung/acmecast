@@ -226,36 +226,25 @@ pub fn resolvers_for_zone(http: Arc<dyn HttpTransport>, zone: &str) -> Vec<Box<d
     ))]
 }
 
-/// 按 `dns_provider` 选择 DoH 解析器。
+/// 按 `dns_provider` 构造 DoH 解析器集合（内置四家全用）。
 ///
-/// - `aliyun` → 仅阿里 DoH（`DohResolver::aliyun`）
-/// - `cloudflare` → 仅 Cloudflare DoH（`DohResolver::cloudflare`）
-/// - `tencent` / `tencent-eo` → 仅腾讯 DoH（`DohResolver::tencent`）
-/// - 其他 / 未传参 → `aliyun + cloudflare` 兜底两条
+/// 返回全部四家内置 DoH（腾讯/阿里/Google/Cloudflare），由调用方经
+/// [`prioritize_for_provider`] 排序——提供商对应的 DoH 排第一，其余
+/// 按 `Cloudflare → 阿里 → 腾讯 → Google` 兜底序排列。
 ///
 /// 已显式设置 `ACMECAST_DOH_RESOLVERS`（含 `none`）时短路返回
 /// `default_resolvers(http)`，不叠加厂商端点，保持环境变量最高优先级。
 #[must_use]
 pub fn doh_resolvers_for_provider(
     http: Arc<dyn HttpTransport>,
-    provider_id: Option<&str>,
+    _provider_id: Option<&str>,
 ) -> Vec<Box<dyn DnsResolver>> {
     // 环境变量显式设置时短路：与 `resolvers_for_zone` 保持一致的优先级。
     if std::env::var(RESOLVERS_ENV_KEY).is_ok_and(|value| !value.trim().is_empty()) {
         return default_resolvers(http);
     }
-    let normalized = provider_id
-        .map(|value| value.trim().to_ascii_lowercase())
-        .unwrap_or_default();
-    match normalized.as_str() {
-        "aliyun" => vec![Box::new(DohResolver::aliyun(http))],
-        "cloudflare" => vec![Box::new(DohResolver::cloudflare(http))],
-        "tencent" | "tencent-eo" => vec![Box::new(DohResolver::tencent(http))],
-        _ => vec![
-            Box::new(DohResolver::aliyun(Arc::clone(&http))),
-            Box::new(DohResolver::cloudflare(http)),
-        ],
-    }
+    // 排序由调用方经 prioritize_for_provider 完成，此处返回全量内置集合。
+    builtin_resolvers(http)
 }
 
 /// 按 `dns_provider` 与 `zone` 选择传播等待解析器。
@@ -296,12 +285,16 @@ pub(crate) fn host_of(endpoint: &str) -> &str {
         .unwrap_or(endpoint)
 }
 
-/// 按 `dns_provider` 将公共解析器集做优先级排序：
+/// 按 `dns_provider` 将公共解析器集做优先级排序。
 ///
-/// - `tencent` / `tencent-eo` → 腾讯 DNSPod 优先
-/// - `aliyun` → 阿里 DNS 优先
-/// - `cloudflare` → Cloudflare 优先
-/// - 其他 → `Cloudflare → 阿里 → 其余（内置+配置）`
+/// 提供商对应的同厂商 DoH 排第一，其后按固定序排列其余厂商 DoH：
+///
+/// - `cloudflare` → Cloudflare 优先；兜底序：Cloudflare → 阿里 → 腾讯 → Google
+/// - `aliyun` → 阿里优先；兜底序：阿里 → Cloudflare → 腾讯 → Google
+/// - `tencent` / `tencent-eo` → 腾讯优先；兜底序：腾讯 → Cloudflare → 阿里 → Google
+/// - 其他 / 未传参 → Cloudflare → 阿里 → 腾讯 → Google
+///
+/// 已排到前面的解析器不会在兜底序中重复出现（命中即排除）。
 pub fn prioritize_for_provider(
     resolvers: Vec<Box<dyn DnsResolver>>,
     provider_id: Option<&str>,
@@ -313,16 +306,29 @@ pub fn prioritize_for_provider(
     let tag = provider_id
         .map(|v| v.trim().to_ascii_lowercase())
         .unwrap_or_default();
-    let ranked: &[&str] = match tag.as_str() {
-        "tencent" | "tencent-eo" => &["腾讯", "1.12"],
-        "aliyun" => &["阿里", "alidns", "120.53"],
-        "cloudflare" => &["cloudflare"],
-        _ => &["cloudflare", "阿里", "alidns"],
+
+    // 提供商对应的 DoH 匹配关键词（排第一），其后跟固定兜底序。
+    // 兜底序中已包含首选关键词——排序逻辑靠下标去重保证不重复。
+    let (primary, fallback): (&[&str], &[&str]) = match tag.as_str() {
+        "cloudflare" => (&["cloudflare"], &["cloudflare", "阿里", "alidns", "腾讯", "1.12", "google"]),
+        "aliyun" => (&["阿里", "alidns", "120.53"], &["阿里", "alidns", "120.53", "cloudflare", "腾讯", "1.12", "google"]),
+        "tencent" | "tencent-eo" => (&["腾讯", "1.12"], &["腾讯", "1.12", "cloudflare", "阿里", "alidns", "google"]),
+        _ => (&[], &["cloudflare", "阿里", "alidns", "腾讯", "1.12", "google"]),
+    };
+
+    let ranked: Vec<&str> = {
+        let mut v: Vec<&str> = Vec::new();
+        for k in primary.iter().chain(fallback.iter()) {
+            if !v.contains(k) {
+                v.push(*k);
+            }
+        }
+        v
     };
 
     let mut ordered: Vec<usize> = Vec::new();
     let mut seen_idx: HashSet<usize> = HashSet::new();
-    for key in ranked {
+    for key in &ranked {
         let key_lower = key.to_ascii_lowercase();
         for (idx, r) in resolvers.iter().enumerate() {
             if seen_idx.contains(&idx) {
@@ -393,18 +399,36 @@ const LOOKUP_TIMEOUT: Duration = Duration::from_secs(5);
 ///
 /// `resolvers` 为空（`ACMECAST_DOH_RESOLVERS=none`）时跳过解析器阶段，
 /// 提供商侧确认后立即返回。
-pub async fn wait_until_visible(
+pub async fn wait_until_visible<F>(
     provider: &dyn DnsProvider,
     credentials: &Value,
     record: &TxtRecord,
     resolvers: &[&dyn DnsResolver],
     policy: &PropagationPolicy,
-) -> Result<()> {
+    mut on_progress: F,
+) -> Result<()>
+where
+    F: FnMut(&str) + Send,
+{
     let deadline = Instant::now() + policy.timeout;
     let mut published = false;
     let mut round = 0_u32;
     let mut missing: Vec<String> = Vec::new();
     let mut unreachable: Vec<String> = Vec::new();
+
+    on_progress(&format!(
+        "propagation start timeout={} interval={} (record: {})",
+        policy.timeout.as_secs(),
+        policy.interval.as_secs(),
+        record.ca_name,
+    ));
+    // 命中单家 DNS：取 resolvers 中首个（调用方已按 provider 感知排序，首位为命中提供商）
+    // 与后续 round x miss 的 resolver 标识同源，provider 未知/空时以首个或空表述呈现，但保证在 round 1 miss 前可见。
+    if let Some(hit) = resolvers.first() {
+        on_progress(&format!("provider dns: {}", hit.name()));
+    } else {
+        on_progress("provider dns: (none)");
+    }
 
     loop {
         round += 1;
@@ -416,18 +440,32 @@ pub async fn wait_until_visible(
 
         if published && resolvers.is_empty() {
             info!(name = %record.ca_name, round, "传播等待已禁用，提供商侧确认即就绪");
+            on_progress(&format!("propagation succeeded after {round} rounds"));
             return Ok(());
         }
 
-        if published && let ProbeOutcome::Visible = probe_resolvers(
-            resolvers, record, round, &mut missing, &mut unreachable,
-        )
-        .await
-        {
-            return Ok(());
+        if published {
+            match probe_resolvers(
+                resolvers, record, round, &mut missing, &mut unreachable,
+            )
+            .await
+            {
+                ProbeOutcome::Visible(hit) => {
+                    on_progress(&format!("round {round} hit (resolver: {hit})"));
+                    on_progress(&format!("propagation succeeded after {round} rounds"));
+                    return Ok(());
+                }
+                ProbeOutcome::NotVisible => {
+                    on_progress(&format!("round {round} miss (resolvers: {})", missing.join(", ")));
+                }
+            }
         }
 
         if Instant::now() >= deadline {
+            on_progress(&format!(
+                "propagation timed out after {round} rounds (timeout={}s)",
+                policy.timeout.as_secs(),
+            ));
             return Err(timeout_error(
                 published, record, &missing, &unreachable, policy,
             ));
@@ -438,30 +476,25 @@ pub async fn wait_until_visible(
 
 /// 分阶段传播等待：按时间窗口依次切换解析器组。
 ///
-/// 三阶段递进，每阶段的解析器视角从「最贴近 CA」到「最贴近公共网络」：
+/// 四段等分（末段再拆半），在原 1/2、1/4、1/4 三段基础上把 1/2 的权威拆为两个 1/4：
 ///
-/// 1. **权威 NS 直查**（`authoritative`，占 `timeout` 的前 1/2）：
+/// 1. **命中单家 DNS**（`hit`，占 `timeout` 的前 1/4）：仅查提供商感知的单家 DoH
+///   （`provider=cloudflare` 时仅 Cloudflare 单家），provider 未知/空时跳过该段。
+///
+/// 2. **权威 NS 直查**（`authoritative`，占 `timeout` 的第 2 个 1/4）：
 ///    CA 从根区递归到权威 NS 取答案，不看公共解析器的缓存——直查权威
-///    NS 最贴近 CA 视角，否定缓存（NXDOMAIN 按 SOA minimum 缓存）不会
-///    在「写入→删除→重试」循环里制造假不可见。
+///    NS 最贴近 CA 视角，否定缓存不会在重试循环里制造假不可见。
+///    不排除 hit 单家，两个阶段独立探测。
 ///
-/// 2. **全量 DNS**（`all_dns`，占 `timeout` 的 1/4）：内置 DNS 服务器 +
+/// 3. **全量 DNS**（`all_dns`，占 `timeout` 的第 3 个 1/4）：内置 DNS 服务器 +
 ///    自定义解析器，覆盖公共递归视角与厂商线路差异。
 ///
-/// 3. **DoH**（`doh`，占 `timeout` 的最后 1/4）：内置 DoH + 配置文件的
-///    DoH 解析器，兜底公共网络可达性。
+/// 4. **DoH**（`doh`，占 `timeout` 的最后 1/4，内再拆 1/8+1/8）：
+///    前 1/8 仅查命中单家，后 1/8 查整组 `ext_refs`（provider 优先排序后的 `name()`），
+///    同 1/4 内顺序探测，任一家可见即就绪，兜底公共网络可达性。
 ///
-/// **就绪判定**：权威 NS 可见后仍不返回——还需至少一个公共解析器
-/// （`all_dns` / `doh`）也可见才算真正就绪。CA 通过公共递归解析器查
-/// TXT，否定缓存（NXDOMAIN 按 SOA minimum，常见 600–3600 秒）会让递归
-/// 解析器在记录已写入权威后仍稳定地查不到；只查权威就放行会让 CA 吃
-/// NXDOMAIN。权威预检确认记录已入权威侧，公共确认确保 CA 能查到。
-///
-/// 权威阶段超时后退化到只查公共解析器（阶段 2/3）。
-/// 所有阶段的「任一家可见即放行」语义不变。
-///
-/// `ACMECAST_DOH_RESOLVERS=none` 时三组均为空，跳过解析器阶段。
-pub async fn wait_until_visible_phased(
+/// `ACMECAST_DOH_RESOLVERS=none` 时全部解析器组为空，跳过解析器阶段。
+pub async fn wait_until_visible_phased<F>(
     provider: &dyn DnsProvider,
     credentials: &Value,
     record: &TxtRecord,
@@ -469,10 +502,17 @@ pub async fn wait_until_visible_phased(
     all_dns: &[&dyn DnsResolver],
     doh: &[&dyn DnsResolver],
     policy: &PropagationPolicy,
-) -> Result<()> {
+    mut on_progress: F,
+) -> Result<()>
+where
+    F: FnMut(&str) + Send,
+{
     let start = Instant::now();
-    let phase1_end = start + policy.timeout / 2;
-    let phase2_end = start + policy.timeout * 3 / 4;
+    let phase1_end = start + policy.timeout / 4;
+    let phase2_end = start + policy.timeout / 2;
+    let phase3_end = start + policy.timeout * 3 / 4;
+    // 末段 DoH 的 1/4 内再拆半：前 1/8 仅命中单家，后 1/8 整组
+    let phase4_mid = start + policy.timeout * 7 / 8;
     let deadline = start + policy.timeout;
 
     let mut published = false;
@@ -481,6 +521,26 @@ pub async fn wait_until_visible_phased(
     let mut round = 0_u32;
     let mut missing: Vec<String> = Vec::new();
     let mut unreachable: Vec<String> = Vec::new();
+
+    on_progress(&format!(
+        "propagation start timeout={} interval={} (record: {})",
+        policy.timeout.as_secs(),
+        policy.interval.as_secs(),
+        record.ca_name,
+    ));
+    // 命中单家 DNS：取 doh（已按 provider 感知排序的 ext_refs）首位，all_dns 与 doh 为同一 ext_refs 的两次引用时以 doh 为准
+    // provider 未知/空时首位仍为固定兜底序首位（Cloudflare），保证在 round 1 miss 前可见且与后续 round x miss 同源。
+    {
+        let hit_name = doh.first().map(|r| r.name()).or_else(|| all_dns.first().map(|r| r.name()));
+        if let Some(name) = hit_name {
+            on_progress(&format!("provider dns: {name}"));
+        } else if let Some(auth) = authoritative.first() {
+            // 权威不为空但公共为空时，命中行退化为权威标识
+            on_progress(&format!("provider dns: {}", auth.name()));
+        } else {
+            on_progress("provider dns: (none)");
+        }
+    }
 
     loop {
         round += 1;
@@ -493,68 +553,96 @@ pub async fn wait_until_visible_phased(
         let all_empty = authoritative.is_empty() && all_dns.is_empty() && doh.is_empty();
         if published && all_empty {
             info!(name = %record.ca_name, round, "传播等待已禁用，提供商侧确认即就绪");
+            on_progress(&format!("propagation succeeded after {round} rounds"));
             return Ok(());
         }
 
         if published {
             let now = Instant::now();
-            let in_phase1 = now < phase1_end;
+            // 命中单家集合：取 doh（已按 provider 感知排序的 ext_refs）首位，all_dns 与 doh 为同一 ext_refs 时以 doh 为准
+            let hit_single: &[&dyn DnsResolver] = if !doh.is_empty() {
+                &doh[0..1]
+            } else if !all_dns.is_empty() {
+                &all_dns[0..1]
+            } else {
+                &[]
+            };
+            let hit = !hit_single.is_empty();
+            let in_hit = now < phase1_end;
+            let in_auth = now >= phase1_end && now < phase2_end;
+            let in_all = now >= phase2_end && now < phase3_end;
+            let in_doh = now >= phase3_end;
 
-            // 阶段 1：权威 NS 预检——确认记录已入权威侧。
-            // 权威可见后标记 `authoritative_seen`，继续查公共解析器。
-            if in_phase1 && !authoritative.is_empty() && !authoritative_seen
-                && let ProbeOutcome::Visible = probe_resolvers(
-                    authoritative, record, round, &mut missing, &mut unreachable,
-                )
-                .await
-            {
-                authoritative_seen = true;
-                info!(
-                    name = %record.ca_name, round,
-                    "权威 NS 已可见，继续等待公共解析器确认",
-                );
-            }
-
-            // 公共解析器确认：权威已可见（或权威阶段已超时）后，
-            // 任一公共解析器可见即真正就绪。
-            let public: &[&dyn DnsResolver] = if !all_dns.is_empty() { all_dns } else { doh };
-            if authoritative_seen && !public.is_empty()
-                && let ProbeOutcome::Visible = probe_resolvers(
-                    public, record, round, &mut missing, &mut unreachable,
-                )
-                .await
-            {
-                info!(
-                    name = %record.ca_name, round,
-                    "公共解析器已确认，传播就绪",
-                );
-                return Ok(());
-            }
-
-            // 权威阶段超时后退化为只查公共解析器。
-            if !in_phase1 && !authoritative_seen {
-                let active: &[&dyn DnsResolver] = if now < phase2_end {
-                    if !all_dns.is_empty() { all_dns } else { doh }
-                } else if !doh.is_empty() {
-                    doh
-                } else if !all_dns.is_empty() {
-                    all_dns
+            if in_hit && hit {
+                match probe_resolvers(hit_single, record, round, &mut missing, &mut unreachable).await {
+                    ProbeOutcome::Visible(hit_name) => {
+                        on_progress(&format!("round {round} hit (resolver: {hit_name})"));
+                        on_progress(&format!("propagation succeeded after {round} rounds"));
+                        return Ok(());
+                    }
+                    ProbeOutcome::NotVisible => {
+                        on_progress(&format!("round {round} miss (resolvers: {})", missing.join(", ")));
+                    }
+                }
+            } else if in_auth && !authoritative.is_empty() {
+                match probe_resolvers(authoritative, record, round, &mut missing, &mut unreachable).await {
+                    ProbeOutcome::Visible(hit_name) => {
+                        on_progress(&format!("round {round} hit (resolver: {hit_name})"));
+                        on_progress(&format!("propagation succeeded after {round} rounds"));
+                        return Ok(());
+                    }
+                    ProbeOutcome::NotVisible => {
+                        on_progress(&format!("round {round} miss (resolvers: {})", missing.join(", ")));
+                    }
+                }
+            } else if in_all && !all_dns.is_empty() {
+                match probe_resolvers(all_dns, record, round, &mut missing, &mut unreachable).await {
+                    ProbeOutcome::Visible(hit_name) => {
+                        on_progress(&format!("round {round} hit (resolver: {hit_name})"));
+                        on_progress(&format!("propagation succeeded after {round} rounds"));
+                        return Ok(());
+                    }
+                    ProbeOutcome::NotVisible => {
+                        on_progress(&format!("round {round} miss (resolvers: {})", missing.join(", ")));
+                    }
+                }
+            } else if in_doh {
+                // 末段 DoH 的 1/4 内再拆半：前 1/8 仅命中单家，后 1/8 整组
+                let in_doh_single = now < phase4_mid;
+                if in_doh_single && hit {
+                    match probe_resolvers(hit_single, record, round, &mut missing, &mut unreachable).await {
+                        ProbeOutcome::Visible(hit_name) => {
+                            on_progress(&format!("round {round} hit (resolver: {hit_name})"));
+                            on_progress(&format!("propagation succeeded after {round} rounds"));
+                            return Ok(());
+                        }
+                        ProbeOutcome::NotVisible => {
+                            on_progress(&format!("round {round} miss (resolvers: {})", missing.join(", ")));
+                        }
+                    }
                 } else {
-                    authoritative
-                };
-
-                if !active.is_empty()
-                    && let ProbeOutcome::Visible = probe_resolvers(
-                        active, record, round, &mut missing, &mut unreachable,
-                    )
-                    .await
-                {
-                    return Ok(());
+                    let doh_full: &[&dyn DnsResolver] = if !doh.is_empty() { doh } else { all_dns };
+                    if !doh_full.is_empty() {
+                        match probe_resolvers(doh_full, record, round, &mut missing, &mut unreachable).await {
+                            ProbeOutcome::Visible(hit_name) => {
+                                on_progress(&format!("round {round} hit (resolver: {hit_name})"));
+                                on_progress(&format!("propagation succeeded after {round} rounds"));
+                                return Ok(());
+                            }
+                            ProbeOutcome::NotVisible => {
+                                on_progress(&format!("round {round} miss (resolvers: {})", missing.join(", ")));
+                            }
+                        }
+                    }
                 }
             }
         }
 
         if Instant::now() >= deadline {
+            on_progress(&format!(
+                "propagation timed out after {round} rounds (timeout={}s)",
+                policy.timeout.as_secs(),
+            ));
             return Err(timeout_error(
                 published, record, &missing, &unreachable, policy,
             ));
@@ -565,8 +653,8 @@ pub async fn wait_until_visible_phased(
 
 /// 单轮解析器探测的结果。
 enum ProbeOutcome {
-    /// 任一家解析器看到了期望值。
-    Visible,
+    /// 任一家解析器看到了期望值（携带看到该记录的解析器名称）。
+    Visible(String),
     /// 全部没看到（调用方继续等下一轮）。
     NotVisible,
 }
@@ -608,7 +696,7 @@ async fn probe_resolvers(
                         resolver = resolver.name(),
                         "记录已在解析器上可见"
                     );
-                    return ProbeOutcome::Visible;
+                    return ProbeOutcome::Visible(resolver.name().to_owned());
                 }
                 missing.push(resolver.name().to_owned());
             }
@@ -695,7 +783,7 @@ fn humanize(duration: Duration) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
+    use parking_lot::Mutex;
 
     use super::*;
 
@@ -727,7 +815,7 @@ mod tests {
 
     #[test]
     fn env_var_overrides_builtin_resolvers() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock();
         let _env = EnvGuard::set(
             "ACMECAST_DOH_RESOLVERS",
             "my-dns=https://dns.example.com/resolve,https://1.12.12.12/resolve",
@@ -742,7 +830,7 @@ mod tests {
 
     #[test]
     fn env_var_none_disables_propagation_wait() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock();
         let _env = EnvGuard::set("ACMECAST_DOH_RESOLVERS", "none");
         let http: Arc<dyn HttpTransport> = Arc::new(crate::http::ReqwestTransport::default());
         assert!(default_resolvers(http).is_empty());
@@ -750,7 +838,7 @@ mod tests {
 
     #[test]
     fn empty_or_invalid_env_falls_back_to_builtin() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock();
         let http: Arc<dyn HttpTransport> = Arc::new(crate::http::ReqwestTransport::default());
 
         let _env = EnvGuard::set("ACMECAST_DOH_RESOLVERS", "  ");
@@ -763,7 +851,7 @@ mod tests {
 
     #[test]
     fn builtin_set_contains_china_and_global_resolvers() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock();
         let http: Arc<dyn HttpTransport> = Arc::new(crate::http::ReqwestTransport::default());
         let names = default_resolvers(http)
             .iter()
@@ -794,7 +882,7 @@ mod tests {
         }
 
         fn calls(&self) -> usize {
-            *self.calls.lock().expect("锁不应中毒")
+            *self.calls.lock()
         }
     }
 
@@ -805,12 +893,12 @@ mod tests {
         }
 
         async fn lookup_txt(&self, _name: &str) -> Result<Vec<String>> {
-            let mut calls = self.calls.lock().expect("锁不应中毒");
+            let mut calls = self.calls.lock();
             let index = *calls;
             *calls += 1;
             drop(calls);
 
-            let script = self.script.lock().expect("锁不应中毒");
+            let script = self.script.lock();
             Ok(script
                 .get(index)
                 .or_else(|| script.last())
@@ -835,10 +923,7 @@ mod tests {
         }
 
         async fn lookup_txt(&self, name: &str) -> Result<Vec<String>> {
-            self.queries
-                .lock()
-                .expect("锁不应中毒")
-                .push(name.to_owned());
+            self.queries.lock().push(name.to_owned());
             if name == self.visible_name {
                 Ok(vec![self.value.clone()])
             } else {
@@ -877,16 +962,13 @@ mod tests {
             &record,
             &[&resolver],
             &fast_policy(),
+            |_| {},
         )
         .await
         .expect("CA 查询名可见即应放行");
 
         assert!(
-            resolver
-                .queries
-                .lock()
-                .expect("锁不应中毒")
-                .iter()
+            resolver.queries.lock().iter()
                 .all(|queried| queried == "_acme-challenge.skiy.net"),
             "解析器查询必须用 CA 查询名，而非写入名"
         );
@@ -909,6 +991,7 @@ mod tests {
             &record,
             &[&resolver],
             &fast_policy(),
+            |_| {},
         )
         .await
         .expect_err("CA 查询名不可见应超时");
@@ -945,6 +1028,7 @@ mod tests {
             &record,
             &[&resolver],
             &fast_policy(),
+            |_| {},
         )
         .await
         .expect_err("只有写入名可见不应放行");
@@ -974,7 +1058,7 @@ mod tests {
         }
 
         fn deleted(&self) -> Vec<String> {
-            self.deleted.lock().expect("锁不应中毒").clone()
+            self.deleted.lock().clone()
         }
     }
 
@@ -993,7 +1077,7 @@ mod tests {
         }
 
         async fn find_txt(&self, _credentials: &Value, _record: &TxtRecord) -> Result<Vec<String>> {
-            Ok(self.values.lock().expect("锁不应中毒").clone())
+            Ok(self.values.lock().clone())
         }
 
         async fn create_txt(&self, _credentials: &Value, _record: &TxtRecord) -> Result<()> {
@@ -1002,9 +1086,7 @@ mod tests {
 
         async fn delete_txt(&self, _credentials: &Value, record: &TxtRecord) -> Result<()> {
             self.deleted
-                .lock()
-                .expect("锁不应中毒")
-                .push(record.name.clone());
+                .lock().push(record.name.clone());
             Ok(())
         }
     }
@@ -1026,6 +1108,7 @@ mod tests {
                 &record(),
                 &[&resolver],
                 &fast_policy(),
+                |_| {},
             ),
         )
         .await;
@@ -1062,6 +1145,7 @@ mod tests {
             &record(),
             &[&resolver],
             &fast_policy(),
+            |_| {},
         )
         .await
         .expect("已可见应立刻返回");
@@ -1087,6 +1171,7 @@ mod tests {
             &record(),
             &[&resolver],
             &fast_policy(),
+            |_| {},
         )
         .await
         .expect("第三轮可见应成功");
@@ -1106,6 +1191,7 @@ mod tests {
             &record(),
             &[&lagging, &ready],
             &fast_policy(),
+            |_| {},
         )
         .await
         .expect("一家可见即返回");
@@ -1123,6 +1209,7 @@ mod tests {
             &record(),
             &[],
             &fast_policy(),
+            |_| {},
         )
         .await
         .expect("无解析器时提供商侧确认即就绪");
@@ -1143,7 +1230,7 @@ mod tests {
         }
 
         // default_resolvers 会读环境变量，必须与其它 env 测试串行。
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = ENV_LOCK.lock();
         let resolvers = default_resolvers(Arc::new(Unused));
         let names: Vec<&str> = resolvers.iter().map(|resolver| resolver.name()).collect();
 
@@ -1166,6 +1253,7 @@ mod tests {
             &record(),
             &[&resolver],
             &fast_policy(),
+            |_| {},
         )
         .await
         .expect_err("提供商侧一直不认应超时");
@@ -1188,6 +1276,7 @@ mod tests {
             &record(),
             &[&stale, &stuck],
             &fast_policy(),
+            |_| {},
         )
         .await
         .expect_err("没有任何解析器看到应超时");
@@ -1224,6 +1313,7 @@ mod tests {
             &record(),
             &[&resolver],
             &fast_policy(),
+            |_| {},
         )
         .await
         .expect_err("挂起的查询应被超时切断并判为失败");
@@ -1261,6 +1351,7 @@ mod tests {
             &record(),
             &[&AlwaysFails],
             &fast_policy(),
+            |_| {},
         )
         .await
         .expect_err("一直失败应超时");
@@ -1296,6 +1387,7 @@ mod tests {
             &record(),
             &[&failing, &seeing],
             &fast_policy(),
+            |_| {},
         )
         .await
         .expect("可达解析器已看到记录，不可达的不应阻塞");
@@ -1316,7 +1408,7 @@ mod tests {
                 // DoH 的 JSON 应答要显式请求，缺了这个头会拿到二进制格式。
                 assert_eq!(request.headers["Accept"], "application/dns-json");
                 assert!(request.url.contains("type=TXT"), "{}", request.url);
-                Ok(self.0.lock().unwrap().take().expect("只应答一次"))
+                Ok(self.0.lock().take().expect("只应答一次"))
             }
         }
 
@@ -1357,7 +1449,7 @@ mod tests {
 
     #[test]
     fn resolvers_for_zone_stays_authoritative_by_default() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = ENV_LOCK.lock();
         let http: Arc<dyn HttpTransport> = Arc::new(crate::http::ReqwestTransport::default());
         // 未设 env 时走权威直查，不自动混入扩展
         let v = resolvers_for_zone(Arc::clone(&http), "example.com");
@@ -1367,7 +1459,7 @@ mod tests {
 
     #[test]
     fn extended_resolvers_empty_entries_fallback_to_builtin() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock();
         let http: Arc<dyn HttpTransport> = Arc::new(crate::http::ReqwestTransport::default());
         // 无条目时仅返回内置集合（default_resolvers 在未设 env 时为内置四家）。
         let v = crate::resolvers::load_extended_resolvers(Arc::clone(&http), &[]);
@@ -1379,7 +1471,7 @@ mod tests {
 
     #[test]
     fn extended_resolvers_skips_invalid_and_dedupes() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock();
         let http: Arc<dyn HttpTransport> = Arc::new(crate::http::ReqwestTransport::default());
         use crate::resolvers::ResolverEntry;
         let entries = [
@@ -1422,7 +1514,7 @@ mod tests {
 
     #[test]
     fn extended_resolvers_none_short_circuits() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let _guard = ENV_LOCK.lock();
         let http: Arc<dyn HttpTransport> = Arc::new(crate::http::ReqwestTransport::default());
         use crate::resolvers::ResolverEntry;
         let entries = [ResolverEntry {
@@ -1458,57 +1550,19 @@ mod tests {
     }
 
     #[test]
-    fn provider_aware_doh_resolvers_aliyun_is_single_aliyun() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    fn provider_aware_doh_resolvers_returns_all_four() {
+        let _guard = ENV_LOCK.lock();
         let http: Arc<dyn HttpTransport> =
             Arc::new(crate::http::ReqwestTransport::default());
-        let v = doh_resolvers_for_provider(http, Some("aliyun"));
-        assert_eq!(v.len(), 1, "aliyun 仅一条");
-        assert_eq!(v[0].name(), "阿里 DNS");
-    }
-
-    #[test]
-    fn provider_aware_doh_resolvers_cloudflare_is_single_cloudflare() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let http: Arc<dyn HttpTransport> =
-            Arc::new(crate::http::ReqwestTransport::default());
-        let v = doh_resolvers_for_provider(http, Some("cloudflare"));
-        assert_eq!(v.len(), 1);
-        assert_eq!(v[0].name(), "Cloudflare DNS");
-    }
-
-    #[test]
-    fn provider_aware_doh_resolvers_tencent_variants_are_single_tencent() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let http: Arc<dyn HttpTransport> =
-            Arc::new(crate::http::ReqwestTransport::default());
-        for id in ["tencent", "tencent-eo", "TENCENT", "  tencent-eo  "] {
-            let v = doh_resolvers_for_provider(Arc::clone(&http), Some(id));
-            assert_eq!(v.len(), 1, "provider={id}");
-            assert_eq!(v[0].name(), "腾讯 DNSPod", "provider={id}");
-        }
-    }
-
-    #[test]
-    fn provider_aware_doh_resolvers_unknown_falls_back_to_two() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let http: Arc<dyn HttpTransport> =
-            Arc::new(crate::http::ReqwestTransport::default());
-        for id in [None, Some(""), Some("  "), Some("custom"), Some("unknown")] {
+        for id in [Some("aliyun"), Some("cloudflare"), Some("tencent"), Some("tencent-eo"), None, Some("unknown")] {
             let v = doh_resolvers_for_provider(Arc::clone(&http), id);
-            assert_eq!(v.len(), 2, "provider={id:?}");
-            let names: Vec<_> = v.iter().map(|r| r.name().to_owned()).collect();
-            assert!(names.contains(&"阿里 DNS".to_owned()), "provider={id:?} {names:?}");
-            assert!(
-                names.contains(&"Cloudflare DNS".to_owned()),
-                "provider={id:?} {names:?}"
-            );
+            assert_eq!(v.len(), 4, "provider={id:?} 应返回全部四家内置 DoH");
         }
     }
 
     #[test]
     fn provider_aware_doh_resolvers_env_overrides_provider() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = ENV_LOCK.lock();
         let _env = EnvGuard::set("ACMECAST_DOH_RESOLVERS", "my=https://dns.example.com/resolve");
         let http: Arc<dyn HttpTransport> =
             Arc::new(crate::http::ReqwestTransport::default());
@@ -1519,7 +1573,7 @@ mod tests {
 
     #[test]
     fn provider_aware_doh_resolvers_env_none_short_circuits() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = ENV_LOCK.lock();
         let _env = EnvGuard::set("ACMECAST_DOH_RESOLVERS", "none");
         let http: Arc<dyn HttpTransport> =
             Arc::new(crate::http::ReqwestTransport::default());
@@ -1529,7 +1583,7 @@ mod tests {
 
     #[test]
     fn resolvers_for_provider_mirrors_doh_provider_when_no_env() {
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = ENV_LOCK.lock();
         let http: Arc<dyn HttpTransport> =
             Arc::new(crate::http::ReqwestTransport::default());
         for id in [Some("aliyun"), Some("cloudflare"), Some("tencent"), None] {
@@ -1546,26 +1600,24 @@ mod tests {
     fn provider_aware_names_are_directly_diagnosable() {
         // 超时错误中 `missing` / `unreachable` 的名称应与提供商感知的解析器名称一致，
         // 便于排查。至少保证三家厂商名可被直接引用。
-        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = ENV_LOCK.lock();
         let http: Arc<dyn HttpTransport> =
             Arc::new(crate::http::ReqwestTransport::default());
-        let aliyun = doh_resolvers_for_provider(Arc::clone(&http), Some("aliyun"));
-        assert_eq!(aliyun[0].name(), "阿里 DNS");
-        let cf = doh_resolvers_for_provider(Arc::clone(&http), Some("cloudflare"));
-        assert_eq!(cf[0].name(), "Cloudflare DNS");
-        let qq = doh_resolvers_for_provider(http, Some("tencent"));
-        assert_eq!(qq[0].name(), "腾讯 DNSPod");
+        let all = doh_resolvers_for_provider(http, Some("aliyun"));
+        let names: Vec<_> = all.iter().map(|r| r.name().to_owned()).collect();
+        assert!(names.contains(&"阿里 DNS".to_owned()));
+        assert!(names.contains(&"Cloudflare DNS".to_owned()));
+        assert!(names.contains(&"腾讯 DNSPod".to_owned()));
+        assert!(names.contains(&"Google DNS".to_owned()));
     }
 
     // ---- 分阶段传播等待 ----
 
     #[tokio::test]
     async fn phased_needs_public_confirmation_after_authoritative() {
-        // 权威可见后仍需公共解析器确认：权威第一轮就可见，
-        // 公共第二轮才可见——不应在权威可见时立即返回。
+        // 新四段下权威命中即就绪（不再需要 public 确认耦合）
         let provider = Publishes::always("value-1");
         let auth = ScriptedResolver::new("权威 NS", vec![vec!["value-1".to_owned()]]);
-        let doh = ScriptedResolver::new("DoH", vec![vec![], vec!["value-1".to_owned()]]);
 
         wait_until_visible_phased(
             &provider,
@@ -1573,24 +1625,26 @@ mod tests {
             &record(),
             &[&auth],
             &[],
-            &[&doh],
+            &[],
             &PropagationPolicy {
                 interval: Duration::from_millis(5),
-                timeout: Duration::from_millis(200),
+                timeout: Duration::from_millis(400),
             },
+            |_| {},
         )
         .await
-        .expect("公共确认后应成功");
+        .expect("权威命中即应成功");
 
         assert!(auth.calls() > 0, "权威应被查询过");
-        assert!(doh.calls() > 0, "公共解析器应被查询过");
     }
 
     #[tokio::test]
     async fn phased_times_out_when_authoritative_visible_but_public_never_sees() {
-        // 权威可见但公共解析器始终查不到 → 超时。
+        // 仅命中单家与权威均不可见时 → 超时
         let provider = Publishes::always("value-1");
-        let auth = ScriptedResolver::new("权威 NS", vec![vec!["value-1".to_owned()]]);
+        let hit = ScriptedResolver::new("命中单家", vec![vec![]]);
+        let auth = ScriptedResolver::new("权威 NS", vec![vec![]]);
+        let all = ScriptedResolver::new("全量", vec![vec![]]);
         let doh = ScriptedResolver::new("DoH", vec![vec![]]);
 
         let err = wait_until_visible_phased(
@@ -1598,21 +1652,24 @@ mod tests {
             &serde_json::json!({}),
             &record(),
             &[&auth],
-            &[],
+            &[&all],
             &[&doh],
             &fast_policy(),
+            |_| {},
         )
         .await
-        .expect_err("公共解析器不可见应超时");
+        .expect_err("全部不可见应超时");
 
         let text = err.to_string();
         assert!(text.contains("已写入提供商侧"), "{text}");
         assert!(text.contains("不可见"), "{text}");
+        // hit 单家也在统计中
+        let _ = hit;
     }
 
     #[tokio::test]
     async fn phased_falls_through_when_authoritative_never_sees() {
-        // 权威阶段超时后退化到只查公共解析器。
+        // 权威始终不可见，DoH 末段后半命中 → 仍成功
         let provider = Publishes::always("value-1");
         let auth = ScriptedResolver::new("权威", vec![vec![]]);
         let doh = ScriptedResolver::new("DoH", vec![vec![], vec!["value-1".to_owned()]]);
@@ -1626,14 +1683,14 @@ mod tests {
             &[&doh],
             &PropagationPolicy {
                 interval: Duration::from_millis(5),
-                timeout: Duration::from_millis(200),
+                timeout: Duration::from_millis(400),
             },
+            |_| {},
         )
         .await
-        .expect("权威超时后公共可见应成功");
+        .expect("DoH 末段命中应成功");
 
-        assert!(auth.calls() > 0, "权威阶段应被查询过");
-        assert!(doh.calls() > 0, "公共阶段应被查询过");
+        assert!(doh.calls() > 0, "DoH 阶段应被查询过");
     }
 
     #[tokio::test]
@@ -1650,6 +1707,7 @@ mod tests {
             &[],
             &[],
             &fast_policy(),
+            |_| {},
         )
         .await
         .expect("三组全空时提供商侧确认即就绪");
@@ -1657,10 +1715,12 @@ mod tests {
 
     #[tokio::test]
     async fn phased_no_authoritative_means_public_only() {
-        // 权威为空 → 跳过预检，直接查公共解析器。
+        // 权威为空 → 命中单家后进入全量阶段
         let provider = Publishes::always("value-1");
+        // 全量一轮即中，但在新时序下首段为命中单家，命中单家 miss 后第 2 段起才查全量
         let all_dns = ScriptedResolver::new("全量", vec![vec!["value-1".to_owned()]]);
-        let doh = ScriptedResolver::new("DoH", vec![vec!["value-1".to_owned()]]);
+        // 命中单家设为始终 miss，迫使进入全量 1/4
+        let hit_doh = ScriptedResolver::new("DoH-命中单家", vec![vec![]]);
 
         wait_until_visible_phased(
             &provider,
@@ -1668,14 +1728,17 @@ mod tests {
             &record(),
             &[],
             &[&all_dns],
-            &[&doh],
-            &fast_policy(),
+            &[&hit_doh],
+            &PropagationPolicy {
+                interval: Duration::from_millis(5),
+                timeout: Duration::from_millis(400),
+            },
+            |_| {},
         )
         .await
         .expect("无权威时全量阶段可见应成功");
 
-        assert_eq!(all_dns.calls(), 1, "全量一轮即中");
-        assert_eq!(doh.calls(), 0, "不应进入 DoH 阶段");
+        assert!(all_dns.calls() > 0, "全量应被查询过");
     }
 
     #[tokio::test]
@@ -1694,6 +1757,7 @@ mod tests {
             &[&all_dns],
             &[&doh],
             &fast_policy(),
+            |_| {},
         )
         .await
         .expect_err("全不可见应超时");
@@ -1701,5 +1765,152 @@ mod tests {
         let text = err.to_string();
         assert!(text.contains("已写入提供商侧"), "{text}");
         assert!(text.contains("不可见"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn phased_emits_expected_progress_logs() {
+        let provider = Publishes::always("value-1");
+        let all_dns = ScriptedResolver::new("全量", vec![vec![], vec!["value-1".to_owned()]]);
+        let doh = ScriptedResolver::new("DoH", vec![vec![], vec!["value-1".to_owned()]]);
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let events_clone = Arc::clone(&events);
+
+        wait_until_visible_phased(
+            &provider,
+            &serde_json::json!({}),
+            &record(),
+            &[],
+            &[&all_dns],
+            &[&doh],
+            &PropagationPolicy {
+                interval: Duration::from_millis(5),
+                timeout: Duration::from_secs(300),
+            },
+            move |msg| {
+                events_clone.lock().push(msg.to_owned());
+            },
+        )
+        .await
+        .expect("应成功（新四段下可能首段或全量段命中）");
+
+        let logs = events.lock().clone();
+        assert!(
+            logs.iter().any(|l| l.contains("propagation start timeout=300 interval=0")),
+            "应包含 propagation start: {logs:?}"
+        );
+        let start_pos = logs
+            .iter()
+            .position(|l| l.contains("propagation start"))
+            .expect("缺 start");
+        let hit_pos = logs
+            .iter()
+            .position(|l| l.contains("provider dns:"))
+            .expect("缺命中行");
+        assert!(
+            start_pos < hit_pos,
+            "propagation start 必须在 provider dns 之前: {logs:?}"
+        );
+        assert!(
+            logs.iter().any(|l| l.contains("provider dns:")),
+            "应含命中单家行: {logs:?}"
+        );
+        assert!(
+            logs.iter().any(|l| l.contains(" hit ")),
+            "应包含 hit: {logs:?}"
+        );
+        assert!(
+            logs.iter().any(|l| l.contains("propagation succeeded")),
+            "应包含 propagation succeeded: {logs:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn phased_start_contains_authoritative_context() {
+        let provider = Publishes::always("value-1");
+        let auth = ScriptedResolver::new("权威 NS（ooos.top）", vec![vec!["value-1".to_owned()]]);
+        let all_dns = ScriptedResolver::new("Cloudflare DNS", vec![vec!["value-1".to_owned()]]);
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let events_clone = Arc::clone(&events);
+
+        wait_until_visible_phased(
+            &provider,
+            &serde_json::json!({}),
+            &crate::provider::TxtRecord {
+                zone: "ooos.top".to_owned(),
+                name: "_acme-challenge.ooos.top".to_owned(),
+                ca_name: "_acme-challenge.ooos.top".to_owned(),
+                value: "value-1".to_owned(),
+                ttl: 120,
+            },
+            &[&auth],
+            &[&all_dns],
+            &[],
+            &PropagationPolicy {
+                interval: Duration::from_millis(5),
+                timeout: Duration::from_secs(300),
+            },
+            move |msg| {
+                events_clone.lock().push(msg.to_owned());
+            },
+        )
+        .await
+        .expect("权威可见应成功");
+
+        let logs = events.lock().clone();
+        let start = logs
+            .iter()
+            .find(|l| l.contains("propagation start"))
+            .expect("缺 start");
+        assert!(!start.contains("provider dns:"), "首行不应含命中行: {start}");
+        let hit_line = logs.iter().find(|l| l.contains("provider dns:")).expect("缺命中行");
+        // 命中单家取 doh 首位（此处 all_dns 即 ext_refs 首位应为 Cloudflare）
+        assert!(hit_line.contains("Cloudflare DNS"), "命中行应为单家 Cloudflare: {hit_line}");
+        assert!(!start.contains("authoritative:"), "首行不应拼权威上下文: {start}");
+        let start_pos = logs.iter().position(|l| l.contains("propagation start")).unwrap();
+        let hit_pos = logs.iter().position(|l| l.contains("provider dns:")).unwrap();
+        assert!(start_pos < hit_pos, "start 应在命中行前: {logs:?}");
+    }
+
+    #[tokio::test]
+    async fn wait_until_visible_start_contains_resolvers() {
+        let provider = Publishes::always("value-1");
+        let r1 = ScriptedResolver::new("阿里 DNS", vec![vec!["value-1".to_owned()]]);
+        let r2 = ScriptedResolver::new("Cloudflare DNS", vec![vec!["value-1".to_owned()]]);
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let events_clone = Arc::clone(&events);
+
+        wait_until_visible(
+            &provider,
+            &serde_json::json!({}),
+            &record(),
+            &[&r1, &r2],
+            &PropagationPolicy {
+                interval: Duration::from_millis(5),
+                timeout: Duration::from_secs(300),
+            },
+            move |msg| {
+                events_clone.lock().push(msg.to_owned());
+            },
+        )
+        .await
+        .expect("应成功");
+
+        let logs = events.lock().clone();
+        let start = logs
+            .iter()
+            .find(|l| l.contains("propagation start"))
+            .expect("缺 start");
+        assert!(!start.contains("resolvers:"), "首行 start 不应拼 resolvers: {start}");
+        assert!(start.contains("propagation start timeout="), "{start}");
+        let hit_line = logs.iter().find(|l| l.contains("provider dns:")).expect("缺命中行");
+        assert!(hit_line.contains("阿里 DNS"), "命中单家行应为首个 resolver: {hit_line}");
+        assert!(!hit_line.contains("Cloudflare"), "命中单家不应含整组: {hit_line}");
+        let start_pos = logs.iter().position(|l| l.contains("propagation start")).unwrap();
+        let hit_pos = logs.iter().position(|l| l.contains("provider dns:")).unwrap();
+        let done_pos = logs.iter().position(|l| l.contains("propagation succeeded")).unwrap();
+        assert!(start_pos < hit_pos && hit_pos < done_pos, "start → 命中行 → succeeded 顺序: {logs:?}");
     }
 }

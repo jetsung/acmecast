@@ -92,11 +92,6 @@ vi.mock("@/api/client", () => ({
                   type: "integer",
                   format: "int64",
                 },
-                dns_provider: {
-                  description: "DNS 提供商标识。",
-                  default: null,
-                  type: ["string", "null"],
-                },
                 dns_credential_id: {
                   description: "DNS 提供商凭据标识。",
                   default: null,
@@ -297,7 +292,6 @@ vi.mock("@/api/client", () => ({
                     challenge: "dns-01",
                     key_algorithm: "ecdsa_p384",
                     account_credential_id: 1,
-                    dns_provider: "cloudflare",
                     dns_credential_id: 4,
                     dns_zone: null,
                     wait_propagation: true,
@@ -408,7 +402,6 @@ describe("PipelineEditorPage", () => {
         challenge: "dns-01",
         key_algorithm: "ecdsa_p384",
         account_credential_id: 1,
-        dns_provider: "cloudflare",
         dns_credential_id: 4,
         dns_zone: null,
         wait_propagation: true,
@@ -548,15 +541,10 @@ describe("PipelineEditorPage", () => {
 
     await addStep("任务 F");
 
-    // dns_provider：固定的提供商标识，选「阿里云」。
-    const provider = await screen.findByLabelText("dns_provider");
-    expect(provider.getAttribute("role")).toBe("combobox");
-    fireEvent.mouseDown(provider);
-    fireEvent.click(await screen.findByTitle("阿里云"));
-
     // target：固定的部署目标，选「SSH 远程主机」。
-    const target = screen.getByLabelText("target");
+    const target = await screen.findByLabelText("target");
     expect(target.getAttribute("role")).toBe("combobox");
+
     fireEvent.mouseDown(target);
     fireEvent.click(await screen.findByTitle("SSH 远程主机"));
 
@@ -583,13 +571,14 @@ describe("PipelineEditorPage", () => {
     expect(screen.getByLabelText("key_path")).toBeTruthy();
     expect(screen.getByLabelText("reload_command")).toBeTruthy();
 
-    // 根级顺序:force/target 两个决策字段排最前,config(SSH 主机档案)跟后。
+    // 根级顺序:target 决策字段排最前,config(SSH 主机档案)跟后;
+    // force 已被注入 x-hidden,不再渲染。
     const allItems = Array.from(document.querySelectorAll<HTMLElement>(".ant-form-item"));
     const rootOrder = allItems
       .map((item) => item.querySelector("label")?.textContent)
       .filter((text): text is string => text !== null);
-    expect(rootOrder.indexOf("target")).toBeLessThan(rootOrder.indexOf("force"));
-    expect(rootOrder.indexOf("force")).toBeLessThan(rootOrder.indexOf("SSH 主机档案"));
+    expect(rootOrder).not.toContain("force");
+    expect(rootOrder.indexOf("target")).toBeLessThan(rootOrder.indexOf("SSH 主机档案"));
 
     // 布局:SSH 主机档案与 reload_command 各独占一行(右侧空列占位),
     // cert_path/key_path 成对同行(半宽)。
@@ -609,7 +598,6 @@ describe("PipelineEditorPage", () => {
 
     const body = await save();
     expect(body.steps[0].input).toEqual({
-      dns_provider: "aliyun",
       target: "ssh",
       acme_account_credential_id: 7,
       // 提交只含档案引用与部署输入,连接/权限字段由档案在执行时提供。
@@ -654,22 +642,6 @@ describe("PipelineEditorPage", () => {
     expect(config["alias"]).toBe("acmecast example.com");
   });
 
-  it("dns_provider 下拉覆盖全部内置 DNS 提供商", async () => {
-    posted.length = 0;
-    const queryClient = renderPage();
-    await waitForTasks(queryClient);
-    await waitFor(() => expect(queryClient.getQueryState(["credentials"])?.status).toBe("success"));
-    fireEvent.change(screen.getByLabelText("名称"), { target: { value: "p" } });
-
-    await addStep("任务 F");
-
-    // 内置清单与后端 default_dns_registry 对齐：四家提供商都在下拉里。
-    const provider = await screen.findByLabelText("dns_provider");
-    fireEvent.mouseDown(provider);
-    for (const label of ["Cloudflare", "阿里云", "腾讯云", "腾讯云 EdgeOne"]) {
-      expect(await screen.findByTitle(label)).toBeTruthy();
-    }
-  });
 
   /** cert.apply 步骤的 domains 填入两个域名，并等必填联动落地。 */
   async function fillTwoDomains() {

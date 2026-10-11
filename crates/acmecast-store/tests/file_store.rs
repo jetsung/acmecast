@@ -189,18 +189,22 @@ async fn deleting_reports_whether_the_file_existed() {
 
 // ---- 路径逃逸防护 ----
 
-/// 文件名前缀的三条规则：多域名取第一个、通配符 `*` 换 `_`、其余原样。
+/// 文件名前缀的三条规则：多域名取第一个、通配符 `*` 换 `_wildcard`、其余原样。
 #[tokio::test]
 async fn cert_file_names_follow_the_primary_domain() {
     for (primary_domain, expected_prefix) in [
         // 多域名时取第一个。
         ("sub1.example.com", "sub1.example.com"),
-        // 通配符的 `*` 换成下划线。
-        ("*.hello.example.com", "_.hello.example.com"),
+        // 通配符的 `*` 换成 _wildcard。
+        ("*.hello.example.com", "_wildcard.hello.example.com"),
         // 单域名原样。
         ("sub.example.com", "sub.example.com"),
     ] {
         let paths = FileStore::cert_paths("fp-1", primary_domain);
+        // 新布局 4 文件
+        assert_eq!(paths.cert, format!("certs/ssl/{expected_prefix}.cer"), "域名 {primary_domain} 的叶子证书文件名");
+        assert_eq!(paths.key, format!("certs/ssl/{expected_prefix}.key"), "域名 {primary_domain} 的私钥文件名（新布局）");
+        // 兼容旧布局仍存在
         assert_eq!(
             paths.cert_pem,
             format!("certs/ssl/{expected_prefix}.cert.pem"),
@@ -318,6 +322,10 @@ async fn archiving_falls_back_to_per_file_move_when_sources_span_dirs() {
     let store = FileStore::open(temp.path()).await.unwrap();
     // 手动上传的怪异布局：两个文件分处不同目录。
     let paths = CertFilePaths {
+        cert: "uploads/a/cert.cer".to_owned(),
+        ca: "uploads/a/cert.ca.cer".to_owned(),
+        fullchain: "uploads/a/cert.fullchain.cer".to_owned(),
+        key: "uploads/a/cert.key".to_owned(),
         cert_pem: "uploads/a/cert.pem".to_owned(),
         key_pem: "uploads/b/key.pem".to_owned(),
     };

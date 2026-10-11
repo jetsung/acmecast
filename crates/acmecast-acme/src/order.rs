@@ -129,6 +129,7 @@ impl AuthorizationInfo {
 pub struct PendingOrder {
     inner: Order,
     /// 等待 CA 确认时的重试策略。
+    #[allow(dead_code)]
     retry: RetryPolicy,
 }
 
@@ -274,24 +275,57 @@ impl PendingOrder {
         )))
     }
 
-    /// 提交 CSR 并等待订单就绪，然后下载证书链。
-    ///
-    /// `processing` 状态下会持续轮询，不重复提交 CSR。
-    pub async fn finalize_and_download(&mut self, csr_der: &[u8]) -> Result<String> {
-        self.inner
-            .finalize_csr(csr_der)
-            .await
-            .map_err(|e| AcmeError::Order(format!("提交 CSR 失败: {e}")))?;
+    /// 提交 CSR（finalize）。
+    pub async fn finalize(&mut self, csr_der: &[u8]) -> Result<()> {
+        self.inner.finalize_csr(csr_der).await.map_err(|e| {
+            // Debug 展开错误枚举内部结构（如 ApiProblem 的 type/detail），便于定位 CA 端返回
+            tracing::error!(error = ?e, "提交 CSR 失败（finalize）");
+            AcmeError::Order(format!("提交 CSR 失败: {e}"))
+        })?;
+        Ok(())
+    }
 
+    /// 轮询直到订单状态变为 `Valid`。
+    pub async fn wait_for_valid(&mut self) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+        loop {
+            let status = self.refresh().await?;
+            match status {
+                OrderStatus::Valid => return Ok(()),
+                OrderStatus::Invalid => {
+                    let reason = self.rejection_reason().await;
+                    return Err(AcmeError::Order(format!("CA 拒绝了本次验证（订单状态 invalid）: {reason}")));
+                }
+                OrderStatus::Pending | OrderStatus::Processing | OrderStatus::Ready => {}
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(AcmeError::Timeout("等待订单有效超时（120 秒）".to_owned()));
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+
+    /// 下载证书链。
+    pub async fn download_certificate(&mut self) -> Result<String> {
         self.inner
-            .poll_certificate(&self.retry)
+            .certificate()
             .await
             .map_err(|e| match AcmeError::from(e) {
                 AcmeError::Timeout(detail) => {
                     AcmeError::Timeout(format!("等待证书签发超时: {detail}"))
                 }
                 other => AcmeError::Order(format!("下载证书失败: {other}")),
-            })
+            })?
+            .ok_or_else(|| AcmeError::Order("证书尚未生成".to_owned()))
+    }
+
+    /// 提交 CSR 并等待订单就绪，然后下载证书链。
+    ///
+    /// `processing` 状态下会持续轮询，不重复提交 CSR。
+    pub async fn finalize_and_download(&mut self, csr_der: &[u8]) -> Result<String> {
+        self.finalize(csr_der).await?;
+        self.wait_for_valid().await?;
+        self.download_certificate().await
     }
 
     /// 订单当前状态。

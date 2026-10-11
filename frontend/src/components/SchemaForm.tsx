@@ -1,7 +1,9 @@
-import { Col, Form, Input, InputNumber, Row, Select, Space, Switch, Alert, Typography } from "antd";
+import { Col, Form, Input, InputNumber, Row, Select, Switch, Alert, Tooltip, Typography } from "antd";
+import { QuestionCircleOutlined } from "@ant-design/icons";
 import type { FormInstance } from "antd";
 import type { Rule } from "antd/es/form";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 
 /**
  * 由后端 JSON Schema（schemars 产物）驱动渲染 antd 表单（design D5）。
@@ -355,6 +357,7 @@ export function SchemaForm({ schema, form, namePrefix = [], disabled }: SchemaFo
           node["x-target-schemas"] || node["x-multiline"] || node["x-full-width"] || !topIsScalar
             ? 24
             : 12;
+        const labelInfo = fieldLabel(node, name, values as Record<string, unknown>);
 
         return (
           <Fragment key={path.join(".")}>
@@ -367,8 +370,8 @@ export function SchemaForm({ schema, form, namePrefix = [], disabled }: SchemaFo
               />
               <Form.Item
                 name={path}
-                label={node["x-label"] ?? name}
-                tooltip={node.description}
+                label={labelInfo.label}
+                tooltip={labelInfo.tooltip}
                 rules={rules}
                 valuePropName={node.type === "boolean" ? "checked" : "value"}
               >
@@ -390,6 +393,49 @@ export function SchemaForm({ schema, form, namePrefix = [], disabled }: SchemaFo
       })}
     </Row>
   );
+}
+
+/**
+ * 字段标签与 tooltip：默认用 antd 的 tooltip 图标；当字段带按当前取值命中的
+ * `x-help-links`（如 acme.account 的 ca「申请 HMAC」）时，自绘「?」图标并把
+ * 文档链接放在图标右侧——链接不能插在 antd label 与其 tooltip 图标之间，
+ * 此时应接管该字段的 tooltip（返回 tooltip 为 undefined）。
+ */
+function fieldLabel(
+  node: SchemaObject,
+  name: string,
+  values: Record<string, unknown>,
+): { label: ReactNode; tooltip?: string } {
+  const labelText = node["x-label"] ?? name;
+  const helpLinks = node["x-help-links"] as
+    | Array<{ value: string; url: string; label: string }>
+    | undefined;
+  const links = helpLinks?.filter((l) => String(l.value) === String(values[name] ?? "")) ?? [];
+  if (links.length === 0) {
+    return { label: labelText, tooltip: node.description };
+  }
+  return {
+    label: (
+      <>
+        {labelText}
+        {node.description && (
+          <Tooltip title={node.description}>
+            <QuestionCircleOutlined style={{ marginLeft: 4, color: "rgba(0,0,0,0.45)" }} />
+          </Tooltip>
+        )}
+        {links.map((link) => (
+          <Typography.Link
+            key={link.value}
+            href={link.url}
+            target="_blank"
+            style={{ marginLeft: 8 }}
+          >
+            {link.label}
+          </Typography.Link>
+        ))}
+      </>
+    ),
+  };
 }
 
 /** 按字段类型选择 antd 控件。 */
@@ -435,27 +481,16 @@ function SchemaField({
 
     if (node.enum && node.enum.length > 0) {
     const labels = node["x-enum-labels"];
-    const helpLinks = node["x-help-links"] as Array<{ value: string; url: string; label: string }> | undefined;
-    const fieldName = String(path[path.length - 1] ?? "");
-    const cur = String(values?.[fieldName] ?? control?.value ?? "");
-    const links = helpLinks?.filter((l) => String(l.value) === cur) ?? [];
     return (
-      <Space.Compact block>
-        <Select
-          disabled={disabled}
-          options={node.enum.map((value) => {
-            const key = String(value);
-            return { value: key, label: labels?.[key] ?? key };
-          })}
-          {...control}
-          style={{ flex: 1 }}
-        />
-        {links.map((link) => (
-          <Typography.Link key={link.value} href={link.url} target="_blank" style={{ paddingLeft: 8, lineHeight: "32px", whiteSpace: "nowrap" }}>
-            {link.label}
-          </Typography.Link>
-        ))}
-      </Space.Compact>
+      <Select
+        disabled={disabled}
+        options={node.enum.map((value) => {
+          const key = String(value);
+          return { value: key, label: labels?.[key] ?? key };
+        })}
+        {...control}
+        style={{ width: "100%" }}
+      />
     );
   }
 

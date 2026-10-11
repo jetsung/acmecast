@@ -210,12 +210,6 @@ export function CertificateDetailPage() {
               </Button>
             ))}
             <Button
-              loading={downloading === "key"}
-              onClick={() => doDownload("key")}
-            >
-              下载私钥 (PEM)
-            </Button>
-            <Button
               color="orange"
               variant="outlined"
               disabled={isRevoked || isArchived}
@@ -269,8 +263,45 @@ export function CertificateDetailPage() {
               );
             })()}
           </Descriptions.Item>
-          <Descriptions.Item label="证书文件">{cert.cert_pem_path}</Descriptions.Item>
-          <Descriptions.Item label="私钥文件">{cert.key_pem_path}</Descriptions.Item>
+          <Descriptions.Item label="证书状态">
+            {(() => {
+              const revoked = typeof cert.revoked_at === "string" && cert.revoked_at.trim() !== "";
+              const archived = typeof cert.archived_at === "string" && (cert as unknown as { archived_at?: string | null }).archived_at !== null && String((cert as unknown as { archived_at?: string | null }).archived_at).trim() !== "";
+              if (revoked) return <span style={{ color: "#999" }}>已吊销</span>;
+              if (archived) return <span style={{ color: "#fa8c16" }}>已归档</span>;
+              const days = Math.floor((new Date(cert.not_after).getTime() - Date.now()) / (24 * 3600 * 1000));
+              if (days <= 0) return <span style={{ color: "#ff4d4f" }}>已过期</span>;
+              if (days <= 30) return <span style={{ color: "#ff4d4f" }}>将过期（{days} 天）</span>;
+              return <span style={{ color: "#52c41a" }}>有效</span>;
+            })()}
+          </Descriptions.Item>
+          <Descriptions.Item label="有效期时长">
+            {(() => {
+              const days = Math.floor((new Date(cert.not_after).getTime() - new Date(cert.not_before).getTime()) / (24 * 3600 * 1000));
+              const remain = Math.floor((new Date(cert.not_after).getTime() - Date.now()) / (24 * 3600 * 1000));
+              return `${days} 天（剩余 ${remain <= 0 ? "已过期" : `${remain} 天`}）`;
+            })()}
+          </Descriptions.Item>
+          <Descriptions.Item label="ca.cer">
+            <Space>
+              <Typography.Text code copyable>{(cert as unknown as { ca_path?: string | null }).ca_path ?? "-"}</Typography.Text>
+              {(cert as unknown as { ca_path?: string | null }).ca_path && (
+                <Button size="small" loading={downloading === "ca"} onClick={() => doDownload("ca")}>下载</Button>
+              )}
+            </Space>
+          </Descriptions.Item>
+          <Descriptions.Item label="fullchain.cer">
+            <Space>
+              <Typography.Text code copyable>{(cert as unknown as { fullchain_path?: string | null }).fullchain_path ?? cert.cert_pem_path}</Typography.Text>
+              <Button size="small" loading={downloading === "fullchain"} onClick={() => doDownload("fullchain")}>下载</Button>
+            </Space>
+          </Descriptions.Item>
+          <Descriptions.Item label="key">
+            <Space>
+              <Typography.Text code copyable>{(cert as unknown as { key_path?: string | null }).key_path ?? cert.key_pem_path}</Typography.Text>
+              <Button size="small" loading={downloading === "key"} onClick={() => doDownload("key")}>下载</Button>
+            </Space>
+          </Descriptions.Item>
         </Descriptions>
       </Card>
     </div>

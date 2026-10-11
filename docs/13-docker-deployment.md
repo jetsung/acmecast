@@ -51,6 +51,21 @@ docker run -d --name acmecast \
 首次启动自动跑迁移；从 SQLite 换到 MySQL/PG 不迁移旧数据（自行导出导入或
 重新申请）。
 
+## 缓存与实时日志加速（可选）
+
+acmecast-server 支持接入 Redis 或 Valkey 缓存服务，用于暂存执行中的实时日志并加速历史记录查询：
+
+```bash
+docker run -d --name acmecast \
+  -e ACMECAST_REDIS_URL='redis://127.0.0.1:6379' \
+  -e ACMECAST_JWT_SECRET -e ACMECAST_CREDENTIAL_KEY -e ACMECAST_ADMIN_PASSWORD_HASH \
+  acmecast:dev
+```
+
+- 环境变量优先级：`ACMECAST_REDIS_URL` > `ACMECAST_VALKEY_URL` > `REDIS_URL`。
+- 未配置或服务不可达时平滑回退直写数据库，不影响核心功能。
+- 在 Docker Compose 调试环境中，可配置环境变量指向 `valkey:6379`。
+
 ## 密钥管理要点
 
 | 密钥 | 丢了/换了的后果 |

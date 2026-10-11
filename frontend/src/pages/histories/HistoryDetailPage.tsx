@@ -4,8 +4,9 @@ import type { components } from "@/api/schema";
 import { useParams } from "react-router";
 import { client } from "@/api/client";
 import { formatTime, unwrapData } from "@/api/helpers";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { PageHeader } from "@/components/PageHeader";
+import { useAuthStore } from "@/auth/store";
 
 type HistoryDetail = components["schemas"]["HistoryResponse"];
 
@@ -27,17 +28,19 @@ function tencentOutput(output: unknown): { certIds: string[]; skipped: boolean }
   const skipped = obj.skipped_write === true;
   return { certIds, skipped };
 }
+
 const LEVEL_COLOR: Record<string, string> = {
   info: "#1677ff",
   warn: "#faad14",
   error: "#ff4d4f",
 };
 
-/** 运行详情（2.3）：running 状态 5 秒轮询至终态；日志按步骤分组着色。 */
+/** 运行详情：通过 SSE 实时订阅增量日志与终态，失败时降级单次拉取。 */
 export function HistoryDetailPage() {
   const { id } = useParams();
   const historyId = Number(id);
   const queryClient = useQueryClient();
+  const [fallbackWarning, setFallbackWarning] = useState(false);
 
   const { data: history, error: historyError } = useQuery({
     queryKey: ["history", historyId],
@@ -51,9 +54,6 @@ export function HistoryDetailPage() {
       return await unwrapData<HistoryDetail>(result);
     },
     enabled: Number.isFinite(historyId),
-    // running 时轮询终态，与日志轮询同一节奏：手动触发后跳进来，状态会自行
-    // 从 running 变为 success/failed，不必手动刷新。
-    refetchInterval: (query) => (query.state.data?.status === "running" ? 5000 : false),
   });
 
   const { data: logs, isLoading } = useQuery({
@@ -65,9 +65,122 @@ export function HistoryDetailPage() {
       return unwrapData<LogRow[]>(result);
     },
     enabled: Number.isFinite(historyId),
-    // running 时轮询：终态即停（design D6）。
-    refetchInterval: history?.status === "running" ? 5000 : false,
   });
+
+  // SSE 实时推送订阅
+  useEffect(() => {
+    if (!Number.isFinite(historyId) || history?.status !== "running") {
+      return;
+    }
+
+    if (typeof window === "undefined" || typeof window.EventSource === "undefined") {
+      setFallbackWarning(true);
+      void queryClient.refetchQueries({ queryKey: ["history-logs", historyId] });
+      return;
+    }
+
+    const token = useAuthStore.getState().token;
+    const url = token
+      ? `/api/histories/${historyId}/events?token=${encodeURIComponent(token)}`
+      : `/api/histories/${historyId}/events`;
+
+    const es = new EventSource(url);
+
+    es.addEventListener("started", (event) => {
+      try {
+        const data = JSON.parse(event.data) as Partial<HistoryDetail>;
+        queryClient.setQueryData<HistoryDetail>(["history", historyId], (prev) =>
+          prev
+            ? {
+                ...prev,
+                started_at: data.started_at ?? prev.started_at,
+                trigger_source: data.trigger_source ?? prev.trigger_source,
+              }
+            : prev,
+        );
+      } catch {
+        // 忽略解析异常
+      }
+    });
+
+    es.addEventListener("log", (event) => {
+      try {
+        const data = JSON.parse(event.data) as LogRow;
+        queryClient.setQueryData<LogRow[]>(["history-logs", historyId], (prev) => {
+          const list = prev ? [...prev] : [];
+          // REST 全量与 SSE 重放可能重复投递同一条日志（如启动日志），按三元组查重
+          const exists = list.some(
+            (row) =>
+              row.step_index === data.step_index &&
+              row.message === data.message &&
+              row.created_at === data.created_at,
+          );
+          if (exists) return list;
+          list.push({
+            step_index: data.step_index,
+            level: data.level,
+            message: data.message,
+            created_at: data.created_at,
+            output: data.output,
+          });
+          return list;
+        });
+      } catch {
+        // 忽略解析异常
+      }
+    });
+
+    es.addEventListener("succeeded", (event) => {
+      try {
+        const data = JSON.parse(event.data) as { finished_at?: string };
+        queryClient.setQueryData<HistoryDetail>(["history", historyId], (prev) =>
+          prev
+            ? {
+                ...prev,
+                status: "success",
+                finished_at: data.finished_at ?? new Date().toISOString(),
+                error_message: null,
+              }
+            : prev,
+        );
+      } catch {
+        // 忽略解析异常
+      }
+      es.close();
+      void queryClient.invalidateQueries({ queryKey: ["histories"] });
+    });
+
+    es.addEventListener("failed", (event) => {
+      try {
+        const data = JSON.parse(event.data) as { finished_at?: string; error_message?: string };
+        queryClient.setQueryData<HistoryDetail>(["history", historyId], (prev) =>
+          prev
+            ? {
+                ...prev,
+                status: "failed",
+                finished_at: data.finished_at ?? new Date().toISOString(),
+                error_message: data.error_message ?? null,
+              }
+            : prev,
+        );
+      } catch {
+        // 忽略解析异常
+      }
+      es.close();
+      void queryClient.invalidateQueries({ queryKey: ["histories"] });
+    });
+
+    es.onerror = () => {
+      es.close();
+      setFallbackWarning(true);
+      void queryClient.refetchQueries({ queryKey: ["history-logs", historyId] });
+      void queryClient.refetchQueries({ queryKey: ["history", historyId] });
+    };
+
+    return () => {
+      es.close();
+    };
+  }, [historyId, history?.status, queryClient]);
 
   // 终态到达后让列表缓存失效一次，保证列表页状态同步。
   useEffect(() => {
@@ -112,6 +225,17 @@ export function HistoryDetailPage() {
         }
         description={`流水线 #${history.pipeline_id} · 触发来源 ${history.trigger_source}`}
       />
+
+      {fallbackWarning && (
+        <Alert
+          type="warning"
+          showIcon
+          message="实时更新不可用，已回退为拉取模式"
+          style={{ marginBottom: 16 }}
+          closable
+          onClose={() => setFallbackWarning(false)}
+        />
+      )}
 
       <Card style={{ marginBottom: 24 }}>
         <Descriptions bordered size="small" column={2}>

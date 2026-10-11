@@ -1,43 +1,29 @@
 //! DNS-01 挑战的 DNS 提供商自动选择。
 //!
-//! `cert.apply` 未显式指定 `dns_provider` 时，按「域名托管商对齐优先」的
-//! 固定候选序逐个探测 zone 托管情况，选定第一个可用的提供商：
-//!
-//! 1. `tencent`（腾讯云云解析）→ `tencent-eo`（EdgeOne）→ `aliyun` → `cloudflare`；
-//! 2. 其余提供商按注册表稳定序（`type_ids()` 排序）追加在最后。
-//!
-//! 域名托管在某一家时，对齐的那家排在最前且探测通过，自然命中；
-//! 域名不在这四家时按序回退——两个需求由同一条候选序统一实现。
+//! `cert.apply` 未指定 `dns_credential_id` 时，遍历凭据库中所有 DNS 类
+//! 凭据（凭据 `type_id` 即候选标识），按注册表稳定序逐个探测 zone 托管
+//! 情况，选定第一个可用的提供商。
 
 use acmecast_access::CredentialStore;
-use acmecast_dns::{DnsProvider, DnsProviderRegistry};
+use acmecast_dns::DnsProvider;
+use acmecast_dns::DnsProviderRegistry;
 use acmecast_pipeline::{Error, Result};
 use serde_json::Value;
 
-/// 托管商对齐的候选优先级：腾讯云体系最前，`tencent` 优先于 `tencent-eo`。
-const PRIORITY: [&str; 4] = ["tencent", "tencent-eo", "aliyun", "cloudflare"];
-
-/// 按候选序排列「有凭据且已注册」的提供商类型。
+/// 按注册表稳定序排列「有凭据且已注册」的提供商类型。
 ///
 /// `with_credentials` 是确认有可用凭据的类型集合，`registry_types` 是
 /// DNS 注册表的类型清单（稳定序）。返回值只含两者交集，顺序为
-/// [`PRIORITY`] 在前、其余按 `registry_types` 序在后。
+/// `registry_types` 的稳定序。
 pub(crate) fn candidate_order<'a>(
     with_credentials: &[&'a str],
     registry_types: &[&'a str],
 ) -> Vec<&'a str> {
-    let mut out = Vec::new();
-    for priority in PRIORITY {
-        if with_credentials.contains(&priority) {
-            out.push(priority);
-        }
-    }
-    for type_id in registry_types {
-        if !out.contains(type_id) && with_credentials.contains(type_id) {
-            out.push(type_id);
-        }
-    }
-    out
+    registry_types
+        .iter()
+        .filter(|type_id| with_credentials.contains(type_id))
+        .copied()
+        .collect()
 }
 
 /// 一个候选提供商及其解密后的可用凭据。
@@ -228,12 +214,13 @@ mod tests {
     }
 
     #[test]
-    fn priority_providers_lead_and_the_rest_follow_registry_order() {
+    fn candidate_order_follows_registry_stable_order() {
         let order = candidate_order(
             &["cloudflare", "aliyun", "route53", "tencent"],
             &["aliyun", "cloudflare", "route53", "tencent"],
         );
-        assert_eq!(order, vec!["tencent", "aliyun", "cloudflare", "route53"]);
+        // 注册表稳定序，无偏好排序
+        assert_eq!(order, vec!["aliyun", "cloudflare", "route53", "tencent"]);
     }
 
     #[test]
@@ -242,20 +229,11 @@ mod tests {
         assert_eq!(order, vec!["aliyun"]);
     }
 
-    #[test]
-    fn tencent_eo_comes_after_tencent() {
-        let order = candidate_order(
-            &["tencent-eo", "tencent", "aliyun", "cloudflare"],
-            &["tencent", "tencent-eo", "aliyun", "cloudflare"],
-        );
-        assert_eq!(order, vec!["tencent", "tencent-eo", "aliyun", "cloudflare"]);
-    }
-
     #[tokio::test]
     async fn the_first_candidate_that_probes_clean_wins() {
-        let (first, first_probes) = ProbeProvider::failing("tencent");
-        let (second, second_probes) = ProbeProvider::ok("aliyun");
-        let (third, _third_probes) = ProbeProvider::ok("cloudflare");
+        let (first, first_probes) = ProbeProvider::failing("aliyun");
+        let (second, second_probes) = ProbeProvider::ok("cloudflare");
+        let (third, _third_probes) = ProbeProvider::ok("tencent");
 
         let mut logs = Vec::new();
         let picked = pick(
@@ -266,25 +244,25 @@ mod tests {
         .await
         .expect("第二个候选应命中");
 
-        assert_eq!(picked.provider_id, "aliyun");
+        assert_eq!(picked.provider_id, "cloudflare");
         assert_eq!(picked.credential_id, 7);
         assert_eq!(first_probes.load(Ordering::SeqCst), 1, "首选被探测一次");
         assert_eq!(second_probes.load(Ordering::SeqCst), 1);
         assert!(
-            logs.iter().any(|m| m.contains("tencent") && m.contains("不可用")),
+            logs.iter().any(|m| m.contains("aliyun") && m.contains("不可用")),
             "跳过原因应写日志：{logs:?}"
         );
         assert!(
             logs.iter()
-                .any(|m| m.contains("自动选择") && m.contains("aliyun")),
+                .any(|m| m.contains("自动选择") && m.contains("cloudflare")),
             "选定结果应写日志：{logs:?}"
         );
     }
 
     #[tokio::test]
     async fn the_leading_aligned_provider_wins_directly() {
-        let (first, _) = ProbeProvider::ok("tencent");
-        let (second, second_probes) = ProbeProvider::ok("aliyun");
+        let (first, _) = ProbeProvider::ok("aliyun");
+        let (second, second_probes) = ProbeProvider::ok("cloudflare");
 
         let mut logs = Vec::new();
         let picked = pick(
@@ -295,14 +273,14 @@ mod tests {
         .await
         .expect("首选应命中");
 
-        assert_eq!(picked.provider_id, "tencent");
+        assert_eq!(picked.provider_id, "aliyun");
         assert_eq!(second_probes.load(Ordering::SeqCst), 0, "命中后不再探测后续候选");
     }
 
     #[tokio::test]
     async fn exhausted_candidates_fail_with_every_reason() {
-        let (first, _) = ProbeProvider::failing("tencent");
-        let (second, _) = ProbeProvider::failing("aliyun");
+        let (first, _) = ProbeProvider::failing("aliyun");
+        let (second, _) = ProbeProvider::failing("cloudflare");
 
         let err = pick(
             vec![candidate(&first), candidate(&second)],
@@ -313,8 +291,8 @@ mod tests {
         .expect_err("全部失败应报错");
 
         let text = err.to_string();
-        assert!(text.contains("tencent"), "{text}");
         assert!(text.contains("aliyun"), "{text}");
+        assert!(text.contains("cloudflare"), "{text}");
         assert!(text.contains("zone 未托管"), "{text}");
     }
 }

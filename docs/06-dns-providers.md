@@ -10,6 +10,8 @@ DNS-01 挑战的生命周期：**写入 TXT 记录 → 等传播 → 通知 CA �
 |---|---|---|---|
 | `cloudflare` | Cloudflare | `api_token` | V4 REST API，Bearer 认证；先按 zone 换 zone_id；删除只删值相同的记录 |
 | `aliyun` | 阿里云 DNS | `access_key_id`、`access_key_secret` | RPC 风格 API（HMAC-SHA1 签名）；TTL 被 clamp 到 600–86400（低于 600 阿里云直接 400） |
+| `tencent` | 腾讯云 DNSPod | `secret_id`、`secret_key`、`account_site` | API 3.0（TC3-HMAC-SHA256 签名）；`account_site` 选 `cn`/`intl`（国内/国际站）；TTL 下限 600（免费/标准版报 `LimitExceeded.RecordTtlLimit`） |
+| `tencent-eo` | 腾讯云 EdgeOne | `secret_id`、`secret_key`、`account_site` | 共用腾讯云 API 3.0 签名基础，换 EdgeOne 服务名与 Action；`DescribeZones` 查 zone 是否已接入 EdgeOne |
 
 通用行为：
 
@@ -52,6 +54,19 @@ DNS-01 挑战的生命周期：**写入 TXT 记录 → 等传播 → 通知 CA �
 
 不走公共 DoH 的原因：公共解析器的 NXDOMAIN 负缓存（SOA minimum 通常
 600–1800 秒）会让「写入 → 删除 → 重试」的第二次尝试稳定查不到新值。
+
+### 提供商感知的 DoH 排序
+
+传播等待的分阶段回退（阶段 2/3）使用全量 DNS + DoH 集合，按提供商标识感知排序：首选提供商对应的同厂商 DoH 端点排第一，其余按固定序兜底。排序规则：
+
+| 提供商 | 首选 DoH | 兜底序 |
+|---|---|---|
+| `cloudflare` | Cloudflare | Cloudflare → 阿里 → 腾讯 → Google |
+| `aliyun` | 阿里 | 阿里 → Cloudflare → 腾讯 → Google |
+| `tencent` / `tencent-eo` | 腾讯 | 腾讯 → Cloudflare → 阿里 → Google |
+| 其他 / 未传参 | — | Cloudflare → 阿里 → 腾讯 → Google |
+
+"任意一家可见即就绪"的判定语义不变——`probe_resolvers` 逐个查，命中即返回。`ACMECAST_DOH_RESOLVERS` 显式设置时提供商感知分支不生效，按环境变量语义构造集合（`none` 即跳过解析器阶段）。
 
 ### 自定义解析器（腾讯云手动配置）
 

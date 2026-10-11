@@ -8,6 +8,8 @@ pub mod cert_migrate;
 pub mod config;
 pub mod credentials;
 mod handlers;
+pub mod history_cache;
+pub mod history_stream;
 pub mod openapi;
 pub mod response;
 mod run;
@@ -73,7 +75,7 @@ pub struct AppState {
 /// 注册表与加密器在启动时一次性装配，并通过 `Arc` 在各请求间共享。
 /// 自定义装配函数主要供测试和嵌入式调用方注入替身；普通进程使用
 /// [`RuntimeState::from_environment`] 即可。
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RuntimeState {
     /// 已注册的凭据类型。
     pub credential_registry: Arc<CredentialRegistry>,
@@ -85,6 +87,46 @@ pub struct RuntimeState {
     pub auth: AuthMode,
     /// webhook 通知订阅端；未配置通知渠道时为 `None`，流水线运行不产生投递。
     pub notifier: Option<Arc<acmecast_notify::WebhookEventSink>>,
+    /// Redis / Valkey 缓存连接管理器；未配置或连接失败时为 `None`。
+    pub redis: Option<Arc<redis::aio::ConnectionManager>>,
+    /// 流水线运行历史 SSE 广播器。
+    pub broadcaster: Arc<history_stream::SseBroadcaster>,
+}
+
+impl std::fmt::Debug for RuntimeState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RuntimeState")
+            .field("credential_registry", &self.credential_registry)
+            .field("step_registry", &self.step_registry)
+            .field("cipher", &self.cipher)
+            .field("auth", &self.auth)
+            .field("notifier", &self.notifier)
+            .field("redis", &self.redis.as_ref().map(|_| "ConnectionManager"))
+            .finish()
+    }
+}
+
+/// 尝试连接 Redis / Valkey 缓存服务，带 1 秒超时防阻塞。
+pub async fn try_connect_redis(url: &str) -> Option<Arc<redis::aio::ConnectionManager>> {
+    let connect_future = async {
+        let client = redis::Client::open(url)?;
+        let manager = redis::aio::ConnectionManager::new(client).await?;
+        Ok::<_, redis::RedisError>(manager)
+    };
+    match tokio::time::timeout(Duration::from_millis(1000), connect_future).await {
+        Ok(Ok(manager)) => {
+            tracing::info!(redis_url = %url, "已连接 Redis / Valkey 缓存服务");
+            Some(Arc::new(manager))
+        }
+        Ok(Err(error)) => {
+            tracing::warn!(redis_url = %url, %error, "连接 Redis / Valkey 失败，降级为直写数据库");
+            None
+        }
+        Err(_) => {
+            tracing::warn!(redis_url = %url, "连接 Redis / Valkey 超时，降级为直写数据库");
+            None
+        }
+    }
 }
 
 impl RuntimeState {
@@ -105,6 +147,8 @@ impl RuntimeState {
             cipher,
             auth,
             notifier: None,
+            redis: None,
+            broadcaster: Arc::new(history_stream::SseBroadcaster::new()),
         }
     }
 
@@ -116,16 +160,30 @@ impl RuntimeState {
     ///
     /// 鉴权配置缺失（如未设 JWT 密钥）属于配置错误，直接失败——
     /// 令牌无法校验的服务不该悄悄放行请求。
-    pub fn from_environment() -> acmecast_core::Result<Self> {
-        Self::from_environment_with_steps(handlers::default_step_registry())
+    pub async fn from_environment() -> acmecast_core::Result<Self> {
+        let redis_url = crate::config::resolve_redis_url_from_env();
+        Self::from_environment_with_steps_and_redis_url(
+            handlers::default_step_registry(),
+            redis_url.as_deref(),
+        )
+        .await
     }
 
     /// 与 [`RuntimeState::from_environment`] 相同，但用调用方装配的步骤注册表。
     ///
     /// 生产路径传 [`crate::steps::default_steps`] 的产物——步骤需要数据库与
     /// 数据目录，只能在连接建立后装配；测试可以注入自定义步骤。
-    pub fn from_environment_with_steps(
+    pub async fn from_environment_with_steps(
         step_registry: Arc<StepRegistry>,
+    ) -> acmecast_core::Result<Self> {
+        let redis_url = crate::config::resolve_redis_url_from_env();
+        Self::from_environment_with_steps_and_redis_url(step_registry, redis_url.as_deref()).await
+    }
+
+    /// 允许显式传入步骤注册表与可选 Redis 连接串（如来自 `config.toml` 或环境变量）。
+    pub async fn from_environment_with_steps_and_redis_url(
+        step_registry: Arc<StepRegistry>,
+        redis_url: Option<&str>,
     ) -> acmecast_core::Result<Self> {
         let credential_registry = handlers::default_credential_registry();
         let key = std::env::var("ACMECAST__SECURITY__CREDENTIAL_KEY")
@@ -139,12 +197,18 @@ impl RuntimeState {
                     None
                 }
             });
-        Ok(Self::new(
+        let redis = match redis_url {
+            Some(url) => try_connect_redis(url).await,
+            None => None,
+        };
+        let mut state = Self::new(
             credential_registry,
             step_registry,
             cipher,
             AuthMode::from_environment()?,
-        ))
+        );
+        state.redis = redis;
+        Ok(state)
     }
 }
 
@@ -155,6 +219,19 @@ pub(crate) struct HttpState {
     pub(crate) app: AppState,
     /// HTTP 运行时依赖。
     pub(crate) runtime: RuntimeState,
+}
+
+impl HttpState {
+    /// 获取可选的 Redis / Valkey 连接管理器。
+    #[allow(dead_code)]
+    pub(crate) fn redis(&self) -> Option<Arc<redis::aio::ConnectionManager>> {
+        self.runtime.redis.clone()
+    }
+
+    /// 获取 SSE 广播器引用。
+    pub(crate) fn broadcaster(&self) -> &history_stream::SseBroadcaster {
+        &self.runtime.broadcaster
+    }
 }
 
 /// 默认依赖装配的公开入口，供集成测试复用。
@@ -185,11 +262,13 @@ pub mod dependencies {
 ///
 /// 健康检查不做鉴权也不计入业务端点——它是编排系统判断进程死活的探针，
 /// 依赖鉴权会让「服务活着但配置坏了」无法与「服务挂了」区分。
-pub fn assemble_router(state: AppState) -> acmecast_core::Result<Router> {
-    Ok(assemble_router_with_runtime(
-        state,
-        RuntimeState::from_environment()?,
-    ))
+pub async fn assemble_router(state: AppState) -> acmecast_core::Result<Router> {
+    let runtime = RuntimeState::from_environment_with_steps_and_redis_url(
+        handlers::default_step_registry(),
+        state.config.redis_url.as_deref(),
+    )
+    .await?;
+    Ok(assemble_router_with_runtime(state, runtime))
 }
 
 /// 使用显式运行时依赖装配路由。
@@ -344,5 +423,27 @@ pub async fn shutdown_signal() {
     tokio::select! {
         () = ctrl_c => tracing::info!("收到 Ctrl-C，开始优雅停机"),
         () = terminate => tracing::info!("收到 SIGTERM，开始优雅停机"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn try_connect_redis_invalid_url_returns_none() {
+        let result = try_connect_redis("invalid-scheme://localhost").await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn runtime_state_new_has_none_redis() {
+        let state = RuntimeState::new(
+            dependencies::credential_registry(),
+            dependencies::step_registry(),
+            None,
+            AuthMode::Disabled,
+        );
+        assert!(state.redis.is_none());
     }
 }

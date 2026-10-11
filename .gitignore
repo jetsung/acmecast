@@ -9,6 +9,7 @@ data/
 
 # 前端依赖安装产生的 pnpm 内容寻址缓存（可重建，不入库）
 .pnpm-store/
+**/node_modules/
 
 # 文档站点构建产物（zensical build 生成，可重建，不入库）
 /site/

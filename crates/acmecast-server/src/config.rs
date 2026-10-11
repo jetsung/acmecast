@@ -50,6 +50,8 @@ pub struct ServerConfig {
     /// `config.toml` 的 `[[resolvers]]` 条目；传播等待的阶段 2/3
     /// 用它扩展内置解析器集合。
     pub resolvers: Vec<ResolverEntry>,
+    /// Redis / Valkey 缓存连接串（可选）；缺省时禁用缓存。
+    pub redis_url: Option<String>,
 }
 
 impl Default for ServerConfig {
@@ -68,6 +70,7 @@ impl Default for ServerConfig {
                 interval_secs: 5,
             },
             resolvers: Vec::new(),
+            redis_url: None,
         }
     }
 }
@@ -243,6 +246,9 @@ pub struct ServerSection {
     /// 跳过 ACME CA 的 TLS 证书校验。
     #[serde(default)]
     pub accept_invalid_acme_certs: bool,
+    /// Redis / Valkey 缓存连接串。
+    #[serde(default)]
+    pub redis_url: Option<String>,
 }
 
 fn default_body_limit_bytes() -> usize {
@@ -260,6 +266,7 @@ impl Default for ServerSection {
             auth_disabled: false,
             body_limit_bytes: default_body_limit_bytes(),
             accept_invalid_acme_certs: false,
+            redis_url: None,
         }
     }
 }
@@ -363,6 +370,9 @@ fn apply_file(config: &mut ServerConfig, file: &AppConfig) {
         interval_secs: file.propagation.interval_secs,
     };
     config.resolvers = file.resolvers.clone();
+    if s.redis_url.is_some() {
+        config.redis_url = s.redis_url.clone();
+    }
 }
 
 /// 校验并转换 `[[notifications]]` 条目；非法条目跳过并告警。
@@ -583,6 +593,31 @@ fn apply_env(config: &mut ServerConfig) {
     {
         config.propagation.interval_secs = secs;
     }
+    if let Some(redis_url) = resolve_redis_url_from_env() {
+        config.redis_url = Some(redis_url);
+    }
+}
+
+/// 按优先级从环境变量解析 Redis / Valkey 缓存地址：
+/// `ACMECAST_REDIS_URL` > `ACMECAST_VALKEY_URL` > `REDIS_URL`。
+/// 遇到空串回退到后续别名，全部为空或未设则返回 `None`。
+pub(crate) fn resolve_redis_url_from_env() -> Option<String> {
+    resolve_redis_url_with(|key| std::env::var(key).ok())
+}
+
+pub(crate) fn resolve_redis_url_with<F>(lookup: F) -> Option<String>
+where
+    F: Fn(&str) -> Option<String>,
+{
+    for key in ["ACMECAST_REDIS_URL", "ACMECAST_VALKEY_URL", "REDIS_URL"] {
+        if let Some(value) = lookup(key) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_owned());
+            }
+        }
+    }
+    None
 }
 
 /// 生成带注释的 `config.toml` 模板内容。
@@ -1489,5 +1524,87 @@ mod tests {
         assert!(!content.contains("ACMECAST_ADMIN_PASSWORD_HASH"));
         assert!(!content.contains("ACMECAST_CREDENTIAL_KEY"));
         assert!(!content.contains("ACMECAST_JWT_SECRET"));
+    }
+
+    #[test]
+    fn server_config_default_redis_url_is_none() {
+        let config = ServerConfig::default();
+        assert_eq!(config.redis_url, None);
+    }
+
+    #[test]
+    fn redis_url_alias_priority_and_empty_fallback() {
+        // 1. 全部设置时，ACMECAST_REDIS_URL 优先级最高
+        let url = resolve_redis_url_with(|key| match key {
+            "ACMECAST_REDIS_URL" => Some("redis://redis:6379".to_owned()),
+            "ACMECAST_VALKEY_URL" => Some("redis://valkey:6379".to_owned()),
+            "REDIS_URL" => Some("redis://standard:6379".to_owned()),
+            _ => None,
+        });
+        assert_eq!(url.as_deref(), Some("redis://redis:6379"));
+
+        // 2. ACMECAST_REDIS_URL 为空串时，回退到 ACMECAST_VALKEY_URL
+        let url = resolve_redis_url_with(|key| match key {
+            "ACMECAST_REDIS_URL" => Some("   ".to_owned()),
+            "ACMECAST_VALKEY_URL" => Some("redis://valkey:6379".to_owned()),
+            "REDIS_URL" => Some("redis://standard:6379".to_owned()),
+            _ => None,
+        });
+        assert_eq!(url.as_deref(), Some("redis://valkey:6379"));
+
+        // 3. 前两者均为空串时，回退到 REDIS_URL
+        let url = resolve_redis_url_with(|key| match key {
+            "ACMECAST_REDIS_URL" => Some("".to_owned()),
+            "ACMECAST_VALKEY_URL" => Some(" ".to_owned()),
+            "REDIS_URL" => Some("redis://standard:6379".to_owned()),
+            _ => None,
+        });
+        assert_eq!(url.as_deref(), Some("redis://standard:6379"));
+
+        // 4. 全部为空白字符或未设时，回退为 None
+        let url = resolve_redis_url_with(|key| match key {
+            "ACMECAST_REDIS_URL" => Some("  ".to_owned()),
+            "ACMECAST_VALKEY_URL" => None,
+            "REDIS_URL" => Some("".to_owned()),
+            _ => None,
+        });
+        assert_eq!(url, None);
+
+        let url = resolve_redis_url_with(|_| None);
+        assert_eq!(url, None);
+    }
+
+    #[test]
+    #[serial]
+    fn env_redis_url_integration() {
+        unsafe {
+            std::env::remove_var("ACMECAST_REDIS_URL");
+            std::env::remove_var("ACMECAST_VALKEY_URL");
+            std::env::remove_var("REDIS_URL");
+        }
+
+        let mut config = ServerConfig::default();
+        apply_env(&mut config);
+        assert_eq!(config.redis_url, None);
+
+        unsafe {
+            std::env::set_var("ACMECAST_VALKEY_URL", "redis://valkey.test:6379");
+        }
+        let mut config = ServerConfig::default();
+        apply_env(&mut config);
+        assert_eq!(config.redis_url.as_deref(), Some("redis://valkey.test:6379"));
+
+        unsafe {
+            std::env::set_var("ACMECAST_REDIS_URL", "redis://redis.test:6379");
+        }
+        let mut config = ServerConfig::default();
+        apply_env(&mut config);
+        assert_eq!(config.redis_url.as_deref(), Some("redis://redis.test:6379"));
+
+        unsafe {
+            std::env::remove_var("ACMECAST_REDIS_URL");
+            std::env::remove_var("ACMECAST_VALKEY_URL");
+            std::env::remove_var("REDIS_URL");
+        }
     }
 }

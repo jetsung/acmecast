@@ -51,6 +51,7 @@ fn launcher(db: &DatabaseConnection) -> acmecast_server::scheduler::PipelineRunL
                 .expect("生成的密钥应可用"),
         )),
         None,
+        None,
     )
 }
 

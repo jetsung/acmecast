@@ -26,10 +26,10 @@ pub struct S3Input {
     /// 对象键前缀覆盖：留空则使用凭据中的 `prefix`。
     #[serde(default)]
     pub prefix: Option<String>,
-    /// 证书链对象键模板；可选，含 `{domain}` 占位，未填时跟随 cert.store 的本地文件名 `<prefix>/<主域>.cert.pem`（`*` 已归一为 `_`）。
+    /// 证书链对象键模板；可选，含 `{domain}` 占位，未填时跟随 cert.store 的本地文件名 `<prefix>/<主域>.cer`（`*` 已归一为 `_wildcard`）。
     #[serde(default)]
     pub cert_filename: Option<String>,
-    /// 私钥对象键模板；可选，未填时跟随 cert.store 的本地文件名 `<prefix>/<主域>.key.pem`（`*` 已归一为 `_`）。
+    /// 私钥对象键模板；可选，未填时跟随 cert.store 的本地文件名 `<prefix>/<主域>.key`（`*` 已归一为 `_wildcard`）。
     #[serde(default)]
     pub key_filename: Option<String>,
     /// 是否强制 path-style（对 MinIO 等自建存储常用）。
@@ -59,7 +59,14 @@ fn render_filename(template: &Option<String>, domain: &str, suffix: &str) -> Str
 }
 
 fn domain_file_prefix(domain: &str) -> String {
-    let cleaned: String = domain
+    let normalized = if let Some(stripped) = domain.strip_prefix("*.") {
+        format!("_wildcard.{stripped}")
+    } else if domain == "*" {
+        "_wildcard".to_owned()
+    } else {
+        domain.to_owned()
+    };
+    let cleaned: String = normalized
         .chars()
         .map(|c| match c {
             'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '-' | '_' => c,
@@ -136,8 +143,8 @@ impl DeploymentTarget for S3Target {
         if endpoint.trim().is_empty() || region.trim().is_empty() || bucket.trim().is_empty() {
             return Err(Error::invalid_input("credential_id", "凭据缺少 endpoint/region/bucket"));
         }
-        let cert_key = format!("{}{}", prefix, render_filename(&input.cert_filename, &domain, "cert.pem"));
-        let key_key = format!("{}{}", prefix, render_filename(&input.key_filename, &domain, "key.pem"));
+        let cert_key = format!("{}{}", prefix, render_filename(&input.cert_filename, &domain, "cer"));
+        let key_key = format!("{}{}", prefix, render_filename(&input.key_filename, &domain, "key"));
         let paths = vec![format!("s3://{bucket}/{cert_key}"), format!("s3://{bucket}/{key_key}")];
         if mode == DeployMode::SkipWrite {
             return Ok(DeployOutcome::skipped(paths));

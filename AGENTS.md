@@ -1,7 +1,15 @@
-# AI 协作笔记
-
 > 给 AI 助手的实现思路参考(项目根目录,不进用户文档站)。下次遇到同类需求时,
 > 让 AI 先读本文件再动手。当前篇目:
+
+## 项目兼容性约定(重要)
+
+**本项目是新项目,任何修改都不需要向上兼容(不需要兼容旧版)。**
+
+- 改 API、schema、数据库、配置文件、前端类型等时,**直接改**即可,不必保留旧字段、
+  旧接口、旧数据格式的兼容层或迁移逻辑。
+- 不要为了「老版本还能用」而保留废弃字段/接口,也不要写「新旧并存」的分支代码。
+- 唯一例外:数据库迁移文件仍按项目既有机制正常编写(保证空库→新库结构正确),
+  但不需要支持从旧版本数据库平滑升级的路径。
 
 ## Schema 驱动表单:布局扩展与实现思路
 
@@ -132,17 +140,36 @@ cargo clippy --workspace                         # 零新增告警
 cd frontend && npx vitest run                    # SchemaForm.test / CredentialListPage.test / PipelineEditorPage.test
 openspec validate <change> --strict              # 规划工件校验
 ```
-
 改了后端 schema 要**重启 `just dev`**(`cargo run` 不热载);前端 vite 热更新即时生效。
 
-## 本次变更的文件索引(credential-form-layout-and-dns-test)
+## 本地调试
 
-- 后端 schema 注入:`crates/acmecast-dns/src/providers/tencent.rs`(`tencent_credentials_schema`)、
-  `crates/acmecast-access/src/credential/acme_account.rs`(`credentials`→`x-multiline`、
-  `directory_url`→`x-full-width`)
-- 凭据探测:`crates/acmecast-dns/src/providers/{cloudflare,aliyun,tencent,tencent_eo}.rs`
-  (`verify_credentials`)+ `crates/acmecast-server/src/credentials.rs`(四个凭据类型接线,
-  `with_transport` 注入替身供测试)
-- 前端渲染器:`frontend/src/components/SchemaForm.tsx`(顶层分支补 `x-full-width` 与 `x-end-row`)
-- 测试:`crates/acmecast-dns/tests/providers.rs`、`frontend/src/components/SchemaForm.test.tsx`、
-  `frontend/src/pages/credentials/CredentialListPage.test.tsx`
+### 调试账号（开发环境）
+
+- 用户名：`admin`
+- 密码：`admin888`
+- 首次启动后使用该账号登录后台验证证书、流水线、凭据等功能即可；生产环境请通过 `ACMECAST_ADMIN_PASSWORD_HASH` / `ADMIN_PASSWORD` 等方式覆盖。
+
+### 使用 just 启动前、后端
+
+`justfile` 已通过 `mise exec` 统一注入 `mise.toml` 的工具链与 `.env` 环境变量，直接使用 `just` 命令即可：
+
+```bash
+# 同时启动前后端（后端 0.0.0.0:8080，前端 localhost:5173，/api → 8080）
+just dev
+
+# 仅后端（可附加子命令，如生成口令哈希）
+just backend
+just backend hash-password 'admin888'
+
+# 仅前端
+just frontend          # pnpm -C frontend dev
+just frontend-install  # 首次或 pnpm-lock.yaml 变更后
+
+# 后端 OpenAPI 变更后刷新前端类型
+just gen-api           # 需后端已在 8080 运行
+```
+
+> 切勿绕过 `just` 直接 `cargo run` / `pnpm dev`，否则 `mise` 与 `.env` 注入的 `JWT_SECRET` / `SWAGGER_UI_DOWNLOAD_URL` 等会丢失。
+
+## 本次变更的文件索引(credential-form-layout-and-dns-test)

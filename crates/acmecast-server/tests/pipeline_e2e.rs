@@ -21,6 +21,8 @@ use acmecast_deploy::state::InMemoryDeploymentState;
 use acmecast_dns::{DnsProvider, DnsProviderRegistry, TxtRecord, challenge_record_name};
 use acmecast_pipeline::{PipelineDefinition, PipelineRunner, StepRegistry};
 use acmecast_scheduler::PipelineLauncher as _;
+use acmecast_server::auth::AuthMode;
+use acmecast_server::config::ServerConfig;
 use acmecast_server::steps::{CertApplyStep, CertDeployStep, CertStoreStep};
 use acmecast_store::migrate;
 use acmecast_store::repository::{CertInput, CertQuery, CertRepository};
@@ -898,6 +900,7 @@ async fn renewal_scan_triggers_a_single_reissue() {
         Arc::clone(&credential_registry),
         Some(&cipher),
         None,
+        None,
     );
     launcher
         .launch(acmecast_scheduler::LaunchRequest {
@@ -1115,6 +1118,7 @@ async fn revocation_updates_ca_and_local_state() {
         Arc::clone(&credential_registry),
         Some(&cipher),
         None,
+        None,
     );
     launcher
         .launch(acmecast_scheduler::LaunchRequest {
@@ -1316,6 +1320,10 @@ async fn revocation_updates_ca_and_local_state() {
             domains: vec!["manual.acmecast.test".to_owned()],
             cert_pem_path: "certs/manual.pem".to_owned(),
             key_pem_path: "keys/manual.pem".to_owned(),
+            cert_path: None,
+            ca_path: None,
+            fullchain_path: None,
+            key_path: None,
             fingerprint: "sha256:manual".to_owned(),
             issuer: None,
             not_before: chrono::Utc::now() - chrono::Duration::days(1),
@@ -1511,4 +1519,121 @@ async fn auto_selected_dns_provider_completes_the_pipeline() {
         .filter(|value| !value.is_empty())
         .count();
     assert_eq!(remaining, 0, "挑战 TXT 记录应在完成后清理：{snapshot:?}");
+}
+
+// ---- 4.2 流水线保存的凭据能力校验 ----
+//
+// `cert.apply` 的 `dns_credential_id` 需凭据声明 `dns` 能力；
+// `cert.deploy` 的 `config.credential_id`（腾讯云 SSL 变体）需 `deploy` 能力。
+// 引用能力不匹配时保存返回 400 并提示凭据标识与缺失能力——校验只查库，
+// 不发起任何云端调用。
+
+/// 预置一张指定能力的 `tencent` 凭据，返回主键。
+async fn a_tencent_credential(
+    db: &DatabaseConnection,
+    cipher: &CredentialCipher,
+    name: &str,
+    capabilities: &str,
+) -> i64 {
+    let encrypted = cipher
+        .encrypt_string(&serde_json::json!({}).to_string())
+        .expect("应能加密凭据");
+    acmecast_store::entity::credential::ActiveModel {
+        name: Set(name.to_owned()),
+        type_id: Set("tencent".to_owned()),
+        encrypted_fields: Set(encrypted),
+        capabilities: Set(capabilities.to_owned()),
+        created_at: Set(chrono::Utc::now()),
+        updated_at: Set(chrono::Utc::now()),
+        ..Default::default()
+    }
+    .insert(db)
+    .await
+    .expect("凭据应能写入")
+    .id
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn saving_with_mismatched_credential_capability_is_rejected() {
+    let db = a_database().await;
+    let cipher = Arc::new(
+        CredentialCipher::from_base64(&CredentialCipher::generate_key_base64())
+            .expect("密钥应可用"),
+    );
+    let dns_only = a_tencent_credential(&db, &cipher, "仅 DNS", r#"["dns"]"#).await;
+    let deploy_only = a_tencent_credential(&db, &cipher, "仅部署", r#"["deploy"]"#).await;
+
+    let app = support::router_with_db(
+        db,
+        ServerConfig::default(),
+        AuthMode::Disabled,
+        Some(cipher),
+        acmecast_server::dependencies::credential_registry(),
+        acmecast_server::dependencies::step_registry(),
+    )
+    .await;
+
+    // cert.apply 的 dns_credential_id 指向仅部署凭据 → 400，提示缺 DNS 能力。
+    let apply_body = serde_json::json!({
+        "name": "错配 apply",
+        "enabled": true,
+        "steps": [{
+            "type_id": "cert.apply",
+            "enabled": true,
+            "input": {
+                "domains": ["example.com"],
+                "challenge": "dns-01",
+                "account_credential_id": 1,
+                "dns_credential_id": deploy_only,
+            }
+        }]
+    });
+    let response = send(&app, json_request("POST", "/api/pipelines", &apply_body)).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = json(response).await;
+    let message = body["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains(&deploy_only.to_string()) && message.contains("DNS"),
+        "应提示凭据标识与缺失能力：{message}"
+    );
+
+    // cert.deploy（tencent-ssl）的 credential_id 指向仅 DNS 凭据 → 400。
+    let deploy_body = serde_json::json!({
+        "name": "错配 deploy",
+        "enabled": true,
+        "steps": [{
+            "type_id": "cert.deploy",
+            "enabled": true,
+            "input": {
+                "target": "tencent-ssl",
+                "config": { "credential_id": dns_only }
+            }
+        }]
+    });
+    let response = send(&app, json_request("POST", "/api/pipelines", &deploy_body)).await;
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = json(response).await;
+    let message = body["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains(&dns_only.to_string()) && message.contains("部署"),
+        "应提示凭据标识与缺失能力：{message}"
+    );
+
+    // 能力匹配时保存正常通过。
+    let ok_body = serde_json::json!({
+        "name": "能力匹配",
+        "enabled": true,
+        "steps": [{
+            "type_id": "cert.apply",
+            "enabled": true,
+            "input": {
+                "domains": ["example.com"],
+                "challenge": "dns-01",
+                "account_credential_id": 1,
+                "dns_credential_id": dns_only,
+            }
+        }]
+    });
+    let response = send(&app, json_request("POST", "/api/pipelines", &ok_body)).await;
+    assert_eq!(response.status(), StatusCode::OK, "能力匹配应可保存");
 }

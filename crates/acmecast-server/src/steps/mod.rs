@@ -72,10 +72,10 @@ pub fn default_deploy_registry() -> Arc<DeploymentRegistry> {
         .register(acmecast_deploy::TencentSslTarget::new())
         .expect("内置部署目标不应重复注册");
     registry
-        .register(acmecast_deploy::S3Target::default())
+        .register(acmecast_deploy::S3Target)
         .expect("内置 S3 部署目标不应重复注册");
     registry
-        .register(acmecast_deploy::WebdavTarget::default())
+        .register(acmecast_deploy::WebdavTarget)
         .expect("内置 WebDAV 部署目标不应重复注册");
     Arc::new(registry)
 }

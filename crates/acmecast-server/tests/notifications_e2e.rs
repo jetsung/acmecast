@@ -47,7 +47,12 @@ async fn database() -> DatabaseConnection {
     db
 }
 
+#[allow(unsafe_code)]
 async fn app(db: DatabaseConnection, channels: Vec<ChannelConfig>) -> axum::Router {
+    unsafe {
+        std::env::set_var("NO_PROXY", "127.0.0.1,localhost");
+        std::env::set_var("no_proxy", "127.0.0.1,localhost");
+    }
     let mut steps = StepRegistry::new();
     steps
         .register(OkStep(EVENT_CERT_APPLY))
@@ -294,6 +299,7 @@ async fn run_pipeline_and_wait_success(
 
 #[tokio::test]
 async fn pipeline_run_pushes_apply_and_deploy_messages() {
+    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     let healthy = MockServer::start().await;
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(200))

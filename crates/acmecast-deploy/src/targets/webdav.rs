@@ -52,7 +52,14 @@ fn render_path(template: &Option<String>, domain: &str, suffix: &str) -> String 
 }
 
 fn domain_file_prefix(domain: &str) -> String {
-    let cleaned: String = domain
+    let normalized = if let Some(stripped) = domain.strip_prefix("*.") {
+        format!("_wildcard.{stripped}")
+    } else if domain == "*" {
+        "_wildcard".to_owned()
+    } else {
+        domain.to_owned()
+    };
+    let cleaned: String = normalized
         .chars()
         .map(|c| match c {
             'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '-' | '_' => c,
@@ -124,8 +131,8 @@ impl DeploymentTarget for WebdavTarget {
         let url = if vault_url.trim().is_empty() { return Err(Error::invalid_input("credential_id", "凭据缺少 url")); } else { vault_url };
         let domain = primary_domain_of(materials)
             .unwrap_or_else(|_| "certificate".to_owned());
-        let cert_name = render_path(&input.cert_path, &domain, "cert.pem");
-        let key_name = render_path(&input.key_path, &domain, "key.pem");
+        let cert_name = render_path(&input.cert_path, &domain, "cer");
+        let key_name = render_path(&input.key_path, &domain, "key");
         let base_url = url.trim_end_matches('/');
         let cert_url = format!("{base_url}/{base}{cert_name}");
         let key_url = format!("{base_url}/{base}{key_name}");

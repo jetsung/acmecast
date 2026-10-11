@@ -30,7 +30,7 @@ use utoipa::OpenApi;
 /// `/api/openapi.json` 与 `/swagger-ui` 由 `SwaggerUi` 挂载、与文档本身
 /// 同源生成，不在此列。这份清单就是「端点变更后文档同步」的守护：
 /// 新增路由而忘记补文档时，这里会失败提醒。
-const KNOWN_API_PATHS: [&str; 24] = [
+const KNOWN_API_PATHS: [&str; 26] = [
     "/api/login",
     "/api/pipelines",
     "/api/pipelines/{id}",
@@ -51,6 +51,8 @@ const KNOWN_API_PATHS: [&str; 24] = [
     "/api/histories",
     "/api/histories/{id}",
     "/api/histories/{id}/logs",
+    "/api/histories/{id}/events",
+    "/api/pipelines/{pipeline_id}/histories/{id}/events",
     "/api/schedules",
     "/api/schedules/{pipeline_id}",
     "/api/schedules/trigger-logs",
@@ -209,7 +211,7 @@ async fn pem_download_carries_filename_and_content_type() {
         .unwrap_or_default()
         .to_owned();
     assert!(
-        disposition.contains("attachment") && disposition.contains("download.example.com.pem"),
+        disposition.contains("attachment") && disposition.contains("download.example.com.fullchain.cer"),
         "应带附件文件名，实际为 `{disposition}`"
     );
     let content_type = response
@@ -294,8 +296,8 @@ async fn key_download_returns_pem_with_key_filename() {
         .unwrap_or_default()
         .to_owned();
     assert!(
-        disposition.contains("download.example.com.key.pem"),
-        "私钥文件名应为 *.key.pem，实际为 `{disposition}`"
+        disposition.contains("download.example.com.key"),
+        "私钥文件名应为 *.key，实际为 `{disposition}`"
     );
     let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
         .await

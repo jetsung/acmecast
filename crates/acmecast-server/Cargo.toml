@@ -50,12 +50,15 @@ argon2.workspace = true
 # 子命令（init / hash-password）与全局 --config 解析。
 clap.workspace = true
 async-trait.workspace = true
+async-stream.workspace = true
+futures-util.workspace = true
 axum.workspace = true
 chrono.workspace = true
 # 访问令牌（HS256 JWT）。
 jsonwebtoken.workspace = true
 # cert.apply 步骤在申请时生成密钥对与 CSR。
 rcgen.workspace = true
+redis.workspace = true
 sea-orm.workspace = true
 serde.workspace = true
 serde_json.workspace = true

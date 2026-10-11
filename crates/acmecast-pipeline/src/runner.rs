@@ -191,6 +191,7 @@ impl<'a> PipelineRunner<'a> {
 
     /// 按顺序执行一条流水线的全部启用步骤。
     pub async fn run(&self, pipeline: &PipelineDefinition, run_id: i64) -> Result<RunOutcome> {
+        let start_time = std::time::Instant::now();
         let scope = RunScope {
             pipeline_id: pipeline.id,
             run_id,
@@ -218,11 +219,24 @@ impl<'a> PipelineRunner<'a> {
 
         for step in ordered {
             if !step.enabled {
+                let skipped_log = StepLog::info("步骤已停用，跳过");
+                self.emit(PipelineEvent::Log {
+                    pipeline_id: pipeline.id,
+                    run_id,
+                    log: crate::history::StepLogRecord {
+                        step_index: step.order_index,
+                        level: skipped_log.level,
+                        message: skipped_log.message.clone(),
+                        created_at: skipped_log.created_at,
+                        output: skipped_log.output.clone(),
+                    },
+                })
+                .await;
                 steps.push(StepRun {
                     order_index: step.order_index,
                     type_id: step.type_id.clone(),
                     status: StepStatus::Skipped,
-                    logs: vec![StepLog::info("步骤已停用，跳过")],
+                    logs: vec![skipped_log],
                 });
                 self.emit(PipelineEvent::StepFinished {
                     pipeline_id: pipeline.id,
@@ -246,6 +260,7 @@ impl<'a> PipelineRunner<'a> {
                             step,
                             err.to_string(),
                             Vec::new(),
+                            start_time.elapsed(),
                         )
                         .await);
                 }
@@ -260,6 +275,7 @@ impl<'a> PipelineRunner<'a> {
                         step,
                         err.to_string(),
                         Vec::new(),
+                        start_time.elapsed(),
                     )
                     .await);
             }
@@ -275,12 +291,14 @@ impl<'a> PipelineRunner<'a> {
                             step,
                             err.to_string(),
                             Vec::new(),
+                            start_time.elapsed(),
                         )
                         .await);
                 }
             }
 
             // 4) 执行。上下文只借用产物集合，作用域结束后才轮到写回。
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
             let (executed, mut logs) = {
                 let mut ctx = StepContext::new(
                     pipeline.id,
@@ -290,13 +308,52 @@ impl<'a> PipelineRunner<'a> {
                     &artifacts,
                     self.credentials,
                     self.state,
-                );
-                let result = implementation.execute(&mut ctx).await;
+                )
+                .with_log_sender(tx);
+                let result = {
+                    let exec_future = implementation.execute(&mut ctx);
+                    tokio::pin!(exec_future);
+
+                    loop {
+                        tokio::select! {
+                            Some(log_record) = rx.recv() => {
+                                self.emit(PipelineEvent::Log {
+                                    pipeline_id: pipeline.id,
+                                    run_id,
+                                    log: log_record,
+                                }).await;
+                            }
+                            res = &mut exec_future => {
+                                break res;
+                            }
+                        }
+                    }
+                };
+                while let Ok(log_record) = rx.try_recv() {
+                    self.emit(PipelineEvent::Log {
+                        pipeline_id: pipeline.id,
+                        run_id,
+                        log: log_record,
+                    }).await;
+                }
                 (result, ctx.take_logs())
             };
 
             match executed {
                 Ok(output) => {
+                    for extra in &output.logs {
+                        self.emit(PipelineEvent::Log {
+                            pipeline_id: pipeline.id,
+                            run_id,
+                            log: crate::history::StepLogRecord {
+                                step_index: step.order_index,
+                                level: extra.level,
+                                message: extra.message.clone(),
+                                created_at: extra.created_at,
+                                output: extra.output.clone(),
+                            },
+                        }).await;
+                    }
                     artifacts.merge(step.order_index, &step.type_id, output.artifacts.clone());
                     logs.extend(output.logs);
                     info!(
@@ -328,13 +385,20 @@ impl<'a> PipelineRunner<'a> {
                             step,
                             err.to_string(),
                             logs,
+                            start_time.elapsed(),
                         )
                         .await);
                 }
             }
         }
 
-        info!(pipeline_id = pipeline.id, run_id, "流水线执行成功");
+        let duration = start_time.elapsed();
+        info!(
+            pipeline_id = pipeline.id,
+            run_id,
+            duration = ?duration,
+            "流水线执行成功"
+        );
 
         let outcome = RunOutcome {
             status: RunStatus::Succeeded,
@@ -360,11 +424,13 @@ impl<'a> PipelineRunner<'a> {
         step: &StepDefinition,
         reason: String,
         logs: Vec<StepLog>,
+        duration: std::time::Duration,
     ) -> RunOutcome {
         warn!(
             step_order = step.order_index,
             type_id = %step.type_id,
             reason = %reason,
+            duration = ?duration,
             "步骤失败，中止后续步骤"
         );
 

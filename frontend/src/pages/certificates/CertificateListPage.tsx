@@ -221,6 +221,19 @@ export function CertificateListPage() {
       render: (domains: string[]) => domains.join(", "),
     },
     {
+      title: "签发者",
+      dataIndex: "issuer_organization",
+      width: 220,
+      render: (value: string | null | undefined) =>
+        value && value.trim() !== "" ? (
+          <Typography.Text ellipsis style={{ maxWidth: 200 }} title={value}>
+            {value}
+          </Typography.Text>
+        ) : (
+          <Typography.Text type="secondary">—</Typography.Text>
+        ),
+    },
+    {
       title: "到期时间",
       dataIndex: "not_after",
       width: 260,

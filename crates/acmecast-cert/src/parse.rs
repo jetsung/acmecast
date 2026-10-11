@@ -92,6 +92,54 @@ pub fn parse_der(der: &[u8]) -> Result<CertificateInfo> {
     })
 }
 
+/// 从 Issuer/Subject DN 字符串中提取 `O`（Organization）属性值。
+///
+/// DN 形如 `C=AT, O=ZeroSSL GmbH, CN=...`（x509-parser 的 Display 输出）。
+/// 规则：多个 `O` 取首个非空；值可用双引号包裹（内含逗号不拆分），
+/// `\` 与 `"` 反义转义还原；无 `O` 或值为空返回 `None`。
+#[must_use]
+pub fn organization_from_dn(dn: &str) -> Option<String> {
+    let mut current_key: Option<String> = None;
+    let mut value = String::new();
+    let mut in_quotes = false;
+    let mut escaped = false;
+    let mut found: Option<String> = None;
+
+    let mut flush = |key: &Option<String>, value: &mut String, found: &mut Option<String>| {
+        if found.is_none()
+            && key.as_deref().is_some_and(|k| k.eq_ignore_ascii_case("O"))
+        {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                *found = Some(trimmed.to_owned());
+            }
+        }
+        value.clear();
+    };
+
+    for ch in dn.chars() {
+        if escaped {
+            value.push(ch);
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if ch == '"' {
+            in_quotes = !in_quotes;
+        } else if ch == ',' && !in_quotes {
+            flush(&current_key, &mut value, &mut found);
+            current_key = None;
+        } else if ch == '=' && !in_quotes && current_key.is_none() {
+            current_key = Some(value.trim().to_owned());
+            value.clear();
+        } else {
+            value.push(ch);
+        }
+    }
+    flush(&current_key, &mut value, &mut found);
+
+    found
+}
+
 /// 解析 PEM 中的证书链，返回每张证书的信息。
 pub fn parse_pem(pem_text: &str) -> Result<Vec<CertificateInfo>> {
     let blocks = pem::pem_to_der_blocks(pem_text)?;
@@ -183,6 +231,40 @@ mod tests {
             Ok(_) => panic!("非法 DER 应报错"),
             Err(err) => assert!(matches!(err, Error::X509(_)), "{err:?}"),
         }
+    }
+
+    #[test]
+    fn organization_from_dn_cases() {
+        // 常规多段 DN：取 O 值。
+        assert_eq!(
+            organization_from_dn("C=AT, O=ZeroSSL GmbH, CN=ZeroSSL ECC DV SSL CA 2"),
+            Some("ZeroSSL GmbH".to_owned())
+        );
+        // 仅 CN 的自签证书：无 O。
+        assert_eq!(organization_from_dn("CN=Test CA"), None);
+        // 空串与空 O 值。
+        assert_eq!(organization_from_dn(""), None);
+        assert_eq!(organization_from_dn("O=, CN=x"), None);
+        // 多个 O 取首个非空。
+        assert_eq!(
+            organization_from_dn("O=First Org, O=Second Org"),
+            Some("First Org".to_owned())
+        );
+        // 引号内的逗号不拆分。
+        assert_eq!(
+            organization_from_dn("C=US, O=\"Foo, Inc.\", CN=Example"),
+            Some("Foo, Inc.".to_owned())
+        );
+        // 反斜杠转义还原。
+        assert_eq!(
+            organization_from_dn(r#"O=Foo\, Inc., CN=x"#),
+            Some("Foo, Inc.".to_owned())
+        );
+        // O 在中间段也能取到。
+        assert_eq!(
+            organization_from_dn("CN=Only CN, O=Middle Org"),
+            Some("Middle Org".to_owned())
+        );
     }
 
     #[test]

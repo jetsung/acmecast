@@ -68,6 +68,8 @@ pub struct ResolvedCredential {
     pub type_id: String,
     /// 人类可读的备注（用途/归属/环境说明），可为空。
     pub remark: String,
+    /// 能力标记（`dns` / `deploy` 的归一化子集）；非受控类型为空数组。
+    pub capabilities: Vec<String>,
     /// 解密后的字段值。
     pub fields: serde_json::Value,
 }
@@ -157,11 +159,19 @@ impl<'db> CredentialStore<'db> {
 
         credential_type.validate(&fields).map_err(Error::Core)?;
 
+        // 受控类型解析并归一化（存量缺省视为双能力）；非受控为空数组。
+        let capabilities = if acmecast_store::capability::is_controlled(&record.type_id) {
+            acmecast_store::capability::parse(&record.capabilities)
+        } else {
+            Vec::new()
+        };
+
         Ok(ResolvedCredential {
             id: record.id,
             name: record.name,
             type_id: record.type_id,
             remark: record.remark,
+            capabilities,
             fields,
         })
     }

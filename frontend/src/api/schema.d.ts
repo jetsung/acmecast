@@ -183,6 +183,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    [path: `/api/histories/${number}/events`]: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 运行历史实时事件流的文档占位函数。 */
+        get: operations["history_events"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     [path: `/api/histories/${number}/logs`]: {
         parameters: {
             query?: never;
@@ -292,6 +309,23 @@ export interface paths {
         put?: never;
         /** 手动触发流水线的文档占位函数。 */
         post: operations["run_pipeline"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    [path: `/api/pipelines/${number}/histories/${number}/events`]: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 流水线运行历史实时事件流的文档占位函数。 */
+        get: operations["pipeline_history_events"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -443,7 +477,9 @@ export interface components {
                  * @description 归档时间。
                  */
                 archived_at?: string | null;
-                /** @description 证书 PEM 相对路径。 */
+                /** @description 三文件布局：中间链 `ca.cer` 相对路径。 */
+                ca_path?: string | null;
+                /** @description 证书 PEM 相对路径（兼容，旧数据）。 */
                 cert_pem_path: string;
                 /**
                  * Format: date-time
@@ -456,6 +492,8 @@ export interface components {
                 domains: string[];
                 /** @description SHA-256 指纹。 */
                 fingerprint: string;
+                /** @description 三文件布局：完整链 `fullchain.cer` 相对路径。 */
+                fullchain_path?: string | null;
                 /**
                  * Format: int64
                  * @description 主键。
@@ -463,9 +501,13 @@ export interface components {
                 id: number;
                 /** @description 签发者。 */
                 issuer?: string | null;
+                /** @description 签发者组织（Issuer DN 中的 `O` 值）；无 `O` 时为空，列表页展示 `—`。 */
+                issuer_organization?: string | null;
                 /** @description 私钥算法展示名（RSA / ECDSA P-256 等）；旧数据可为空。 */
                 key_algorithm?: string | null;
-                /** @description 私钥 PEM 相对路径。 */
+                /** @description 三文件布局：私钥 `key` 相对路径。 */
+                key_path?: string | null;
+                /** @description 私钥 PEM 相对路径（兼容，旧数据）。 */
                 key_pem_path: string;
                 /**
                  * Format: date-time
@@ -509,6 +551,8 @@ export interface components {
              *     列表响应（`CredentialResponse`）依旧不带字段。
              */
             data: {
+                /** @description 能力标记（`dns` / `deploy`）；非受控类型为空数组。 */
+                capabilities: string[];
                 /**
                  * Format: date-time
                  * @description 创建时间。
@@ -538,6 +582,8 @@ export interface components {
         ApiResponse_CredentialResponse: {
             /** @description 凭据列表项响应。不返回加密字段。 */
             data: {
+                /** @description 能力标记（`dns` / `deploy`）；非受控类型为空数组。 */
+                capabilities: string[];
                 /**
                  * Format: date-time
                  * @description 创建时间。
@@ -632,7 +678,9 @@ export interface components {
                      * @description 归档时间。
                      */
                     archived_at?: string | null;
-                    /** @description 证书 PEM 相对路径。 */
+                    /** @description 三文件布局：中间链 `ca.cer` 相对路径。 */
+                    ca_path?: string | null;
+                    /** @description 证书 PEM 相对路径（兼容，旧数据）。 */
                     cert_pem_path: string;
                     /**
                      * Format: date-time
@@ -645,6 +693,8 @@ export interface components {
                     domains: string[];
                     /** @description SHA-256 指纹。 */
                     fingerprint: string;
+                    /** @description 三文件布局：完整链 `fullchain.cer` 相对路径。 */
+                    fullchain_path?: string | null;
                     /**
                      * Format: int64
                      * @description 主键。
@@ -652,9 +702,13 @@ export interface components {
                     id: number;
                     /** @description 签发者。 */
                     issuer?: string | null;
+                    /** @description 签发者组织（Issuer DN 中的 `O` 值）；无 `O` 时为空，列表页展示 `—`。 */
+                    issuer_organization?: string | null;
                     /** @description 私钥算法展示名（RSA / ECDSA P-256 等）；旧数据可为空。 */
                     key_algorithm?: string | null;
-                    /** @description 私钥 PEM 相对路径。 */
+                    /** @description 三文件布局：私钥 `key` 相对路径。 */
+                    key_path?: string | null;
+                    /** @description 私钥 PEM 相对路径（兼容，旧数据）。 */
                     key_pem_path: string;
                     /**
                      * Format: date-time
@@ -700,6 +754,8 @@ export interface components {
             data: {
                 /** @description 当前页数据。 */
                 items: {
+                    /** @description 能力标记（`dns` / `deploy`）；非受控类型为空数组。 */
+                    capabilities: string[];
                     /**
                      * Format: date-time
                      * @description 创建时间。
@@ -1111,7 +1167,9 @@ export interface components {
              * @description 归档时间。
              */
             archived_at?: string | null;
-            /** @description 证书 PEM 相对路径。 */
+            /** @description 三文件布局：中间链 `ca.cer` 相对路径。 */
+            ca_path?: string | null;
+            /** @description 证书 PEM 相对路径（兼容，旧数据）。 */
             cert_pem_path: string;
             /**
              * Format: date-time
@@ -1124,6 +1182,8 @@ export interface components {
             domains: string[];
             /** @description SHA-256 指纹。 */
             fingerprint: string;
+            /** @description 三文件布局：完整链 `fullchain.cer` 相对路径。 */
+            fullchain_path?: string | null;
             /**
              * Format: int64
              * @description 主键。
@@ -1131,9 +1191,13 @@ export interface components {
             id: number;
             /** @description 签发者。 */
             issuer?: string | null;
+            /** @description 签发者组织（Issuer DN 中的 `O` 值）；无 `O` 时为空，列表页展示 `—`。 */
+            issuer_organization?: string | null;
             /** @description 私钥算法展示名（RSA / ECDSA P-256 等）；旧数据可为空。 */
             key_algorithm?: string | null;
-            /** @description 私钥 PEM 相对路径。 */
+            /** @description 三文件布局：私钥 `key` 相对路径。 */
+            key_path?: string | null;
+            /** @description 私钥 PEM 相对路径（兼容，旧数据）。 */
             key_pem_path: string;
             /**
              * Format: date-time
@@ -1171,6 +1235,8 @@ export interface components {
          *     列表响应（`CredentialResponse`）依旧不带字段。
          */
         CredentialDetailResponse: {
+            /** @description 能力标记（`dns` / `deploy`）；非受控类型为空数组。 */
+            capabilities: string[];
             /**
              * Format: date-time
              * @description 创建时间。
@@ -1197,6 +1263,11 @@ export interface components {
         };
         /** @description 凭据创建/更新 DTO。 */
         CredentialRequest: {
+            /**
+             * @description 能力标记（`dns` / `deploy`），仅受控类型（tencent/cloudflare/aliyun）
+             *     生效；未传时受控类型按双能力处理，非受控类型忽略。
+             */
+            capabilities?: string[] | null;
             /** @description 未加密字段值；仅在进程内短暂存在。 */
             fields: unknown;
             /** @description 展示名称。 */
@@ -1208,6 +1279,8 @@ export interface components {
         };
         /** @description 凭据列表项响应。不返回加密字段。 */
         CredentialResponse: {
+            /** @description 能力标记（`dns` / `deploy`）；非受控类型为空数组。 */
+            capabilities: string[];
             /**
              * Format: date-time
              * @description 创建时间。
@@ -1346,7 +1419,9 @@ export interface components {
                  * @description 归档时间。
                  */
                 archived_at?: string | null;
-                /** @description 证书 PEM 相对路径。 */
+                /** @description 三文件布局：中间链 `ca.cer` 相对路径。 */
+                ca_path?: string | null;
+                /** @description 证书 PEM 相对路径（兼容，旧数据）。 */
                 cert_pem_path: string;
                 /**
                  * Format: date-time
@@ -1359,6 +1434,8 @@ export interface components {
                 domains: string[];
                 /** @description SHA-256 指纹。 */
                 fingerprint: string;
+                /** @description 三文件布局：完整链 `fullchain.cer` 相对路径。 */
+                fullchain_path?: string | null;
                 /**
                  * Format: int64
                  * @description 主键。
@@ -1366,9 +1443,13 @@ export interface components {
                 id: number;
                 /** @description 签发者。 */
                 issuer?: string | null;
+                /** @description 签发者组织（Issuer DN 中的 `O` 值）；无 `O` 时为空，列表页展示 `—`。 */
+                issuer_organization?: string | null;
                 /** @description 私钥算法展示名（RSA / ECDSA P-256 等）；旧数据可为空。 */
                 key_algorithm?: string | null;
-                /** @description 私钥 PEM 相对路径。 */
+                /** @description 三文件布局：私钥 `key` 相对路径。 */
+                key_path?: string | null;
+                /** @description 私钥 PEM 相对路径（兼容，旧数据）。 */
                 key_pem_path: string;
                 /**
                  * Format: date-time
@@ -1411,6 +1492,8 @@ export interface components {
         PageResponse_CredentialResponse: {
             /** @description 当前页数据。 */
             items: {
+                /** @description 能力标记（`dns` / `deploy`）；非受控类型为空数组。 */
+                capabilities: string[];
                 /**
                  * Format: date-time
                  * @description 创建时间。
@@ -2328,6 +2411,51 @@ export interface operations {
             };
         };
     };
+    history_events: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 历史主键 */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Server-Sent Events 实时事件流 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            406: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
     history_logs: {
         parameters: {
             query?: never;
@@ -2669,6 +2797,53 @@ export interface operations {
             };
             /** @description 流水线正在运行中 */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    pipeline_history_events: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 流水线标识 */
+                pipeline_id: number;
+                /** @description 历史主键 */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Server-Sent Events 实时事件流 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            406: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };

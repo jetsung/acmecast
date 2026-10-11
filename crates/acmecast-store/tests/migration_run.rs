@@ -162,6 +162,22 @@ async fn credential_table_after_migration_has_remark_column() {
     assert!(rows.is_empty(), "仅验证列存在，不限定行数");
 }
 
+#[tokio::test]
+async fn credential_table_after_migration_has_capabilities_column() {
+    let (db, _guard) = fresh_sqlite().await;
+    Migrator::up(&db, None).await.unwrap();
+
+    // 凭据表的 capabilities 列由 m20250114 加入；存量行默认双能力 JSON 文本。
+    let rows = db
+        .query_all(Statement::from_string(
+            db.get_database_backend(),
+            "SELECT capabilities FROM acmecast_credential LIMIT 1".to_owned(),
+        ))
+        .await
+        .expect("capabilities 列必须存在");
+    assert!(rows.is_empty(), "仅验证列存在，不限定行数");
+}
+
 /// 一个极简的临时目录守卫，替代引入额外 dev-dependency。
 mod temp_dir {
     use std::path::{Path, PathBuf};

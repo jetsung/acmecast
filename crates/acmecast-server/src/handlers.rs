@@ -90,6 +90,8 @@ pub(crate) fn routes() -> Router<HttpState> {
         .route("/api/histories", get(list_histories))
         .route("/api/histories/{id}", get(get_history))
         .route("/api/histories/{id}/logs", get(history_logs))
+        .route("/api/histories/{id}/events", get(crate::history_stream::handle_history_events))
+        .route("/api/pipelines/{pipeline_id}/histories/{id}/events", get(crate::history_stream::handle_pipeline_history_events))
 }
 
 /// 登录请求 DTO。
@@ -204,18 +206,15 @@ async fn download_certificate(
         .trim()
         .to_ascii_lowercase();
 
-    // 私钥单独下载：原样返回 key_pem，不做任何格式转换。
     if format == "key" || format == "private-key" || format == "key-pem" {
-        let key_pem = store
-            .read(&cert.key_pem_path)
-            .await
-            .map_err(|error| map_key_read_error(error, &cert.key_pem_path))?;
+        let key_path = cert.key_path.clone().expect("新布局 key_path 必有值");
+        let key_pem = store.read(&key_path).await.map_err(|e| map_key_read_error(e, &key_path))?;
         let leaf = cert
             .domain_set()
             .into_iter()
             .next()
             .unwrap_or_else(|| "certificate".to_owned());
-        let filename = format!("{}.key.pem", sanitize_filename(&leaf));
+        let filename = format!("{}.key", sanitize_filename(&leaf));
         let disposition =
             HeaderValue::from_str(&format!("attachment; filename=\"{filename}\"")).map_err(
                 |error| {
@@ -233,14 +232,14 @@ async fn download_certificate(
         return Ok(response);
     }
 
-    let cert_pem = store
-        .read(&cert.cert_pem_path)
-        .await
-        .map_err(ApiError::from)?;
-    let key_pem = store
-        .read(&cert.key_pem_path)
-        .await
-        .map_err(ApiError::from)?;
+    let cert_pem = {
+        let p = cert.fullchain_path.clone().expect("新布局 fullchain_path 必有值");
+        store.read(&p).await.map_err(ApiError::from)?
+    };
+    let key_pem = {
+        let p = cert.key_path.clone().expect("新布局 key_path 必有值");
+        store.read(&p).await.map_err(ApiError::from)?
+    };
 
     let password = query
         .password
@@ -248,12 +247,23 @@ async fn download_certificate(
         .unwrap_or_else(|| DEFAULT_KEYSTORE_PASSWORD.to_owned());
     let alias = "acmecast";
 
+    let ca_pem: String = {
+        if let Some(ca_path) = cert.ca_path.clone() {
+            store.read(&ca_path).await.unwrap_or_default()
+        } else { String::new() }
+    };
     let (bytes, content_type, extension) = match format.as_str() {
-        "pem" | "crt" => (
+        "fullchain" | "pem" | "crt" | "chain" => (
             cert_pem.clone().into_bytes(),
             "application/x-pem-file",
-            "pem",
+            "fullchain.cer",
         ),
+        "ca" | "intermediate" | "ca.cer" => {
+            if ca_pem.trim().is_empty() {
+                return Err(ApiError::new(StatusCode::NOT_FOUND, "not_found", "该证书无中间链（单证书）"));
+            }
+            (ca_pem.clone().into_bytes(), "application/x-pem-file", "ca.cer")
+        },
         "der" => (
             acmecast_cert::first_der(&cert_pem).map_err(ApiError::from)?,
             "application/pkix-cert",
@@ -278,7 +288,7 @@ async fn download_certificate(
         other => {
             return Err(ApiError::validation(
                 "format",
-                format!("不支持的证书格式 `{other}`，可用：pem、der、pfx、jks、p7b、key"),
+                format!("不支持的证书格式 `{other}`，可用：ca、fullchain、der、pfx、jks、p7b、key"),
             ));
         }
     };
@@ -423,10 +433,8 @@ async fn revoke_certificate(
     let store = FileStore::open(&state.app.config.data_dir)
         .await
         .map_err(ApiError::from)?;
-    let cert_pem = store
-        .read(&cert.cert_pem_path)
-        .await
-        .map_err(ApiError::from)?;
+    let cert_path = cert.fullchain_path.clone().expect("新布局 fullchain_path 必有值");
+    let cert_pem = store.read(&cert_path).await.map_err(ApiError::from)?;
     let der = acmecast_cert::first_der(&cert_pem).map_err(ApiError::from)?;
 
     let mut revoked_now = true;
@@ -501,6 +509,10 @@ async fn archive_revoked_material(
     if let Err(error) = repository.update_paths(cert_id, &paths).await {
         tracing::error!(cert_id, %error, "吊销归档后更新证书路径失败，尝试把文件移回原位");
         let original = CertFilePaths {
+            cert: cert.cert_path.clone().unwrap_or_else(|| cert.cert_pem_path.clone()),
+            ca: cert.ca_path.clone().unwrap_or_default(),
+            fullchain: cert.fullchain_path.clone().unwrap_or_else(|| cert.cert_pem_path.clone()),
+            key: cert.key_path.clone().unwrap_or_else(|| cert.key_pem_path.clone()),
             cert_pem: cert.cert_pem_path.clone(),
             key_pem: cert.key_pem_path.clone(),
         };
@@ -594,6 +606,10 @@ async fn archive_certificate(
                 "归档后更新证书路径失败，尝试把文件移回原位"
             );
             let original = CertFilePaths {
+                cert: cert.cert_path.clone().unwrap_or_else(|| cert.cert_pem_path.clone()),
+                ca: cert.ca_path.clone().unwrap_or_default(),
+                fullchain: cert.fullchain_path.clone().unwrap_or_else(|| cert.cert_pem_path.clone()),
+                key: cert.key_path.clone().unwrap_or_else(|| cert.key_pem_path.clone()),
                 cert_pem: cert.cert_pem_path.clone(),
                 key_pem: cert.key_pem_path.clone(),
             };
@@ -633,9 +649,16 @@ fn map_key_read_error(error: acmecast_store::Error, _relative: &str) -> ApiError
     }
 }
 
-/// 把域名收敛为安全的文件名：只保留字母数字与 `.`、`-`、`_`。
+/// 把域名收敛为安全的文件名：通配 `*` 显式映射为 `_wildcard`。
 fn sanitize_filename(name: &str) -> String {
-    let cleaned: String = name
+    let normalized = if let Some(stripped) = name.strip_prefix("*.") {
+        format!("_wildcard.{stripped}")
+    } else if name == "*" {
+        "_wildcard".to_owned()
+    } else {
+        name.to_owned()
+    };
+    let cleaned: String = normalized
         .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
@@ -803,14 +826,22 @@ pub(crate) struct CertificateResponse {
     pub id: i64,
     /// 规范化后的域名集合。
     pub domains: Vec<String>,
-    /// 证书 PEM 相对路径。
+    /// 证书 PEM 相对路径（兼容，旧数据）。
     pub cert_pem_path: String,
-    /// 私钥 PEM 相对路径。
+    /// 私钥 PEM 相对路径（兼容，旧数据）。
     pub key_pem_path: String,
+    /// 三文件布局：中间链 `ca.cer` 相对路径。
+    pub ca_path: Option<String>,
+    /// 三文件布局：完整链 `fullchain.cer` 相对路径。
+    pub fullchain_path: Option<String>,
+    /// 三文件布局：私钥 `key` 相对路径。
+    pub key_path: Option<String>,
     /// SHA-256 指纹。
     pub fingerprint: String,
     /// 签发者。
     pub issuer: Option<String>,
+    /// 签发者组织（Issuer DN 中的 `O` 值）；无 `O` 时为空，列表页展示 `—`。
+    pub issuer_organization: Option<String>,
     /// 生效时间。
     pub not_before: DateTime<Utc>,
     /// 到期时间。
@@ -843,6 +874,10 @@ pub(crate) struct CredentialRequest {
     /// 人类可读的备注（用途/归属/环境说明），可选；写入前 trim，缺省为空。
     #[serde(default)]
     pub remark: Option<String>,
+    /// 能力标记（`dns` / `deploy`），仅受控类型（tencent/cloudflare/aliyun）
+    /// 生效；未传时受控类型按双能力处理，非受控类型忽略。
+    #[serde(default)]
+    pub capabilities: Option<Vec<String>>,
 }
 
 /// 凭据列表查询参数。
@@ -869,6 +904,8 @@ pub(crate) struct CredentialResponse {
     pub type_id: String,
     /// 人类可读的备注，可为空。
     pub remark: String,
+    /// 能力标记（`dns` / `deploy`）；非受控类型为空数组。
+    pub capabilities: Vec<String>,
     /// 创建时间。
     pub created_at: DateTime<Utc>,
     /// 更新时间。
@@ -892,6 +929,8 @@ pub(crate) struct CredentialDetailResponse {
     pub fields: serde_json::Value,
     /// 人类可读的备注，可为空。
     pub remark: String,
+    /// 能力标记（`dns` / `deploy`）；非受控类型为空数组。
+    pub capabilities: Vec<String>,
     /// 创建时间。
     pub created_at: DateTime<Utc>,
     /// 更新时间。
@@ -1064,6 +1103,7 @@ async fn create_pipeline(
     ApiJson(request): ApiJson<PipelineRequest>,
 ) -> Result<ApiResponse<PipelineResponse>, ApiError> {
     let input = pipeline_input(request);
+    validate_pipeline_credential_capabilities(&state.app.db, &input.steps).await?;
     let id = PipelineRepository::new(&state.app.db)
         .save(None, input)
         .await
@@ -1118,11 +1158,72 @@ async fn update_pipeline(
     Path(id): Path<i64>,
     ApiJson(request): ApiJson<PipelineRequest>,
 ) -> Result<ApiResponse<PipelineResponse>, ApiError> {
+    let input = pipeline_input(request);
+    validate_pipeline_credential_capabilities(&state.app.db, &input.steps).await?;
     let id = PipelineRepository::new(&state.app.db)
-        .save(Some(id), pipeline_input(request))
+        .save(Some(id), input)
         .await
         .map_err(ApiError::from)?;
     get_pipeline_by_id(&state, id).await.map(ApiResponse::new)
+}
+
+/// 流水线保存前的凭据能力校验。
+///
+/// `cert.apply` 的 `dns_credential_id` 需凭据声明 `dns` 能力；
+/// `cert.deploy` 的 `config.credential_id`（腾讯云 SSL 变体）需 `deploy` 能力。
+/// 非受控类型不受能力约束；引用不存在留给既有执行期报错。能力不匹配时
+/// 返回 400 并提示凭据标识与缺失能力，不发起任何云端调用。
+async fn validate_pipeline_credential_capabilities(
+    db: &sea_orm::DatabaseConnection,
+    steps: &[acmecast_store::repository::PipelineStepInput],
+) -> Result<(), ApiError> {
+    use sea_orm::EntityTrait;
+    for step in steps {
+        let (field, credential_id, required) = match step.type_id.trim() {
+            "cert.apply" => (
+                "dns_credential_id",
+                step.input.get("dns_credential_id").and_then(serde_json::Value::as_i64),
+                acmecast_store::capability::DNS,
+            ),
+            "cert.deploy" => (
+                "credential_id",
+                step.input
+                    .get("config")
+                    .and_then(|config| config.get("credential_id"))
+                    .and_then(serde_json::Value::as_i64),
+                acmecast_store::capability::DEPLOY,
+            ),
+            _ => continue,
+        };
+        let Some(credential_id) = credential_id else {
+            continue;
+        };
+        let row = acmecast_store::entity::credential::Entity::find_by_id(credential_id)
+            .one(db)
+            .await
+            .map_err(|error| ApiError::from(acmecast_store::Error::from(error)))?;
+        let Some(row) = row else {
+            continue;
+        };
+        if !acmecast_store::capability::is_controlled(&row.type_id) {
+            continue;
+        }
+        let has = acmecast_store::capability::parse(&row.capabilities)
+            .iter()
+            .any(|item| item == required);
+        if !has {
+            let label = if required == acmecast_store::capability::DNS {
+                "DNS"
+            } else {
+                "部署"
+            };
+            return Err(ApiError::validation(
+                field,
+                format!("凭据 {credential_id}（{}）不支持{label}用途", row.name),
+            ));
+        }
+    }
+    Ok(())
 }
 
 async fn delete_pipeline(
@@ -1223,16 +1324,26 @@ async fn run_pipeline(
 
     let source = acmecast_store::entity::pipeline::TriggerSource::Manual;
     let definition = crate::run::definition_of(&pipeline);
-    let history_id = crate::run::start_run(&state.app.db, id, source)
-        .await
-        .map_err(ApiError::from)?;
+    let cache = crate::history_cache::HistoryCache::new(state.redis());
+    let history_id = crate::run::start_run(
+        &state.app.db,
+        &pipeline,
+        source,
+        Some(&cache),
+        Some(state.broadcaster()),
+    )
+    .await
+    .map_err(ApiError::from)?;
 
     let db = state.app.db.clone();
     let steps = Arc::clone(&state.runtime.step_registry);
     let registry = Arc::clone(&state.runtime.credential_registry);
     // 通知订阅端随运行旁路投递；未配置渠道时为 None，行为与之前一致。
     let notifier = state.runtime.notifier.clone();
+    let redis_manager = state.redis();
+    let broadcaster = state.runtime.broadcaster.clone();
     tokio::spawn(async move {
+        let cache = crate::history_cache::HistoryCache::new(redis_manager);
         let credentials = CredentialStore::new(&db, registry, cipher);
         let events: Option<&dyn acmecast_pipeline::EventSink> =
             notifier.as_deref().map(|sink| sink as _);
@@ -1244,6 +1355,8 @@ async fn run_pipeline(
             history_id,
             source,
             events,
+            Some(&cache),
+            Some(&broadcaster),
         )
         .await;
         match result {
@@ -1336,8 +1449,12 @@ async fn create_certificate(
     let result = CertRepository::new(&state.app.db)
         .create(CertInput {
             domains: request.domains,
-            cert_pem_path: request.cert_pem_path,
-            key_pem_path: request.key_pem_path,
+            cert_pem_path: request.cert_pem_path.clone(),
+            key_pem_path: request.key_pem_path.clone(),
+            cert_path: Some(request.cert_pem_path.clone()),
+            ca_path: None,
+            fullchain_path: Some(request.cert_pem_path),
+            key_path: Some(request.key_pem_path),
             fingerprint: request.fingerprint,
             issuer: request.issuer,
             not_before: request.not_before,
@@ -1513,6 +1630,11 @@ async fn get_credential(
     Ok(ApiResponse::new(CredentialDetailResponse {
         id: row.id,
         name: row.name,
+        capabilities: if acmecast_store::capability::is_controlled(&row.type_id) {
+            acmecast_store::capability::parse(&row.capabilities)
+        } else {
+            Vec::new()
+        },
         type_id: row.type_id,
         fields,
         remark: row.remark,
@@ -1584,6 +1706,8 @@ async fn save_credential(
         .filter(|remark| !remark.is_empty())
         .unwrap_or("")
         .to_owned();
+    // 能力标记仅受控类型生效；校验与归一化见 `resolve_capabilities_text`。
+    let capabilities = resolve_capabilities_text(request.type_id.trim(), request.capabilities.as_ref())?;
     let now = Utc::now();
     let row = match id {
         Some(id) => {
@@ -1604,6 +1728,7 @@ async fn save_credential(
                 type_id: Set(request.type_id.trim().to_owned()),
                 encrypted_fields: Set(encrypted_fields),
                 remark: Set(remark),
+                capabilities: Set(capabilities),
                 updated_at: Set(now),
                 ..Default::default()
             }
@@ -1616,6 +1741,7 @@ async fn save_credential(
             type_id: Set(request.type_id.trim().to_owned()),
             encrypted_fields: Set(encrypted_fields),
             remark: Set(remark),
+            capabilities: Set(capabilities),
             created_at: Set(now),
             updated_at: Set(now),
             ..Default::default()
@@ -1625,6 +1751,37 @@ async fn save_credential(
         .map_err(|error| ApiError::from(acmecast_store::Error::from(error)))?,
     };
     Ok(row.into())
+}
+
+/// 把请求中的能力输入归一化为库存储文本。
+///
+/// 受控类型（tencent/cloudflare/aliyun）：未传按双能力容错（旧前端兼容）；
+/// 空数组或白名单外取值 400 且 `field=capabilities`。非受控类型忽略输入，
+/// 落库空数组。
+fn resolve_capabilities_text(
+    type_id: &str,
+    capabilities: Option<&Vec<String>>,
+) -> Result<String, ApiError> {
+    if !acmecast_store::capability::is_controlled(type_id) {
+        return Ok("[]".to_owned());
+    }
+    let Some(items) = capabilities else {
+        return Ok(acmecast_store::capability::DEFAULT_CAPABILITIES_TEXT.to_owned());
+    };
+    if items.is_empty()
+        || items.iter().any(|item| {
+            !matches!(
+                item.as_str(),
+                acmecast_store::capability::DNS | acmecast_store::capability::DEPLOY
+            )
+        })
+    {
+        return Err(ApiError::validation(
+            "capabilities",
+            "能力仅支持 dns / deploy，且至少选择一项",
+        ));
+    }
+    Ok(acmecast_store::capability::to_text(items.iter().map(String::as_str)))
 }
 
 /// 递归去掉凭据 JSON 里所有字符串的首尾空白。
@@ -2109,20 +2266,33 @@ async fn list_histories_for(
         })
         .await
         .map_err(ApiError::from)?;
+
+    let cache = crate::history_cache::HistoryCache::new(state.redis());
+    let mut items = Vec::with_capacity(result.items.len());
+    for item in result.items {
+        // 对于 running 状态的历史，优先从缓存获取最新元数据
+        let (status, finished_at, error_message) = if item.status == acmecast_store::entity::history::RunStatus::Running {
+            if let Some(cached_meta) = cache.get_meta(item.id).await {
+                (cached_meta.status.as_str().to_owned(), cached_meta.finished_at, cached_meta.error_message)
+            } else {
+                (item.status.as_str().to_owned(), item.finished_at, item.error_message)
+            }
+        } else {
+            (item.status.as_str().to_owned(), item.finished_at, item.error_message)
+        };
+        items.push(HistoryResponse {
+            id: item.id,
+            pipeline_id: item.pipeline_id,
+            trigger_source: item.trigger_source.as_str().to_owned(),
+            status,
+            started_at: item.started_at,
+            finished_at,
+            error_message,
+        });
+    }
+
     Ok(ApiResponse::new(PageResponse {
-        items: result
-            .items
-            .into_iter()
-            .map(|item| HistoryResponse {
-                id: item.id,
-                pipeline_id: item.pipeline_id,
-                trigger_source: item.trigger_source.as_str().to_owned(),
-                status: item.status.as_str().to_owned(),
-                started_at: item.started_at,
-                finished_at: item.finished_at,
-                error_message: item.error_message,
-            })
-            .collect(),
+        items,
         total: result.total,
         page: result.page,
         page_size: result.page_size,
@@ -2134,6 +2304,21 @@ async fn get_history(
     State(state): State<HttpState>,
     Path(id): Path<i64>,
 ) -> Result<ApiResponse<HistoryResponse>, ApiError> {
+    let cache = crate::history_cache::HistoryCache::new(state.redis());
+    if let Some(meta) = cache.get_meta(id).await {
+        tracing::debug!(history_id = id, "history_cache 命中: get_history");
+        return Ok(ApiResponse::new(HistoryResponse {
+            id: meta.id,
+            pipeline_id: meta.pipeline_id,
+            trigger_source: meta.trigger_source.as_str().to_owned(),
+            status: meta.status.as_str().to_owned(),
+            started_at: meta.started_at,
+            finished_at: meta.finished_at,
+            error_message: meta.error_message,
+        }));
+    }
+
+    tracing::debug!(history_id = id, "history_cache 未命中: get_history");
     // 直接查实体：分页接口在长历史下可能取不到目标行，按主键取才可靠。
     let row = acmecast_store::entity::history::Entity::find_by_id(id)
         .one(&state.app.db)
@@ -2153,6 +2338,26 @@ async fn get_history(
                 row.status
             )))
         })?;
+
+    // 若运行中则回填缓存
+    if status == acmecast_store::entity::history::RunStatus::Running {
+        let trigger_source = match row.trigger_source.as_str() {
+            "manual" => acmecast_store::entity::pipeline::TriggerSource::Manual,
+            "cron" => acmecast_store::entity::pipeline::TriggerSource::Cron,
+            _ => acmecast_store::entity::pipeline::TriggerSource::Renewal,
+        };
+        let meta = crate::history_cache::HistoryMeta {
+            id: row.id,
+            pipeline_id: row.pipeline_id,
+            trigger_source,
+            status,
+            started_at: row.started_at,
+            finished_at: row.finished_at,
+            error_message: row.error_message.clone(),
+        };
+        cache.set_meta(&meta).await;
+    }
+
     Ok(ApiResponse::new(HistoryResponse {
         id: row.id,
         pipeline_id: row.pipeline_id,
@@ -2168,10 +2373,43 @@ async fn history_logs(
     State(state): State<HttpState>,
     Path(id): Path<i64>,
 ) -> Result<ApiResponse<Vec<HistoryLogResponse>>, ApiError> {
+    let cache = crate::history_cache::HistoryCache::new(state.redis());
+    if let Some(cached_logs) = cache.get_logs(id).await {
+        tracing::debug!(history_id = id, "history_cache 命中: history_logs");
+        return Ok(ApiResponse::new(
+            cached_logs
+                .into_iter()
+                .map(|log| HistoryLogResponse {
+                    step_index: log.step_index,
+                    level: log.level.as_str().to_owned(),
+                    message: log.message,
+                    output: log.output,
+                    created_at: log.created_at,
+                })
+                .collect(),
+        ));
+    }
+
+    tracing::debug!(history_id = id, "history_cache 未命中: history_logs");
     let logs = HistoryRepository::new(&state.app.db)
         .logs_of(id)
         .await
-        .map_err(ApiError::from)?
+        .map_err(ApiError::from)?;
+
+    // 若运行中且缓存无日志，回填缓存
+    let row_res = acmecast_store::entity::history::Entity::find_by_id(id)
+        .one(&state.app.db)
+        .await;
+    if let Ok(Some(row)) = row_res {
+        let is_running = row.status == acmecast_store::entity::history::RunStatus::Running.as_str();
+        if is_running {
+            for log in &logs {
+                cache.push_log(id, log).await;
+            }
+        }
+    }
+
+    let resp_logs = logs
         .into_iter()
         .map(|log| HistoryLogResponse {
             step_index: log.step_index,
@@ -2181,7 +2419,7 @@ async fn history_logs(
             created_at: log.created_at,
         })
         .collect();
-    Ok(ApiResponse::new(logs))
+    Ok(ApiResponse::new(resp_logs))
 }
 
 fn validate_page(field: &str, page: u64, page_size: u64) -> Result<(), ApiError> {
@@ -2252,9 +2490,16 @@ impl From<acmecast_store::entity::cert::Model> for CertificateResponse {
         Self {
             id: model.id,
             domains: model.domain_set(),
-            cert_pem_path: model.cert_pem_path,
-            key_pem_path: model.key_pem_path,
+            cert_pem_path: model.cert_pem_path.clone(),
+            key_pem_path: model.key_pem_path.clone(),
+            ca_path: model.ca_path,
+            fullchain_path: model.fullchain_path,
+            key_path: model.key_path,
             fingerprint: model.fingerprint,
+            issuer_organization: model
+                .issuer
+                .as_deref()
+                .and_then(acmecast_cert::organization_from_dn),
             issuer: model.issuer,
             not_before: model.not_before,
             not_after: model.not_after,
@@ -2271,11 +2516,18 @@ impl From<acmecast_store::entity::cert::Model> for CertificateResponse {
 
 impl From<acmecast_store::entity::credential::Model> for CredentialResponse {
     fn from(model: acmecast_store::entity::credential::Model) -> Self {
+        // 受控类型解析并归一化（存量缺省视为双能力）；非受控不返回能力。
+        let capabilities = if acmecast_store::capability::is_controlled(&model.type_id) {
+            acmecast_store::capability::parse(&model.capabilities)
+        } else {
+            Vec::new()
+        };
         Self {
             id: model.id,
             name: model.name,
             type_id: model.type_id,
             remark: model.remark,
+            capabilities,
             created_at: model.created_at,
             updated_at: model.updated_at,
         }
@@ -2321,4 +2573,69 @@ pub(crate) fn default_credential_registry() -> Arc<CredentialRegistry> {
 #[must_use]
 pub(crate) fn default_step_registry() -> Arc<StepRegistry> {
     Arc::new(StepRegistry::new())
+}
+
+#[cfg(test)]
+mod capability_tests {
+    use super::resolve_capabilities_text;
+    use acmecast_store::capability;
+
+    fn err_field(result: Result<String, crate::response::ApiError>) -> String {
+        let error = result.expect_err("应被拒绝");
+        error.body().field.clone().expect("校验错误应携带 field")
+    }
+
+    #[test]
+    fn controlled_type_accepts_valid_capabilities() {
+        // 合法：归一化排序后落库（与规格「更新为 ["dns","deploy"] 原样返回」一致）。
+        assert_eq!(
+            resolve_capabilities_text("tencent", Some(&vec!["deploy".into(), "dns".into()])).unwrap(),
+            r#"["dns","deploy"]"#
+        );
+        assert_eq!(
+            resolve_capabilities_text("cloudflare", Some(&vec!["dns".into()])).unwrap(),
+            r#"["dns"]"#
+        );
+    }
+
+    #[test]
+    fn controlled_type_defaults_when_omitted() {
+        // 未传视为双能力（旧前端兼容）。
+        assert_eq!(
+            resolve_capabilities_text("aliyun", None).unwrap(),
+            capability::DEFAULT_CAPABILITIES_TEXT
+        );
+    }
+
+    #[test]
+    fn controlled_type_rejects_empty_and_illegal_values() {
+        // 空数组与非法取值 400，field 指向 capabilities。
+        assert_eq!(
+            err_field(resolve_capabilities_text("tencent", Some(&vec![]))),
+            "capabilities"
+        );
+        assert_eq!(
+            err_field(resolve_capabilities_text("tencent", Some(&vec!["admin".into()]))),
+            "capabilities"
+        );
+        assert_eq!(
+            err_field(resolve_capabilities_text(
+                "cloudflare",
+                Some(&vec!["dns".into(), "bogus".into()])
+            )),
+            "capabilities"
+        );
+    }
+
+    #[test]
+    fn uncontrolled_type_ignores_capabilities() {
+        // 非受控类型忽略输入，落库空数组。
+        for type_id in ["tencent-eo", "ssh", "acme.account"] {
+            assert_eq!(
+                resolve_capabilities_text(type_id, Some(&vec!["dns".into()])).unwrap(),
+                "[]"
+            );
+            assert_eq!(resolve_capabilities_text(type_id, None).unwrap(), "[]");
+        }
+    }
 }

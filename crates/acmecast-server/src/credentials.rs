@@ -53,12 +53,13 @@ impl CloudflareCredentialType {
 #[async_trait::async_trait]
 impl CredentialType for CloudflareCredentialType {
     fn type_id(&self) -> &'static str {
-        // 与 `CloudflareProvider::type_id` 对齐：cert.apply 的 dns_provider 也用它。
+        // 与 `CloudflareProvider::type_id` 对齐：cert.apply 的凭据 `type_id` 即提供商标识。
         "cloudflare"
     }
 
     fn display_name(&self) -> &'static str {
-        "Cloudflare（DNS）"
+        // 能力标签已表达用途，展示名不再用括号标注使用范围。
+        "Cloudflare"
     }
 
     fn fields_schema(&self) -> RootSchema {
@@ -123,7 +124,8 @@ impl CredentialType for AliyunCredentialType {
     }
 
     fn display_name(&self) -> &'static str {
-        "阿里云（DNS）"
+        // 能力标签已表达用途，展示名不再用括号标注使用范围。
+        "阿里云"
     }
 
     fn fields_schema(&self) -> RootSchema {
@@ -209,13 +211,13 @@ impl TencentCredentialType {
 #[async_trait::async_trait]
 impl CredentialType for TencentCredentialType {
     fn type_id(&self) -> &'static str {
-        // 与 `TencentProvider::type_id` 对齐：cert.apply 的 dns_provider 也用它。
+        // 与 `TencentProvider::type_id` 对齐：cert.apply 的凭据 `type_id` 即提供商标识。
         "tencent"
     }
 
     fn display_name(&self) -> &'static str {
-        // 标注双用途：这对账号密钥同时服务 DNS 提供商与 SSL 证书部署。
-        "腾讯云（DNS、部署）"
+        // 能力标签已表达用途（含 DNS 与 SSL 部署），展示名不再用括号标注使用范围。
+        "腾讯云"
     }
 
     fn fields_schema(&self) -> RootSchema {
@@ -269,8 +271,8 @@ impl CredentialType for TencentEoCredentialType {
     }
 
     fn display_name(&self) -> &'static str {
-        // EdgeOne 仅服务 DNS、无 SSL 部署能力，不标注部署用途。
-        "腾讯云 EdgeOne（DNS）"
+        // 能力标签已表达用途，展示名不再用括号标注使用范围。
+        "腾讯云 EdgeOne"
     }
 
     fn fields_schema(&self) -> RootSchema {
@@ -303,7 +305,8 @@ impl CredentialType for SshHostCredentialType {
     }
 
     fn display_name(&self) -> &'static str {
-        "SSH 主机（部署）"
+        // 能力标签已表达用途，展示名不再用括号标注使用范围。
+        "SSH 主机"
     }
 
     fn fields_schema(&self) -> RootSchema {
@@ -388,7 +391,7 @@ mod tests {
     /// 有效凭据时 Cloudflare 返回的成功形态。
     const CF_ACTIVE: &str = r#"{"success":true,"result":{"status":"active"}}"#;
 
-    /// 类型标识必须与 DNS 提供商的 type_id 一致，否则 `dns_provider` 对不上。
+    /// 类型标识必须与 DNS 提供商的 type_id 一致，否则凭据 `type_id` 推导的提供商对不上。
     #[test]
     fn type_ids_match_dns_providers() {
         assert_eq!(CloudflareCredentialType::default().type_id(), "cloudflare");
@@ -398,16 +401,12 @@ mod tests {
     }
 
     #[test]
-    fn display_names_annotate_use_scope() {
-        // tencent 同时服务 DNS 与 SSL 部署，展示名标注双用途；
-        // tencent-eo 仅服务 DNS（EdgeOne 无 SSL 部署能力），不标注部署。
-        assert_eq!(
-            TencentCredentialType::default().display_name(),
-            "腾讯云（DNS、部署）"
-        );
+    fn display_names_are_short_labels() {
+        // 展示名去括号：用途由列表能力标签表达，下拉只显示短名称。
+        assert_eq!(TencentCredentialType::default().display_name(), "腾讯云");
         assert_eq!(
             TencentEoCredentialType::default().display_name(),
-            "腾讯云 EdgeOne（DNS）"
+            "腾讯云 EdgeOne"
         );
     }
 
@@ -463,7 +462,7 @@ mod tests {
     #[test]
     fn the_ssh_host_type_id_aligns_with_the_deploy_target() {
         assert_eq!(SshHostCredentialType.type_id(), "ssh");
-        assert_eq!(SshHostCredentialType.display_name(), "SSH 主机（部署）");
+        assert_eq!(SshHostCredentialType.display_name(), "SSH 主机");
     }
 
     #[test]

@@ -280,6 +280,18 @@ async fn resolve_tencent_credentials(
         ));
     }
 
+    // 能力校验在解密字段之前、任何云端调用之前：凭据仅声明 dns 能力时
+    // 部署直接以可读错误失败，避免把权限错误拖到 API 调用时才暴露。
+    if !resolved.capabilities.iter().any(|item| item == acmecast_store::capability::DEPLOY) {
+        return Err(Error::invalid_input(
+            "credential_id",
+            format!(
+                "凭据 `{id}`（{}）不支持部署用途：需要具备 deploy 能力（可在凭据编辑中勾选）",
+                resolved.name
+            ),
+        ));
+    }
+
     serde_json::from_value(resolved.fields).map_err(|e| {
         Error::invalid_input("credential_id", format!("凭据 `{id}` 的字段不合法: {e}"))
     })

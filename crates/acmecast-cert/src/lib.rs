@@ -20,5 +20,5 @@ pub use keys::{
     KeyAlgorithm, detect_algorithm, matches_der, public_key_bytes, verify_matches_der,
     verify_matches_pem,
 };
-pub use parse::{CertificateInfo, parse_der, parse_pem, parse_pem_leaf};
+pub use parse::{CertificateInfo, organization_from_dn, parse_der, parse_pem, parse_pem_leaf};
 pub use pem::{chain_to_pem, der_to_pem, first_der, pem_to_der_blocks};

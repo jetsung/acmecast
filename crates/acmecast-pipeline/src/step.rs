@@ -32,7 +32,8 @@ pub struct StepLog {
 }
 
 /// 步骤日志级别。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum StepLogLevel {
     /// 常规信息。
     Info,
@@ -225,6 +226,7 @@ pub struct StepContext<'a> {
     /// 日志缓冲。用 `Mutex` 而非 `RefCell`，是为了让上下文仍是 `Sync`——
     /// 将来若有并行步骤或步骤内部起子任务，共享它才不会出问题。
     logs: Mutex<Vec<StepLog>>,
+    log_sender: Option<tokio::sync::mpsc::UnboundedSender<crate::history::StepLogRecord>>,
 }
 
 impl std::fmt::Debug for StepContext<'_> {
@@ -261,7 +263,18 @@ impl<'a> StepContext<'a> {
             credentials,
             state,
             logs: Mutex::new(Vec::new()),
+            log_sender: None,
         }
+    }
+
+    /// 注入实时日志发送端。
+    #[must_use]
+    pub fn with_log_sender(
+        mut self,
+        sender: tokio::sync::mpsc::UnboundedSender<crate::history::StepLogRecord>,
+    ) -> Self {
+        self.log_sender = Some(sender);
+        self
     }
 
     /// 本步骤的输入。
@@ -324,14 +337,32 @@ impl<'a> StepContext<'a> {
         self.state
     }
 
-    /// 记一条日志；执行器会在本步结束后成批落库。
-    pub fn log(&self, level: StepLogLevel, message: impl Into<String>) {
-        // 锁中毒只说明别的线程在持锁时 panic 过；日志不值得为此中断执行。
+    fn push_step_log(&self, log: StepLog) {
+        if let Some(ref sender) = self.log_sender {
+            let record = crate::history::StepLogRecord {
+                step_index: self.step_order,
+                level: log.level,
+                message: log.message.clone(),
+                created_at: log.created_at,
+                output: log.output.clone(),
+            };
+            let _ = sender.send(record);
+        }
         let mut logs = self
             .logs
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        logs.push(StepLog::new(level, message));
+        logs.push(log);
+    }
+
+    /// 记一条日志；执行器会在本步结束后成批落库，并在产生时增量投递。
+    pub fn log(&self, level: StepLogLevel, message: impl Into<String>) {
+        self.push_step_log(StepLog::new(level, message));
+    }
+
+    /// 记一条日志并附带结构化输出。
+    pub fn log_with_output(&self, level: StepLogLevel, message: impl Into<String>, output: serde_json::Value) {
+        self.push_step_log(StepLog::new(level, message).with_output(output));
     }
 
     /// 记一条信息级日志并附带结构化输出。
@@ -339,11 +370,7 @@ impl<'a> StepContext<'a> {
     /// 用于步骤需要向运行历史暴露可程序化读取的产物摘要时
     /// （如部署步骤返回的云端证书 ID）。
     pub fn log_info_with_output(&self, message: impl Into<String>, output: serde_json::Value) {
-        let mut logs = self
-            .logs
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        logs.push(StepLog::new(StepLogLevel::Info, message).with_output(output));
+        self.log_with_output(StepLogLevel::Info, message, output);
     }
 
     /// 记一条信息级日志。
@@ -354,6 +381,11 @@ impl<'a> StepContext<'a> {
     /// 记一条警告级日志。
     pub fn log_warn(&self, message: impl Into<String>) {
         self.log(StepLogLevel::Warn, message);
+    }
+
+    /// 记一条错误级日志。
+    pub fn log_error(&self, message: impl Into<String>) {
+        self.log(StepLogLevel::Error, message);
     }
 
     /// 取走已缓冲的日志（执行器用）。
