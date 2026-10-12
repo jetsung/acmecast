@@ -298,11 +298,53 @@ describe("流水线列表描述列", () => {
     await (await import("@testing-library/react")).waitFor(() => {
       expect(container.textContent).toContain("描述");
     });
-    // 有描述的行应带 title（悬浮完整文本），无描述的行显示占位
+    // 有描述的行用 Tooltip 包裹（悬浮完整文本），无描述的行显示占位
     await (await import("@testing-library/react")).waitFor(() => {
-      const hasTitle = container.querySelector('[title*="很长的描述"]');
-      expect(hasTitle).toBeTruthy();
+      expect(container.textContent).toContain("很长的描述");
       expect(container.textContent).toContain("—");
+    });
+  });
+
+  it("描述列宽大于名称列宽", async () => {
+    const { client } = await import("@/api/client");
+    vi.mocked(client.GET).mockResolvedValueOnce({
+      data: { data: { items: [], total: 0 } },
+      response: new Response(),
+    } as never);
+    const { QueryClient, QueryClientProvider } = await import("@tanstack/react-query");
+    const { render } = await import("@testing-library/react");
+    const { App, ConfigProvider } = await import("antd");
+    const zhCN = (await import("antd/locale/zh_CN")).default;
+    const { MemoryRouter } = await import("react-router");
+    const { PipelineListPage } = await import("./PipelineListPage");
+    const container = document.createElement("div");
+    container.dataset.pageContainer = "true";
+    document.body.appendChild(container);
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const React = await import("react");
+    render(
+      React.createElement(QueryClientProvider, { client: qc },
+        React.createElement(ConfigProvider, { locale: zhCN },
+          React.createElement(App, null,
+            React.createElement(MemoryRouter, null,
+              React.createElement(PipelineListPage, null)
+            )
+          )
+        )
+      ),
+      { container }
+    );
+    // antd 会把列宽写到 colgroup 的 col 元素上：描述 420 应大于名称 160。
+    await (await import("@testing-library/react")).waitFor(() => {
+      expect(container.textContent).toContain("描述");
+      const cols = [...container.querySelectorAll("colgroup col")].map(
+        (col) => (col as HTMLElement).style.width,
+      );
+      const nameW = Number.parseInt(cols.find((w) => w === "160px") ?? "", 10);
+      const descW = Number.parseInt(cols.find((w) => w === "420px") ?? "", 10);
+      expect(nameW, "名称列应渲染为 160px 宽").toBe(160);
+      expect(descW, "描述列应渲染为 420px 宽").toBe(420);
+      expect(descW).toBeGreaterThan(nameW);
     });
   });
 });

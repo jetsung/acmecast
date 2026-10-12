@@ -605,20 +605,6 @@ function withFieldOptions(
     next["force"] = { ...(next["force"] as Record<string, unknown>), "x-hidden": true };
     changed = true;
   }
-  // cert.store：acme_account_credential_id 显式展示，描述提示默认跟随 cert.apply
-  if (next["acme_account_credential_id"]) {
-    const field = next["acme_account_credential_id"] as Record<string, unknown>;
-    const desc = (field.description as string | undefined) ?? "";
-    if (!desc.includes("默认跟随")) {
-      next["acme_account_credential_id"] = {
-        ...field,
-        description: desc
-          ? `${desc}（默认跟随 cert.apply 的 account_credential_id，可显式覆盖）`
-          : "默认跟随 cert.apply 的 account_credential_id，可显式覆盖",
-      };
-      changed = true;
-    }
-  }
   // cert.deploy 的输入 schema（以 dns_provider/target/config 为特征）注入根级
   // 字段顺序：force/target 两个决策字段排最前，config 子表单跟在后面。
   const isCertDeploy = Boolean(next.target && next.config && (next.config as SchemaOptionsNode)["x-target-schemas"]);

@@ -102,6 +102,16 @@ describe("CertificateDetailPage 展示", () => {
     expect(await screen.findByText("用于测试的证书")).toBeTruthy();
   });
 
+  it("文件路径三项标签为中文", async () => {
+    mockedGet.mockResolvedValue(okCert(makeCert()) as never);
+
+    renderPage();
+
+    expect(await screen.findByText("CA 证书")).toBeTruthy();
+    expect(screen.getByText("完整证书链")).toBeTruthy();
+    expect(screen.getByText("私钥")).toBeTruthy();
+  });
+
   it("算法与描述缺省时显示占位", async () => {
     mockedGet.mockResolvedValue(okCert(makeCert({ key_algorithm: null, description: null })) as never);
 

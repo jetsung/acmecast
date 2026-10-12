@@ -53,5 +53,10 @@ export const themeConfig: ThemeConfig = {
     Button: {
       fontWeight: 500,
     },
+    // antd v6 Tooltip 组件令牌默认 maxWidth 250，作用在弹层外层容器上，
+    // 内层的 overlayInnerStyle 再大也会被钳住——全局放宽，长说明不折行成窄条。
+    Tooltip: {
+      maxWidth: 480,
+    },
   },
 };

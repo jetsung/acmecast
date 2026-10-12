@@ -34,6 +34,25 @@ impl std::fmt::Debug for WebdavFields {
     }
 }
 
+/// WebDAV 凭据字段 schema：固定录入顺序 `url | base_path` / `username | password`。
+#[must_use]
+pub fn webdav_fields_schema() -> RootSchema {
+    let mut schema = schema_for!(WebdavFields);
+    schema.schema.extensions.insert(
+        "x-field-order".to_owned(),
+        serde_json::json!(["url", "base_path", "username", "password"]),
+    );
+    if let Some(schemars::schema::Schema::Object(obj)) = schema
+        .schema
+        .object
+        .as_mut()
+        .and_then(|o| o.properties.get_mut("password"))
+    {
+        obj.extensions.insert("x-multiline".into(), serde_json::Value::Bool(false));
+    }
+    schema
+}
+
 /// WebDAV 凭据类型。
 #[derive(Debug, Default)]
 pub struct WebdavCredentialType;
@@ -49,18 +68,7 @@ impl CredentialType for WebdavCredentialType {
     }
 
     fn fields_schema(&self) -> RootSchema {
-        let mut schema = schema_for!(WebdavFields);
-        if let Some(pw) = schema
-            .schema
-            .object
-            .as_mut()
-            .and_then(|o| o.properties.get_mut("password"))
-        {
-            if let schemars::schema::Schema::Object(obj) = pw {
-                obj.extensions.insert("x-multiline".into(), serde_json::Value::Bool(false));
-            }
-        }
-        schema
+        webdav_fields_schema()
     }
 
     async fn test_connectivity(&self, fields: &serde_json::Value) -> ConnectivityOutcome {
@@ -137,5 +145,24 @@ async fn webdav_probe(fields: &WebdavFields) -> Result<(), String> {
             .await;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn webdav_fields_schema_injects_field_order() {
+        let schema = webdav_fields_schema();
+        let order = schema.schema.extensions.get("x-field-order").expect("应注入 x-field-order");
+        assert_eq!(
+            order,
+            &serde_json::json!(["url", "base_path", "username", "password"])
+        );
+        let object = schema.schema.object.expect("应为对象 schema");
+        for key in ["url", "base_path", "username", "password"] {
+            assert!(object.properties.contains_key(key), "缺少字段 {key}");
+        }
+    }
 }
 

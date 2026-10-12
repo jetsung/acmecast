@@ -118,8 +118,24 @@ impl PipelineStep for CertStoreStep {
         let mut old_fingerprint: Option<String> = None;
         if let Some(old) = &existing {
             if old.fingerprint != fingerprint {
-                should_archive = true;
-                old_fingerprint = Some(old.fingerprint.clone());
+                // 防御性守卫：查询到的旧记录若已位于归档/吊销目录下，说明它不是
+                // 当前活跃证书（正常流程不应触发），跳过归档避免错误移动文件。
+                let stale = ["certs/archived/", "certs/revoked/"]
+                    .iter()
+                    .any(|prefix| {
+                        old.cert_pem_path.starts_with(prefix)
+                            || old.key_pem_path.starts_with(prefix)
+                    });
+                if stale {
+                    tracing::warn!(
+                        old_fingerprint = %old.fingerprint,
+                        cert_pem_path = %old.cert_pem_path,
+                        key_pem_path = %old.key_pem_path,
+                        "查询到的旧证书已位于 archived/revoked 目录下，跳过归档"
+                    );
+                } else {
+                    should_archive = true;
+                    old_fingerprint = Some(old.fingerprint.clone());
                 match store
                     .archive_replaced_certificate(
                         &old.cert_pem_path,
@@ -157,6 +173,7 @@ impl PipelineStep for CertStoreStep {
                             "旧证书归档失败，仍继续写入新证书"
                         );
                     }
+                }
                 }
             }
         }

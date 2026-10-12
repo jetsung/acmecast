@@ -90,9 +90,9 @@
 
 | 提供商 | 首选 DoH | 兜底序 |
 |---|---|---|
-| `cloudflare` | Cloudflare | Cloudflare → 阿里 → 腾讯 → Google |
-| `aliyun` | 阿里 | 阿里 → Cloudflare → 腾讯 → Google |
-| `tencent` / `tencent-eo` | 腾讯 | 腾讯 → Cloudflare → 阿里 → Google |
+| `cloud.cloudflare` | Cloudflare | Cloudflare → 阿里 → 腾讯 → Google |
+| `cloud.aliyun` | 阿里 | 阿里 → Cloudflare → 腾讯 → Google |
+| `cloud.tencent` / `dns.tencent-eo` | 腾讯 | 腾讯 → Cloudflare → 阿里 → Google |
 | 其他 / 未传参 | — | Cloudflare → 阿里 → 腾讯 → Google |
 
 "任意一家可见即就绪"的判定语义不变。`ACMECAST_DOH_RESOLVERS` 显式设置时提供商感知分支不生效，按环境变量语义构造集合（`none` 即跳过解析器阶段）。
@@ -238,16 +238,16 @@ SSE 实时推送与终态持久化遵循双轨：
 
 | `type_id` | 展示名 |
 |---|---|
-| `tencent` | 腾讯云 |
-| `tencent-eo` | 腾讯云 EdgeOne |
-| `cloudflare` | Cloudflare |
-| `aliyun` | 阿里云 |
-| `ssh` | SSH 主机 |
-| `s3` | S3 兼容存储 |
-| `webdav` | WebDAV |
+| `cloud.tencent` | 腾讯云 |
+| `dns.tencent-eo` | 腾讯云 EdgeOne |
+| `cloud.cloudflare` | Cloudflare |
+| `cloud.aliyun` | 阿里云 |
+| `deploy.ssh` | SSH 主机 |
+| `deploy.s3` | S3 兼容存储 |
+| `deploy.webdav` | WebDAV |
 | `acme.account` | ACME 账号 |
 
-`type_id` 不变，流水线与存储不受影响。依赖 `display_name` 做精确匹配的外部脚本需更新。
+`type_id` 采用带命名空间的点分命名（见「凭据 type_id 命名空间」节），展示名不受标识变更影响。依赖 `display_name` 做精确匹配的外部脚本需更新。
 
 ### 实现索引
 
@@ -255,13 +255,64 @@ SSE 实时推送与终态持久化遵循双轨：
 - `crates/acmecast-server/src/handlers.rs: list_credential_types` — 透传 `display_name`
 - `frontend/src/pages/credentials/CredentialListPage.tsx` — 类型下拉 `options[].label = display_name`
 
+## 凭据 type_id 命名空间
+
+凭据 `type_id` 采用带命名空间的点分命名，使标识本身即表达用途归属。DNS 提供商的 `type_id` 与凭据 `type_id` 1:1 对齐（`cert.apply` 靠 `credential.type_id == dns_provider.type_id` 自动选择），两边同步使用新标识。
+
+| 前缀 | 语义 | 类型 |
+|---|---|---|
+| `acme.` | ACME 账号 | `acme.account` |
+| `cloud.` | 通用云平台（DNS + 部署双能力） | `cloud.tencent`、`cloud.aliyun`、`cloud.cloudflare` |
+| `dns.` | 仅 DNS | `dns.tencent-eo` |
+| `deploy.` | 仅部署 | `deploy.ssh`、`deploy.s3`、`deploy.webdav` |
+
+`cloud.*` 三类同时是能力标记的受控类型（`capabilities`）。部署目标标识（`s3`/`webdav`/`tencent-ssl`/`ssh`/`local`）作为部署目标注册表的 key 不受此变更影响，只改它们接受的**凭据** `type_id` 白名单（`ACCEPTED_CREDENTIAL_TYPES` 与 schema 的 `x-credential-types` 注入值）。
+
+### 旧→新映射
+
+| 旧 type_id | 新 type_id |
+|---|---|
+| `cloudflare` | `cloud.cloudflare` |
+| `aliyun` | `cloud.aliyun` |
+| `tencent` | `cloud.tencent` |
+| `tencent-eo` | `dns.tencent-eo` |
+| `ssh` | `deploy.ssh` |
+| `s3` | `deploy.s3` |
+| `webdav` | `deploy.webdav` |
+| `acme.account` | `acme.account`（不变） |
+
+### 凭据白名单同步
+
+- `CONTROLLED_TYPES`：`["cloud.tencent", "cloud.cloudflare", "cloud.aliyun"]`
+- 部署目标 `ACCEPTED_CREDENTIAL_TYPES`：`tencent-ssl → ["cloud.tencent"]`、`s3 → ["deploy.s3"]`、`webdav → ["deploy.webdav"]`
+- 前端 `DNS_CREDENTIAL_TYPE_IDS`：`cloud.cloudflare`、`cloud.aliyun`、`cloud.tencent`、`dns.tencent-eo`
+- 前端 `CAPABILITY_CONTROLLED_TYPES`：同 `CONTROLLED_TYPES`
+- 前端 `SSH_HOST_TYPE_ID`：`"deploy.ssh"`，`ACME_ACCOUNT_TYPE_ID`：`"acme.account"`（不变）
+
+### 存量凭据 type_id 自动迁移
+
+系统升级时通过数据库迁移将 `acmecast_credential.type_id` 的旧值重写为新值（上表 7 条映射，`acme.account` 不动）。迁移幂等：重复执行不再改已是新值或不命中旧值的行；对空库无影响。失败时由现有 `migrate_with` 机制中止启动并指明失败版本。
+
+### 实现索引
+
+- `crates/acmecast-server/src/credentials.rs` — 凭据 `type_id()` 返回新标识
+- `crates/acmecast-dns/src/providers/{cloudflare,aliyun,tencent,tencent_eo}.rs` — DNS 提供商 `type_id()` 同步
+- `crates/acmecast-dns/src/propagation.rs` — DoH resolver 感知的 type_id 字符串同步
+- `crates/acmecast-store/src/capability.rs: CONTROLLED_TYPES` — 受控类型白名单
+- `crates/acmecast-deploy/src/targets/{s3,webdav,tencent}.rs` — `ACCEPTED_CREDENTIAL_TYPES` 与 `x-credential-types` 注入
+- `crates/acmecast-deploy/src/ssh_host.rs: SSH_HOST_TYPE_ID` — SSH 主机档案标识
+- `crates/acmecast-access/src/credential/{s3,webdav}.rs` — `TYPE_ID` 常量
+- `crates/acmecast-store/src/migration/` — 存量 type_id 迁移文件（幂等）
+- `frontend/src/pages/credentials/CredentialListPage.tsx` — `CAPABILITY_CONTROLLED_TYPES`
+- `frontend/src/pages/pipelines/PipelineEditorPage.tsx` — `DNS_CREDENTIAL_TYPE_IDS`、`SSH_HOST_TYPE_ID`、`CAPABILITY_CONTROLLED_TYPES`
+
 ## 凭据字段表单布局约定
 
 凭据字段表单由后端 schema（`schemars::JsonSchema` + `x-*` 扩展）驱动，前端 `SchemaForm` 为通用渲染引擎。默认标量字段半宽（`span 12`）两列一行；带 `x-full-width` 的字段独占整行；带 `x-end-row` 的半宽字段行尾补空占位列换行；`x-field-order` 钉字段渲染顺序，对抗 `serde_json::Map` 按字母序重排 `properties`。
 
 ### S3 兼容存储凭据字段分组
 
-`S3 兼容存储`（`type_id: s3`）凭据字段按业务语义分组为三行、每行两列，顺序固定为 `access_key` → `secret_key` → `endpoint` → `bucket` → `region` → `prefix`，`session_token` 置于末尾。
+`S3 兼容存储`（`type_id: deploy.s3`）凭据字段按业务语义分组为三行、每行两列，顺序固定为 `access_key` → `secret_key` → `endpoint` → `bucket` → `region` → `prefix`，`session_token` 置于末尾。
 
 | 行 | 字段 |
 |---|---|

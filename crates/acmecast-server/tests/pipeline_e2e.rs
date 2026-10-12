@@ -999,6 +999,225 @@ async fn renewal_scan_triggers_a_single_reissue() {
     assert_eq!(logs.total, 1, "去重窗口内的重复扫描不应再触发");
 }
 
+// ---- 重签归档：连续多次重签每次归档上一张活跃证书 ----
+
+/// 连续三次重签：每次归档的都应是**上一张活跃证书**（指纹对应正确），
+/// 而非重复归档第一张。这是 `find_by_domains` 活跃优先排序的端到端回归钉。
+#[tokio::test(flavor = "multi_thread")]
+async fn three_consecutive_reissues_archive_each_previous_active_certificate() {
+    let pebble = match start_pebble() {
+        Ok(pebble) => pebble,
+        Err(reason) => {
+            eprintln!("跳过重签归档测试：{reason}");
+            return;
+        }
+    };
+
+    let db = a_database().await;
+    let cipher =
+        Arc::new(CredentialCipher::from_base64(&CredentialCipher::generate_key_base64()).unwrap());
+    let mut credential_registry = CredentialRegistry::new();
+    credential_registry
+        .register(acmecast_access::AcmeAccountType::new())
+        .expect("ACME 账号类型不应重复");
+    credential_registry
+        .register(MemoryDnsType)
+        .expect("内存 DNS 类型不应重复");
+    let credential_registry = Arc::new(credential_registry);
+
+    let account_id = an_acme_account_credential(&db, &cipher, &pebble.directory_url).await;
+    let dns_credential_id = a_memory_dns_credential(&db, &cipher).await;
+
+    let memory_dns = MemoryDns::default();
+    let mut dns_registry = DnsProviderRegistry::new();
+    dns_registry
+        .register(memory_dns.clone())
+        .expect("内存 DNS 提供商不应重复");
+    let dns_registry = Arc::new(dns_registry);
+
+    let data_dir = TempDir::new("reissue-data");
+
+    let mut steps = StepRegistry::new();
+    steps
+        .register(CertApplyStep::new(Arc::clone(&dns_registry)))
+        .expect("cert.apply 不应重复");
+    steps
+        .register(CertStoreStep::new(
+            db.clone(),
+            data_dir.path().to_path_buf(),
+        ))
+        .expect("cert.store 不应重复");
+    let steps = Arc::new(steps);
+
+    let pipeline_id = acmecast_store::repository::PipelineRepository::new(&db)
+        .save(
+            None,
+            acmecast_store::repository::PipelineInput {
+                name: "重签归档 e2e.acmecast.test".to_owned(),
+                description: None,
+                enabled: true,
+                steps: vec![
+                    acmecast_store::repository::PipelineStepInput {
+                        type_id: "cert.apply".to_owned(),
+                        input: serde_json::json!({
+                            "domains": ["e2e.acmecast.test"],
+                            "challenge": "dns-01",
+                            "account_credential_id": account_id,
+                            "dns_provider": "memory",
+                            "dns_credential_id": dns_credential_id,
+                            "wait_propagation": false,
+                            "insecure_skip_verify": true
+                        }),
+                        enabled: true,
+                    },
+                    acmecast_store::repository::PipelineStepInput {
+                        type_id: "cert.store".to_owned(),
+                        input: serde_json::json!({ "acme_account_credential_id": account_id }),
+                        enabled: true,
+                    },
+                ],
+            },
+        )
+        .await
+        .expect("流水线应能保存");
+
+    // 首次签发：手动触发，建立基线证书。
+    let launcher = acmecast_server::scheduler::PipelineRunLauncher::new(
+        Arc::clone(&steps),
+        &db,
+        Arc::clone(&credential_registry),
+        Some(&cipher),
+        None,
+        None,
+    );
+    launcher
+        .launch(acmecast_scheduler::LaunchRequest {
+            pipeline_id,
+            source: acmecast_store::entity::pipeline::TriggerSource::Manual,
+            detail: None,
+        })
+        .await
+        .expect("首次签发应成功");
+
+    let repository = CertRepository::new(&db);
+
+    // 调度配置：只参与续期扫描，域名覆盖测试证书。
+    acmecast_store::repository::ScheduleRepository::new(&db)
+        .save(
+            pipeline_id,
+            acmecast_store::repository::ScheduleInput {
+                cron: None,
+                enabled: true,
+                catch_up: false,
+                renewal_domains: Some(vec!["e2e.acmecast.test".to_owned()]),
+                    renewal_threshold_days: None,
+            },
+        )
+        .await
+        .expect("调度应能保存");
+
+    // 阈值调大到 90 天：pebble 刚签的证书立即进入续期窗口，每次扫描都会重签。
+    let engine = acmecast_scheduler::SchedulerEngine::new(
+        &db,
+        &launcher,
+        acmecast_scheduler::SchedulerConfig {
+            renewal_threshold: chrono::Duration::days(90),
+            ..Default::default()
+        },
+    );
+    let now = chrono::Utc::now();
+
+    // 三次重签，扫描间隔拉开到 2 小时以越过 1 小时的触发去重窗口。
+    let mut previous_active_fingerprint = {
+        let active = repository
+            .find_by_domains(&["e2e.acmecast.test".to_owned()])
+            .await
+            .expect("应能查询基线证书")
+            .expect("首次签发后应有基线证书");
+        active.fingerprint
+    };
+
+    for round in 1..=3 {
+        engine
+            .scan_expiring(now + chrono::Duration::hours(round * 2))
+            .await
+            .unwrap_or_else(|error| panic!("第 {round} 次扫描应成功: {error}"));
+
+        let records = repository
+            .list(CertQuery {
+                domain: Some("e2e.acmecast.test".to_owned()),
+                ..Default::default()
+            })
+            .await
+            .expect("应能查询证书");
+
+        // 活跃记录恰好一条，且指纹不等于上一张活跃指纹（确实是新签的）。
+        let active: Vec<_> = records.items.iter().filter(|row| row.archived_at.is_none()).collect();
+        assert_eq!(active.len(), 1, "第 {round} 轮后活跃记录应恰好一条");
+        let new_fingerprint = active[0].fingerprint.clone();
+        assert_ne!(
+            new_fingerprint, previous_active_fingerprint,
+            "第 {round} 轮重签后的活跃指纹应是新签的"
+        );
+
+        // 上一张活跃证书应出现在 certs/archived/<旧指纹>/ 下。
+        let archived_dir = data_dir.path().join("certs/archived").join(&previous_active_fingerprint);
+        assert!(
+            archived_dir.is_dir(),
+            "第 {round} 轮应把上一张活跃证书 {previous_active_fingerprint} 归档到 archived/"
+        );
+
+        // 已归档的记录不会在后续轮次被重复归档出第二份目录。
+        let archived_count = std::fs::read_dir(data_dir.path().join("certs/archived"))
+            .expect("archived 目录应存在")
+            .filter_map(Result::ok)
+            .count();
+        assert_eq!(
+            archived_count, round as usize + 0,
+            "第 {round} 轮后 archived/ 下应有 {round} 个指纹目录"
+        );
+
+        // 库记录数：基线 1 条 + 每轮重签新增 1 条。
+        assert_eq!(
+            records.items.len(),
+            round as usize + 1,
+            "第 {round} 轮后该域名集合应有 {} 条记录",
+            round + 1
+        );
+
+        previous_active_fingerprint = new_fingerprint;
+    }
+
+    // 最终：certs/ssl/ 下仅保留最新一张的文件（叶子 .cer 不落盘，其余 3 文件），
+    // 且 fullchain 第一段解析出的指纹与库中活跃记录一致。
+    let ssl_dir = data_dir.path().join("certs/ssl");
+    let ssl_files: Vec<_> = std::fs::read_dir(&ssl_dir)
+        .expect("ssl 目录应存在")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        ssl_files.len(),
+        3,
+        "certs/ssl/ 下应仅保留最新一张证书的 3 个文件：{ssl_files:?}"
+    );
+
+    let active = repository
+        .find_by_domains(&["e2e.acmecast.test".to_owned()])
+        .await
+        .expect("应能查询活跃证书")
+        .expect("活跃证书应存在");
+    let fullchain = std::fs::read_to_string(ssl_dir.join("e2e.acmecast.test.fullchain.cer"))
+        .expect("应能读取 fullchain");
+    let deployed_fingerprint = acmecast_cert::parse_pem_leaf(&fullchain)
+        .expect("应能解析 fullchain 中的叶子证书")
+        .fingerprint_sha256;
+    assert_eq!(
+        deployed_fingerprint, active.fingerprint,
+        "certs/ssl/ 下应仅保留最新一张（活跃记录对应）的证书"
+    );
+}
+
 /// 预置一份内存 DNS 提供商凭据，返回主键。
 async fn a_memory_dns_credential(db: &DatabaseConnection, cipher: &CredentialCipher) -> i64 {
     let encrypted = cipher

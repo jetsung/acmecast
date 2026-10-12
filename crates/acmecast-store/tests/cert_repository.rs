@@ -419,6 +419,36 @@ async fn create_does_not_deduplicate_by_domain_set() {
     );
 }
 
+// ---- 需求：多记录场景下域名集合查询优先返回活跃记录 ----
+
+/// 重签归档后同一域名集合会有两条记录：一条已归档 + 一条活跃。
+/// `find_by_domains` 必须返回活跃记录，而非不确定地命中已归档那条。
+#[tokio::test]
+async fn find_by_domains_prefers_the_active_record_over_archived_ones() {
+    let (db, account) = setup().await;
+    let repo = CertRepository::new(&db);
+
+    let archived = repo
+        .create(input(&["example.com"], "fp-old", 90, account))
+        .await
+        .expect("应能插入旧证书");
+    let active = repo
+        .create(input(&["example.com"], "fp-new", 90, account))
+        .await
+        .expect("应能插入新证书");
+
+    repo.mark_archived(archived.id, Utc::now())
+        .await
+        .expect("应能把旧记录标记为已归档");
+
+    let found = repo
+        .find_by_domains(&["example.com"])
+        .await
+        .expect("查询应成功")
+        .expect("应查到记录");
+    assert_eq!(found.id, active.id, "应返回活跃记录而非已归档记录");
+}
+
 // ---- 需求：按域名模糊检索、按到期时间排序、分页 ----
 
 /// 写入 `count` 条证书，域名依次为 `host0.example.com`…，到期时间依次递增。

@@ -497,9 +497,16 @@ impl<'db> CertRepository<'db> {
     }
 
     /// 按已规范化的去重键查询。
+    /// 按域名归一化键查询。同一域名集合可能存在多条记录（一条已归档 +
+    /// 一条活跃），`.one()` 无排序时结果不确定——用 `IS NULL` 布尔表达式
+    /// 排序优先返回活跃记录（不依赖数据库默认 NULL 排序），同活跃时取最新。
     async fn find_by_key(&self, encoded: &str) -> Result<Option<cert::Model>> {
+        use sea_orm::sea_query::Expr;
         Ok(cert::Entity::find()
             .filter(cert::Column::Domains.eq(encoded))
+            .order_by(Expr::col(cert::Column::ArchivedAt).is_null(), sea_orm::Order::Desc)
+            .order_by(Expr::col(cert::Column::RevokedAt).is_null(), sea_orm::Order::Desc)
+            .order_by_desc(cert::Column::Id)
             .one(self.db)
             .await?)
     }

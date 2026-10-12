@@ -937,3 +937,14 @@ describe("SchemaForm", () => {
     expect(await submitAndGet(onFinish)).toEqual({ fields: { host: "web-1" } });
   });
 });
+
+describe("SchemaForm 字段说明 Tooltip 宽度", () => {
+  it("字段说明 Tooltip 弹出层内容区 maxWidth 已放宽到 480", async () => {
+    // jsdom 中 rc-tooltip 的悬浮挂载不可靠，直接校验传给弹层的样式
+    // （SchemaForm 三处 Tooltip/Form.Item tooltip 均使用该常量）。
+    const { TOOLTIP_OVERLAY_INNER_STYLE } = await import("./SchemaForm");
+    expect(Number.parseInt(String(TOOLTIP_OVERLAY_INNER_STYLE.maxWidth), 10)).toBeGreaterThanOrEqual(400);
+    expect(TOOLTIP_OVERLAY_INNER_STYLE.whiteSpace).toBe("normal");
+    expect(TOOLTIP_OVERLAY_INNER_STYLE.wordBreak).toBe("break-word");
+  });
+});

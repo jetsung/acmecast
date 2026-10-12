@@ -24,6 +24,16 @@ import type { ReactNode } from "react";
  * 所选部署目标的**结构化子表单**，未选 target 时提示先选。
  */
 
+/**
+ * 字段说明 Tooltip 弹出层内容区样式：放宽内容容器宽度，避免长说明被
+ * 挤成窄条多行（不设固定宽度，仅设 maxWidth，由 antd 视口自适应兜底）。
+ */
+export const TOOLTIP_OVERLAY_INNER_STYLE = {
+  maxWidth: 480,
+  whiteSpace: "normal" as const,
+  wordBreak: "break-word" as const,
+};
+
 interface JsonSchemaNode {
   type?: string | string[];
   format?: string;
@@ -371,7 +381,7 @@ export function SchemaForm({ schema, form, namePrefix = [], disabled }: SchemaFo
               <Form.Item
                 name={path}
                 label={labelInfo.label}
-                tooltip={labelInfo.tooltip}
+                tooltip={labelInfo.tooltip ? { title: labelInfo.tooltip, overlayInnerStyle: TOOLTIP_OVERLAY_INNER_STYLE } : undefined}
                 rules={rules}
                 valuePropName={node.type === "boolean" ? "checked" : "value"}
               >
@@ -419,7 +429,7 @@ function fieldLabel(
       <>
         {labelText}
         {node.description && (
-          <Tooltip title={node.description}>
+          <Tooltip title={node.description} overlayInnerStyle={TOOLTIP_OVERLAY_INNER_STYLE}>
             <QuestionCircleOutlined style={{ marginLeft: 4, color: "rgba(0,0,0,0.45)" }} />
           </Tooltip>
         )}
@@ -627,7 +637,7 @@ function ObjectFieldGroup({
               <Form.Item
                 name={childPath}
                 label={child["x-label"] ?? name}
-                tooltip={child.description}
+                tooltip={child.description ? { title: child.description, overlayInnerStyle: TOOLTIP_OVERLAY_INNER_STYLE } : undefined}
                 rules={rules}
                 valuePropName={childType === "boolean" ? "checked" : "value"}
               >

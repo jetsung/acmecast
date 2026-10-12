@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { App, Button, Space, Switch, Table, Tag, Typography } from "antd";
+import { App, Button, Space, Switch, Table, Tag, Tooltip, Typography } from "antd";
 import type { TableColumnsType } from "antd";
 import { useState } from "react";
 import { useNavigate } from "react-router";
@@ -8,6 +8,7 @@ import { client } from "@/api/client";
 import { formatTime, unwrapData } from "@/api/helpers";
 import { PageHeader } from "@/components/PageHeader";
 import { Panel } from "@/components/Panel";
+import { TOOLTIP_OVERLAY_INNER_STYLE } from "@/components/SchemaForm";
 
 type PipelineSummary = components["schemas"]["PipelineSummaryResponse"];
 
@@ -170,6 +171,7 @@ export function PipelineListPage() {
     {
       title: "名称",
       dataIndex: "name",
+      width: 160,
       render: (name: string, row) => (
         <a onClick={() => navigate(`/pipelines/${row.id}`)}>{name}</a>
       ),
@@ -177,12 +179,15 @@ export function PipelineListPage() {
     {
       title: "描述",
       dataIndex: "description",
+      width: 420,
       ellipsis: true,
       render: (value: string | null | undefined) =>
         value && value.trim() !== "" ? (
-          <Typography.Text ellipsis style={{ maxWidth: 320 }} title={value}>
-            {value}
-          </Typography.Text>
+          <Tooltip title={value} overlayInnerStyle={TOOLTIP_OVERLAY_INNER_STYLE}>
+            <Typography.Text ellipsis style={{ maxWidth: 420 }}>
+              {value}
+            </Typography.Text>
+          </Tooltip>
         ) : (
           <Typography.Text type="secondary">—</Typography.Text>
         ),
