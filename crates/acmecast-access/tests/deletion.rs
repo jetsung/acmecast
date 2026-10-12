@@ -270,7 +270,7 @@ async fn nested_references_are_found() {
         &db,
         pipeline_id,
         0,
-        serde_json::json!({ "dns": { "provider": "cloudflare", CREDENTIAL_REFERENCE_FIELD: credential_id } }),
+        serde_json::json!({ "dns": { "provider": "cloud.cloudflare", CREDENTIAL_REFERENCE_FIELD: credential_id } }),
     )
     .await;
     // 数组里的引用同样要能找到。

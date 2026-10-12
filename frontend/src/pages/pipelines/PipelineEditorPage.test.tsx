@@ -307,7 +307,7 @@ vi.mock("@/api/client", () => ({
                 {
                   type_id: "test.f",
                   input: {
-                    dns_provider: "aliyun",
+                    dns_provider: "cloud.aliyun",
                     target: "ssh",
                     acme_account_credential_id: 7,
                     config: { credential_id: 10, cert_path: "/srv/ssl/site.crt" },
@@ -412,7 +412,7 @@ describe("PipelineEditorPage", () => {
     expect(await screen.findByTitle("ECDSA P-384")).toBeTruthy();
     expect(body.steps[2].input).toEqual({ acme_account_credential_id: 1 });
     expect(body.steps[3].input).toEqual({
-      dns_provider: "aliyun",
+      dns_provider: "cloud.aliyun",
       target: "ssh",
       acme_account_credential_id: 7,
       config: { credential_id: 10, cert_path: "/srv/ssl/site.crt" },

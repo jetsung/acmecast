@@ -60,9 +60,9 @@ flowchart LR
 server 启动时显式注册（重复注册即报错，不用链接器魔法）：
 
 - **步骤**：`cert.apply`（ACME 申请）、`cert.store`（证书入库）、`cert.deploy`（部署）
-- **DNS 提供商**：`cloudflare`、`aliyun`
-- **部署目标**：`local`（本地文件系统）、`ssh`（SSH 远程主机）
-- **凭据类型**：`acme.account`、`cloudflare`、`aliyun`、`ssh`（SSH 主机档案）
+- **DNS 提供商**：`cloud.tencent`、`cloud.aliyun`、`cloud.cloudflare`、`dns.tencent-eo`
+- **部署目标**：`local`（本地文件系统）、`ssh`（SSH 远程主机）、`tencent-ssl`（腾讯云 SSL 证书库）、`s3`、`webdav`
+- **凭据类型**：`acme.account`、`cloud.tencent`、`cloud.aliyun`、`cloud.cloudflare`、`dns.tencent-eo`、`deploy.ssh`、`deploy.s3`、`deploy.webdav`
 
 ## 关键横切机制
 

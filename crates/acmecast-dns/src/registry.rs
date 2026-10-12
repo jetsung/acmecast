@@ -201,7 +201,7 @@ mod tests {
     #[test]
     fn an_unregistered_provider_is_not_found() {
         let registry = DnsProviderRegistry::new();
-        assert!(registry.get("cloudflare").is_none());
+        assert!(registry.get("cloud.cloudflare").is_none());
     }
 
     #[test]

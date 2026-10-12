@@ -21,6 +21,7 @@ pub mod m20250111_000001_add_cert_key_algorithm;
 pub mod m20250112_000001_add_cert_archived_at;
 pub mod m20250113_000001_add_cert_four_paths;
 pub mod m20250114_000001_add_credential_capabilities;
+pub mod m20250115_000001_migrate_credential_type_ids;
 
 use sea_orm::DatabaseConnection;
 use sea_orm_migration::prelude::*;
@@ -45,6 +46,7 @@ pub use m20250111_000001_add_cert_key_algorithm::Migration as AddCertKeyAlgorith
 pub use m20250112_000001_add_cert_archived_at::Migration as AddCertArchivedAt;
 pub use m20250113_000001_add_cert_four_paths::Migration as AddCertFourPaths;
 pub use m20250114_000001_add_credential_capabilities::Migration as AddCredentialCapabilities;
+pub use m20250115_000001_migrate_credential_type_ids::Migration as MigrateCredentialTypeIds;
 
 #[async_trait::async_trait]
 impl MigratorTrait for Migrator {
@@ -64,6 +66,7 @@ impl MigratorTrait for Migrator {
             Box::new(AddCertArchivedAt),
             Box::new(AddCertFourPaths),
             Box::new(AddCredentialCapabilities),
+            Box::new(MigrateCredentialTypeIds),
         ]
     }
 }

@@ -216,24 +216,24 @@ mod tests {
     #[test]
     fn candidate_order_follows_registry_stable_order() {
         let order = candidate_order(
-            &["cloudflare", "aliyun", "route53", "tencent"],
-            &["aliyun", "cloudflare", "route53", "tencent"],
+            &["cloud.cloudflare", "cloud.aliyun", "route53", "cloud.tencent"],
+            &["cloud.aliyun", "cloud.cloudflare", "route53", "cloud.tencent"],
         );
         // 注册表稳定序，无偏好排序
-        assert_eq!(order, vec!["aliyun", "cloudflare", "route53", "tencent"]);
+        assert_eq!(order, vec!["cloud.aliyun", "cloud.cloudflare", "route53", "cloud.tencent"]);
     }
 
     #[test]
     fn types_without_credentials_are_dropped() {
-        let order = candidate_order(&["aliyun"], &["tencent", "aliyun", "cloudflare"]);
-        assert_eq!(order, vec!["aliyun"]);
+        let order = candidate_order(&["cloud.aliyun"], &["cloud.tencent", "cloud.aliyun", "cloud.cloudflare"]);
+        assert_eq!(order, vec!["cloud.aliyun"]);
     }
 
     #[tokio::test]
     async fn the_first_candidate_that_probes_clean_wins() {
-        let (first, first_probes) = ProbeProvider::failing("aliyun");
-        let (second, second_probes) = ProbeProvider::ok("cloudflare");
-        let (third, _third_probes) = ProbeProvider::ok("tencent");
+        let (first, first_probes) = ProbeProvider::failing("cloud.aliyun");
+        let (second, second_probes) = ProbeProvider::ok("cloud.cloudflare");
+        let (third, _third_probes) = ProbeProvider::ok("cloud.tencent");
 
         let mut logs = Vec::new();
         let picked = pick(
@@ -244,25 +244,25 @@ mod tests {
         .await
         .expect("第二个候选应命中");
 
-        assert_eq!(picked.provider_id, "cloudflare");
+        assert_eq!(picked.provider_id, "cloud.cloudflare");
         assert_eq!(picked.credential_id, 7);
         assert_eq!(first_probes.load(Ordering::SeqCst), 1, "首选被探测一次");
         assert_eq!(second_probes.load(Ordering::SeqCst), 1);
         assert!(
-            logs.iter().any(|m| m.contains("aliyun") && m.contains("不可用")),
+            logs.iter().any(|m| m.contains("cloud.aliyun") && m.contains("不可用")),
             "跳过原因应写日志：{logs:?}"
         );
         assert!(
             logs.iter()
-                .any(|m| m.contains("自动选择") && m.contains("cloudflare")),
+                .any(|m| m.contains("自动选择") && m.contains("cloud.cloudflare")),
             "选定结果应写日志：{logs:?}"
         );
     }
 
     #[tokio::test]
     async fn the_leading_aligned_provider_wins_directly() {
-        let (first, _) = ProbeProvider::ok("aliyun");
-        let (second, second_probes) = ProbeProvider::ok("cloudflare");
+        let (first, _) = ProbeProvider::ok("cloud.aliyun");
+        let (second, second_probes) = ProbeProvider::ok("cloud.cloudflare");
 
         let mut logs = Vec::new();
         let picked = pick(
@@ -273,14 +273,14 @@ mod tests {
         .await
         .expect("首选应命中");
 
-        assert_eq!(picked.provider_id, "aliyun");
+        assert_eq!(picked.provider_id, "cloud.aliyun");
         assert_eq!(second_probes.load(Ordering::SeqCst), 0, "命中后不再探测后续候选");
     }
 
     #[tokio::test]
     async fn exhausted_candidates_fail_with_every_reason() {
-        let (first, _) = ProbeProvider::failing("aliyun");
-        let (second, _) = ProbeProvider::failing("cloudflare");
+        let (first, _) = ProbeProvider::failing("cloud.aliyun");
+        let (second, _) = ProbeProvider::failing("cloud.cloudflare");
 
         let err = pick(
             vec![candidate(&first), candidate(&second)],
@@ -291,8 +291,8 @@ mod tests {
         .expect_err("全部失败应报错");
 
         let text = err.to_string();
-        assert!(text.contains("aliyun"), "{text}");
-        assert!(text.contains("cloudflare"), "{text}");
+        assert!(text.contains("cloud.aliyun"), "{text}");
+        assert!(text.contains("cloud.cloudflare"), "{text}");
         assert!(text.contains("zone 未托管"), "{text}");
     }
 }

@@ -31,8 +31,7 @@
 
 ## `ssh` — SSH 远程主机
 
-连接方式两种可混用：**直接填**（认证材料经 `credential_id` 引用 SSH 私钥/口令
-凭据）或**引用 SSH 主机档案**（顶层 `credential_id` 指向 `ssh` 类型凭据）。
+连接方式两种可混用：**直接填**（认证材料经 `credential_id` 引用 `deploy.ssh` 私钥/口令
 
 合并优先级：**输入显式值 > 主机档案值 > 系统缺省**（端口 22、证书 0644、
 私钥 0600）。空白输入值不算显式，回退档案。合并后必填缺失报错并指出缺哪个
@@ -40,7 +39,7 @@
 
 | 字段 | 来源 | 说明 |
 |---|---|---|
-| `credential_id` | 输入 | 引用 `ssh` 类型主机档案 |
+| `credential_id` | 输入 | 引用 `deploy.ssh` 类型主机档案 |
 | `host` / `port` / `user` | 输入或档案 | 连接参数 |
 | `auth` | 输入或档案 | `{"kind": "private_key", "credential_id": N}` 或 `{"kind": "password", "credential_id": N}` |
 | `cert_path` / `key_path` | **仅输入** | 远端目标路径（档案不含路径——一份档案可服务多条流水线） |
@@ -55,7 +54,7 @@
 - 私钥支持 OpenSSH 与 PEM 格式。
 - ⚠️ **主机密钥未接入 known_hosts**：接受任何主机密钥，每次连接记 warn 并
   打出 SHA-256 指纹。有中间人风险的环境请配合网络层隔离使用。
-- 凭据的「连通性测试」对 `ssh` 类型是真实探测（10 秒超时）。
+- 凭据的「连通性测试」对 `deploy.ssh` 类型是真实探测（10 秒超时）。
 
 ## `tencent-ssl` — 腾讯云 SSL 证书库
 
@@ -66,7 +65,7 @@ CDN / WAF 等云资源引用。**国内站与国际站同构**：凭据的 `acco
 
 | 字段 | 必需 | 默认 | 说明 |
 |---|---|---|---|
-| `credential_id` | 是 | — | 引用 `tencent` 类型凭据（`tencent-eo` 仅服务 DNS，无 SSL 部署能力，不接受） |
+| `credential_id` | 是 | — | 引用 `cloud.tencent` 类型凭据（`dns.tencent-eo` 仅服务 DNS，无 SSL 部署能力，不接受） |
 | `alias` | 否 | — | 上传到云端的证书备注名；空白不提交 |
 | `repeatable` | 否 | `false` | 上传请求的 `Repeatable`：`false` 时同指纹已存在返回已有证书 ID、不产生重复；`true` 时允许重复上传 |
 | `replace_existing` | 否 | `true` | 云端已有同域名证书时是否替换 |
@@ -103,8 +102,7 @@ CDN / WAF 等云资源引用。**国内站与国际站同构**：凭据的 `acco
 把证书链与私钥写入 S3 兼容对象存储（MinIO / R2 / OSS / COS 等）。
 
 | 字段 | 必需 | 默认 | 说明 |
-|---|---|---|---|
-| `credential_id` | 是 | — | 引用 `s3` 类型凭据（含 `access_key`/`secret_key`，可选 `session_token`） |
+| `credential_id` | 是 | — | 引用 `deploy.s3` 类型凭据（含 `access_key`/`secret_key`，可选 `session_token`） |
 | `endpoint` | 是 | — | S3 endpoint（含 scheme），如 `https://s3.example.com` |
 | `region` | 是 | — | 区域，如 `us-east-1` |
 | `bucket` | 是 | — | 桶名 |
@@ -122,7 +120,7 @@ CDN / WAF 等云资源引用。**国内站与国际站同构**：凭据的 `acco
 
 | 字段 | 必需 | 默认 | 说明 |
 |---|---|---|---|
-| `credential_id` | 是 | — | 引用 `webdav` 类型凭据（含 `username`/`password`） |
+| `credential_id` | 是 | — | 引用 `deploy.webdav` 类型凭据（含 `username`/`password`） |
 | `url` | 是 | — | WebDAV 基地址，如 `https://dav.example.com/` |
 | `base_path` | 否 | — | 基路径，归一化后拼接 |
 | `cert_path` | 否 | — | 证书对象路径模板，含 `{domain}` |
@@ -151,4 +149,5 @@ CDN / WAF 等云资源引用。**国内站与国际站同构**：凭据的 `acco
 }
 ```
 
-`credential_id: 5` 是 `ssh` 类型主机档案；路径与重载命令随部署输入给出。
+`credential_id: 5` 是 `deploy.ssh` 类型主机档案；路径与重载命令随部署输入给出。
+

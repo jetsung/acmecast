@@ -52,7 +52,7 @@
 | `challenge` | string | 是 | 挑战类型，当前只支持 `dns-01`（HTTP-01 尚无投放通道） |
 | `key_algorithm` | string | 否（默认 `ecdsa_p256`） | 申请密钥与证书的算法：`ecdsa_p256` / `ecdsa_p384` / `ed25519` / `rsa2048`；密钥类型在签发时即固定，CA 是否接受所选算法以 CA 支持为准 |
 | `account_credential_id` | int | 是 | ACME 账号凭据标识（`acme.account` 类型） |
-| `dns_credential_id` | int | DNS-01 必填 | DNS 提供商凭据标识；提供商由凭据类型（`type_id`）决定（如 `cloudflare` 类型凭据 → Cloudflare 提供商）。留空时自动选择——遍历凭据库逐个探测 zone 托管 |
+| `dns_credential_id` | int | DNS-01 必填 | DNS 提供商凭据标识；提供商由凭据类型（`type_id`）决定（如 `cloud.cloudflare` 类型凭据 → Cloudflare 提供商）。留空时自动选择——遍历凭据库逐个探测 zone 托管 |
 | `dns_zone` | string | 否 | 挑战记录写入的 DNS zone；缺省从主域名去掉第一段推导（`a.example.com` → `example.com`）。该字段同时决定写入的 zone 与记录名 `_acme-challenge.<dns_zone>`；挑战记录经 CNAME 委派到别处托管时（`_acme-challenge.skiy.net` CNAME 到 `_acme-challenge.666517.xyz`），填记录**实际托管**的 zone 即 `666517.xyz` |
 | `wait_propagation` | bool | 否（默认 `true`） | 等 TXT 记录可见后再让 CA 验证；内网 DNS（解析器查不到）应关闭 |
 | `contacts` | string[] | 否 | 账号联系人（裸邮箱或 `mailto:` URI），仅首次注册时用 |

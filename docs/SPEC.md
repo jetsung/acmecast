@@ -74,7 +74,7 @@
 
 ## DNS 提供商选择与 DoH 排序
 
-`cert.apply` 的 DNS-01 流程以 `dns_credential_id` 为唯一凭据参数，不再接受 `dns_provider` 输入字段——提供商标识由凭据记录的 `type_id` 直接推导（如 `cloudflare` 类型凭据 → Cloudflare 提供商）。已有流水线配置中残留的 `dns_provider` 值在加载时被静默忽略，行为以凭据 `type_id` 为准。
+`cert.apply` 的 DNS-01 流程以 `dns_credential_id` 为唯一凭据参数，不再接受 `dns_provider` 输入字段——提供商标识由凭据记录的 `type_id` 直接推导（如 `cloud.cloudflare` 类型凭据 → Cloudflare 提供商）。已有流水线配置中残留的 `dns_provider` 值在加载时被静默忽略，行为以凭据 `type_id` 为准。
 
 ### 显式指定凭据
 
@@ -171,7 +171,7 @@ SSE 实时推送与终态持久化遵循双轨：
 
 ### 受控类型
 
-仅 `tencent`、`cloudflare`、`aliyun` 三类凭据支持能力标记；其他类型（`tencent-eo`、`ssh`、`s3`、`webdav`、`acme.account` 等）不暴露、不持久化、不返回该字段。
+仅 `cloud.tencent`、`cloud.cloudflare`、`cloud.aliyun` 三类凭据支持能力标记；其他类型（`dns.tencent-eo`、`deploy.ssh`、`deploy.s3`、`deploy.webdav`、`acme.account` 等）不暴露、不持久化、不返回该字段。
 
 | 能力值 | 用途 |
 |---|---|
@@ -207,7 +207,7 @@ SSE 实时推送与终态持久化遵循双轨：
 | 字段 | 过滤条件 |
 |---|---|
 | `dns_credential_id`（`cert.apply`） | 仅列 `capabilities` 含 `dns` 的凭据 |
-| `credential_id`（`cert.deploy` 的 `tencent-ssl` 变体） | 仅列 `type_id == "tencent"` 且 `capabilities` 含 `deploy` 的凭据 |
+| `credential_id`（`cert.deploy` 的 `tencent-ssl` 变体） | 仅列 `type_id == "cloud.tencent"` 且 `capabilities` 含 `deploy` 的凭据 |
 
 缺省（空 / 非受控类型）视为双能力，不因能力被过滤。过滤后下拉仍保留名称 + `id` + 备注的可读性约定。
 

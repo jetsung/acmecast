@@ -1471,7 +1471,7 @@ mod tests {
             "domains": ["example.com"],
             "challenge": "dns-01",
             "account_credential_id": 1,
-            "dns_provider": "cloudflare",
+            "dns_provider": "cloud.cloudflare",
             "dns_credential_id": 4,
         }))
         .expect("残留 dns_provider 应被静默忽略，不报错");

@@ -85,7 +85,7 @@ export ACMECAST_STATIC_DIR="$PWD/frontend/dist"
 
 1. **建 ACME 账号凭据**：类型 `acme.account`，选 CA（如 `letsencrypt`）。
    首次使用时自动注册，之后复用。详见[凭据体系](04-credentials.md)。
-2. **建 DNS 凭据**：类型 `cloudflare` 或 `aliyun`，填 API Token / AccessKey。
+2. **建 DNS 凭据**：类型 `cloud.tencent` / `cloud.aliyun` / `cloud.cloudflare` / `dns.tencent-eo`，填 API Token / AccessKey。
 3. **建流水线**：依次挂 `cert.apply` → `cert.store` → `cert.deploy` 三步，
    字段说明见[流水线](05-pipelines.md)。
 4. **手动运行一次**：`POST /api/pipelines/{id}/run`，轮询
