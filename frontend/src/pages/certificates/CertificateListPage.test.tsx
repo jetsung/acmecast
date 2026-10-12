@@ -351,6 +351,42 @@ describe("证书列表吊销与归档列", () => {
     });
   }, 20000);
 
+  it("归档返回材料缺失降级标记时提示降级文案而非归档成功", async () => {
+    const { client } = await import("@/api/client");
+    const post = vi.mocked(client.POST);
+    post.mockResolvedValueOnce({
+      data: { data: { cert_id: 1, cert_pem_path: "certs/ssl/a.cert.pem", key_pem_path: "certs/ssl/a.key.pem", archived_now: false, material_missing: true } },
+      response: new Response(),
+    } as never);
+    renderPage();
+    const btn = (await screen.findAllByRole("button", { name: /归档证书 1/ }))[0];
+    fireEvent.click(btn);
+    await screen.findAllByText("确认归档证书？");
+    const confirms = await screen.findAllByRole("button", { name: /归\s*档/ });
+    fireEvent.click(confirms[confirms.length - 1]);
+
+    expect(await screen.findByText("材料缺失，已标记为吊销状态，可直接删除")).toBeTruthy();
+    expect(screen.queryByText("证书已归档")).toBeNull();
+  }, 20000);
+
+  it("吊销返回材料缺失降级标记时提示降级文案而非吊销成功", async () => {
+    const { client } = await import("@/api/client");
+    const post = vi.mocked(client.POST);
+    post.mockResolvedValueOnce({
+      data: { data: { cert_id: 1, revoked_now: true, revoked_at: new Date().toISOString(), material_missing: true } },
+      response: new Response(),
+    } as never);
+    renderPage();
+    const btn = (await screen.findAllByRole("button", { name: /吊销证书 1/ }))[0];
+    fireEvent.click(btn);
+    await screen.findAllByText("确认吊销证书？");
+    const confirms = await screen.findAllByRole("button", { name: /吊\s*销/ });
+    fireEvent.click(confirms[confirms.length - 1]);
+
+    expect(await screen.findByText("材料缺失，已标记为吊销状态，可直接删除")).toBeTruthy();
+    expect(screen.queryByText("证书已吊销，本地状态已更新")).toBeNull();
+  }, 20000);
+
   it("活跃态删除禁用，归档/吊销态删除启用", async () => {
     vi.mocked(client.GET).mockResolvedValueOnce({
       data: {
@@ -403,4 +439,96 @@ describe("证书列表吊销与归档列", () => {
       expect(mockedGet.mock.calls.length).toBeGreaterThanOrEqual(2);
     });
   }, 20000);
+});
+
+describe("证书列表状态列三态", () => {
+  const row = (overrides: Record<string, unknown>) => ({
+    id: 1,
+    domains: ["example.com"],
+    fingerprint: "fp-1",
+    key_algorithm: "ECDSA P-256",
+    description: null,
+    not_after: new Date(Date.now() + 90 * 86400000).toISOString(),
+    revoked_at: null,
+    archived_at: null,
+    updated_at: "2026-09-19T00:00:00Z",
+    ...overrides,
+  });
+
+  const renderRows = async (items: Record<string, unknown>[]) => {
+    mockedGet.mockResolvedValueOnce({
+      data: { data: { items, total: items.length, page: 1, page_size: 15 } },
+      response: new Response(),
+    } as never);
+    const { container } = renderPage();
+    await waitFor(() => expect(mockedGet).toHaveBeenCalled());
+    return container;
+  };
+
+  it("revoked_at 与 archived_at 均空显示「有效」", async () => {
+    const container = await renderRows([row({})]);
+    await waitFor(() => {
+      expect(container.textContent).toContain("有效");
+    });
+  });
+
+  it("archived_at 非空显示「已归档」", async () => {
+    const container = await renderRows([row({ archived_at: new Date().toISOString() })]);
+    await waitFor(() => {
+      expect(container.textContent).toContain("已归档");
+    });
+    // 用精确文本匹配:页面副标题含「有效期」,不能对全文做 not.toContain。
+    expect(screen.queryByText("有效")).toBeNull();
+  });
+
+  it("revoked_at 非空显示「已吊销」(终态优先于归档)", async () => {
+    const container = await renderRows(
+      [row({ revoked_at: new Date().toISOString(), archived_at: new Date().toISOString() })],
+    );
+    await waitFor(() => {
+      expect(container.textContent).toContain("已吊销");
+    });
+    expect(container.textContent).not.toContain("已归档");
+    expect(screen.queryByText("有效")).toBeNull();
+  });
+});
+
+describe("证书列表域名列 Tooltip", () => {
+  it("悬浮域名文本展示证书详情(域名/指纹/签发者)", async () => {
+    mockedGet.mockResolvedValueOnce({
+      data: {
+        data: {
+          items: [
+            {
+              id: 1,
+              domains: ["a.example.com", "b.example.com"],
+              fingerprint: "fp-tooltip",
+              issuer_organization: "Let's Encrypt",
+              key_algorithm: "ECDSA P-256",
+              description: null,
+              not_before: "2026-01-01T00:00:00Z",
+              not_after: new Date(Date.now() + 90 * 86400000).toISOString(),
+              revoked_at: null,
+              archived_at: null,
+              updated_at: "2026-09-19T00:00:00Z",
+            },
+          ],
+          total: 1,
+          page: 1,
+          page_size: 15,
+        },
+      },
+      response: new Response(),
+    } as never);
+    renderPage();
+
+    const cell = await screen.findByText("a.example.com, b.example.com");
+    fireEvent.mouseEnter(cell);
+
+    const tooltip = await screen.findByRole("tooltip");
+    expect(tooltip.textContent).toContain("a.example.com");
+    expect(tooltip.textContent).toContain("b.example.com");
+    expect(tooltip.textContent).toContain("fp-tooltip");
+    expect(tooltip.textContent).toContain("Let's Encrypt");
+  });
 });

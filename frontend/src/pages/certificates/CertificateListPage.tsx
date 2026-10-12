@@ -1,14 +1,15 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { App, Button, Input, Modal, Select, Space, Table, Tag, Typography } from "antd";
+import { App, Button, Input, Modal, Select, Space, Table, Tag, Tooltip, Typography } from "antd";
 import type { TableColumnsType } from "antd";
 import type { components } from "@/api/schema";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useNavigate } from "react-router";
 import { client } from "@/api/client";
 import { unwrapData } from "@/api/helpers";
 import { formatTime } from "@/api/helpers";
 import { PageHeader } from "@/components/PageHeader";
 import { Panel } from "@/components/Panel";
+import { TOOLTIP_OVERLAY_INNER_STYLE } from "@/components/SchemaForm";
 
 type CertificateRow = components["schemas"]["CertificateResponse"];
 
@@ -135,7 +136,12 @@ export function CertificateListPage() {
             message.error("吊销失败");
             return;
           }
-          message.success("证书已吊销，本地状态已更新");
+          const revokeData = (result.data as { data?: { material_missing?: boolean } })?.data;
+          if (revokeData?.material_missing) {
+            message.warning("材料缺失，已标记为吊销状态，可直接删除");
+          } else {
+            message.success("证书已吊销，本地状态已更新");
+          }
           await queryClient.invalidateQueries({ queryKey: ["certificates"] });
         } finally {
           setRevokingId(null);
@@ -166,7 +172,12 @@ export function CertificateListPage() {
             message.error(msg);
             return Promise.reject(new Error(msg));
           }
-          message.success("证书已归档");
+          const data = (result.data as { data?: { material_missing?: boolean } })?.data;
+          if (data?.material_missing) {
+            message.warning("材料缺失，已标记为吊销状态，可直接删除");
+          } else {
+            message.success("证书已归档");
+          }
           await queryClient.invalidateQueries({ queryKey: ["certificates"] });
           await queryClient.refetchQueries({ queryKey: ["certificates"] });
         } finally {
@@ -218,7 +229,33 @@ export function CertificateListPage() {
     {
       title: "域名",
       dataIndex: "domains",
-      render: (domains: string[]) => domains.join(", "),
+      render: (domains: string[], row) => {
+        // 悬浮展示关键详情,数据全部来自列表行已有字段,无需额外请求。
+        const info: Array<[string, ReactNode]> = [
+          ["域名", domains.map((d) => <div key={d}>{d}</div>)],
+          ["签发者", row.issuer_organization?.trim() ? row.issuer_organization : "—"],
+          ["指纹", row.fingerprint],
+          ["生效时间", formatTime(row.not_before)],
+          ["到期时间", formatTime(row.not_after)],
+          ["私钥算法", row.key_algorithm?.trim() ? row.key_algorithm : "—"],
+        ];
+        return (
+          <Tooltip
+            title={
+              <div>
+                {info.map(([label, value]) => (
+                  <div key={label}>
+                    <strong>{label}:</strong> {value}
+                  </div>
+                ))}
+              </div>
+            }
+            overlayInnerStyle={TOOLTIP_OVERLAY_INNER_STYLE}
+          >
+            <span>{domains.join(", ")}</span>
+          </Tooltip>
+        );
+      },
     },
     {
       title: "签发者",
@@ -261,8 +298,13 @@ export function CertificateListPage() {
       title: "状态",
       dataIndex: "revoked_at",
       width: 100,
-      render: (revoked: string | null) =>
-        revoked ? <Tag color="default">已吊销</Tag> : <Tag color="processing">有效</Tag>,
+      render: (revoked: string | null, row) => {
+        // 三态:吊销为终态优先,其次归档,均空为有效。
+        if (revoked) return <Tag color="default">已吊销</Tag>;
+        const archived = String((row as { archived_at?: string | null }).archived_at ?? "").trim() !== "";
+        if (archived) return <Tag color="warning">已归档</Tag>;
+        return <Tag color="processing">有效</Tag>;
+      },
     },
     {
       title: "算法",

@@ -348,3 +348,70 @@ SSE 实时推送与终态持久化遵循双轨：
 
 - `crates/acmecast-server/src/steps/deploy.rs: platform_summary` — 按 `target` 从 `config` 取字段拼接 `platform=<...>`，经 `redact` 脱敏
 - `crates/acmecast-server/src/steps/deploy.rs:138-186` — "已部署到目标" 成功/跳过分支同一行前后追加 `platform`
+
+## 证书存储查询与续期归档
+
+`cert.store` 在写入新证书前按域名集合（`domains` 归一化后精确匹配）查询既有记录，用于归档旧证书与判断是否新建记录。当同域名集合已存在多条记录（如首次重签后一条已归档 + 一条活跃）时，查询 MUST 确定性返回**活跃记录**（`archived_at` 为空且 `revoked_at` 为空），而非任意记录。此优先级 MUST 在所有依赖域名集合查询的路径一致生效：续期归档、到期检测、跳过注入。
+
+### 查询排序
+
+`CertRepository::find_by_key`（被 `find_by_domains` 调用）的查询排序为：
+
+```sql
+ORDER BY (archived_at IS NULL) DESC,  -- 活跃 (1) 排前，已归档 (0) 排后
+         (revoked_at IS NULL) DESC,   -- 未吊销 (1) 排前，已吊销 (0) 排后
+         id DESC                       -- 同为活跃时取最新（id 最大）
+```
+
+用 `IS NULL` 布尔表达式排序，不依赖数据库默认 NULL 排序行为，确保跨数据库一致。无活跃记录时回退到任意记录。
+
+### 归档守卫
+
+`cert.store` 在归档旧证书前增加防御性检查：若查询到的 `existing` 记录的 `cert_pem_path` 或 `key_pem_path` 已位于 `certs/archived/` 或 `certs/revoked/` 前缀下，跳过归档并记 warn（该记录已是归档/吊销态，非当前活跃证书）。正常流程不应触发，但防止极端并发或数据异常下的错误归档。
+
+### 归档语义
+
+- 同域名集合旧记录且新旧指纹不同时，MUST 将旧证书 4 文件按旧指纹移动到 `certs/archived/<旧指纹>/`，文件名不变，旧记录路径列同步更新为归档后路径，新证书以全新记录入库（不覆盖旧记录）。
+- 指纹相同时不新建重复记录；未到期跳过且注入库中证书同样不新建。
+- 归档目标已存在时覆盖，不报错。
+- 归档失败（源文件缺失或 IO 错误）MUST NOT 阻断新证书写入与新建记录，仅记 warn。
+- 连续多次重签时，每次归档的是上一张活跃证书（而非重复归档第一张）。
+
+### 实现索引
+
+- `crates/acmecast-store/src/repository/cert.rs: find_by_key` — 活跃优先排序（`IS NULL` 布尔表达式 + `id DESC`）
+- `crates/acmecast-store/src/repository/cert.rs: find_by_domains` — 调用 `find_by_key`，直接受益
+- `crates/acmecast-server/src/steps/store.rs: archive_replaced_certificate` — 归档守卫（`certs/archived/` / `certs/revoked/` 前缀检查）
+- `crates/acmecast-server/src/steps/apply.rs` — 到期检测与跳过注入受益于查询修正，无代码改动
+
+### 材料缺失降级为标记吊销终态
+
+当证书材料缺失（库中记录指向的文件在磁盘上不存在）时，归档与吊销操作 MUST NOT 静默返回成功或使记录停留在活跃态形成孤儿记录。系统统一降级为**本地标记吊销终态**：调用 `CertRepository::mark_revoked`（设置 `revoked_at` 为当前时间、清空 `archived_at`），跳过 CA 吊销与文件移动，响应返回 `archived_now=false`（归档入口）或 `revoked_now=true`（吊销入口）并携带 `material_missing=true` 降级标记。降级后记录进入终态，删除按钮按既有规则可用。
+
+- 归档入口（用户点"归档"）：材料缺失 → `mark_revoked` → 响应 `archived_now=false` + `material_missing=true`。
+- 吊销入口（用户点"吊销"）：材料缺失 → 跳过读 fullchain 与 CA 调用 → `mark_revoked` → 响应 `revoked_now=true` + `material_missing=true`。
+- 已吊销记录重复点归档/吊销仍走既有幂等返回（`archived_now/revoked_now=false`），不重复降级。
+- 告警日志 MUST 包含 `cert_id`、`fingerprint`、缺失路径，便于事后排查。
+
+### 吊销搬迁完整性
+
+吊销把证书材料移入 `certs/revoked/<指纹>/` 时，MUST 把库中记录的 **6 个路径列**所指向的文件（`cert_path`/`ca_path`/`fullchain_path`/`key_path`/`cert_pem_path`/`key_pem_path`）全部搬入吊销目录，MUST NOT 在源目录（`certs/ssl/` 或 `certs/archived/<指纹>/`）遗留任何属于该证书的文件。搬迁完成后库中 6 个路径列一致指向吊销目录下的新位置。
+
+- `FileStore::move_certificate` 优先整目录 rename，不可行时退回逐文件搬迁；逐文件清单从原 `cert_pem`/`key_pem` + `certs/ssl/` 活跃候选扩展为包含库中记录的全部 6 路径源文件。
+- 吊销同时清空 `archived_at`（设为 `NULL`），使吊销成为唯一终态——不残留"已归档"状态。MUST NOT 在吊销时删除证书文件。
+- `revoked_at` 与 `archived_at` 同时非空时 MUST 显示"已吊销"（吊销为终态，优先于归档）。
+
+### 前端提示区分
+
+归档与吊销的完成提示 MUST 区分两种结果：
+
+- 文件搬迁成功时提示归档/吊销成功。
+- 响应 `material_missing=true` 时 MUST 提示"材料缺失，已标记为吊销状态，可直接删除"（warning 级），MUST NOT 展示与真实搬迁成功相同的成功提示。
+
+### 实现索引（续）
+
+- `crates/acmecast-store/src/filestore.rs: move_certificate` — 逐文件搬迁清单扩展为 6 路径（`cert`/`ca`/`fullchain`/`key`/`cert_pem`/`key_pem`），整目录 rename 不变
+- `crates/acmecast-server/src/handlers.rs` — 归档接口材料缺失降级（`mark_revoked` + `material_missing`）、吊销接口材料缺失降级（跳过 CA + `mark_revoked`）
+- `crates/acmecast-store/src/repository/cert.rs: mark_revoked` — 设置 `revoked_at`、清空 `archived_at`（降级复用）
+- `frontend/src/pages/certificates/CertificateDetailPage.tsx` — 按 `material_missing` 区分提示文案
+- `frontend/src/pages/certificates/CertificateListPage.tsx` — 列表行归档/吊销降级提示、状态列显示与删除按钮可用性

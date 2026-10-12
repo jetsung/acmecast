@@ -1071,6 +1071,46 @@ async fn updating_paths_of_a_missing_certificate_reports_not_found() {
     assert!(matches!(&err, Error::NotFound { .. }), "{err:?}");
 }
 
+#[tokio::test]
+async fn mark_revoked_clears_archived() {
+    // 吊销是唯一终态：已归档证书被吊销后，archived_at 必须被清空，
+    // 否则记录同时持有「归档」与「吊销」两个状态。
+    use acmecast_store::CertFilePaths;
+
+    let (db, account) = setup().await;
+    let repo = CertRepository::new(&db);
+
+    let saved = repo
+        .save(input(&["example.com"], "fp-arc", 90, account))
+        .await
+        .unwrap()
+        .model();
+
+    let paths = CertFilePaths {
+        cert: "certs/archived/fp-arc/cert.cer".to_owned(),
+        ca: "certs/archived/fp-arc/cert.ca.cer".to_owned(),
+        fullchain: "certs/archived/fp-arc/cert.fullchain.cer".to_owned(),
+        key: "certs/archived/fp-arc/cert.key".to_owned(),
+        cert_pem: "certs/archived/fp-arc/cert.pem".to_owned(),
+        key_pem: "certs/archived/fp-arc/key.pem".to_owned(),
+    };
+    repo.set_archived_paths(saved.id, &paths, Utc::now())
+        .await
+        .expect("应能归档");
+    let archived = repo.find(saved.id).await.unwrap().unwrap();
+    assert!(archived.archived_at.is_some(), "归档后 archived_at 应非空");
+
+    repo.mark_revoked(saved.id, Utc::now())
+        .await
+        .expect("应能标记吊销");
+    let revoked = repo.find(saved.id).await.unwrap().unwrap();
+    assert!(revoked.revoked_at.is_some(), "吊销后 revoked_at 应非空");
+    assert!(
+        revoked.archived_at.is_none(),
+        "吊销应清空 archived_at，不残留归档状态"
+    );
+}
+
 // ---- 私钥算法与管理员备注 ----
 
 #[tokio::test]

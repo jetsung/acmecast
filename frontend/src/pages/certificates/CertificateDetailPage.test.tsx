@@ -81,6 +81,8 @@ function renderPage() {
         <MemoryRouter initialEntries={["/certificates/1"]}>
           <Routes>
             <Route path="/certificates/:id" element={<CertificateDetailPage />} />
+            {/* 删除成功后导航回列表的落点,供断言渲染结果。 */}
+            <Route path="/certificates" element={<div>证书列表页</div>} />
           </Routes>
         </MemoryRouter>
       </App>
@@ -287,5 +289,7 @@ describe("CertificateDetailPage 删除", () => {
     await waitFor(() => {
       expect(del).toHaveBeenCalledWith("/api/certificates/1", expect.objectContaining({ params: { path: { id: 1 } } }));
     });
+    // 删除成功后导航回列表页(replace),不停留在已删除证书的详情视图。
+    await screen.findByText("证书列表页");
   });
 });

@@ -260,14 +260,17 @@ impl FileStore {
     /// - 任一源文件缺失返回 `None`：没有材料可归档，调用方应保持库中路径不变；
     /// - 两个源文件同在一个目录时**整个目录一次 `rename`**——原子，且目录里
     ///   可能混放的其他文件（手动上传）也跟着走，不在原地留孤儿；
-    /// - 整搬不可行（源分处不同目录等）时退回逐文件 `rename`，搬空后的
-    ///   源目录一并清掉，避免 `certs/<指纹>/` 留下空壳。
+    /// - 整搬不可行（源分处不同目录等）时退回逐文件 `rename`，逐文件路径
+    ///   覆盖 `sources` 的全部 6 个路径——归档布局的 `.cer`/`.ca.cer` 等
+    ///   文件必须一并搬入吊销目录，不在源目录留遗留；搬空后的源目录一并
+    ///   清掉，避免 `certs/<指纹>/` 留下空壳。
     pub async fn move_certificate(
         &self,
-        cert_pem_relative: &str,
-        key_pem_relative: &str,
+        sources: &CertFilePaths,
         fingerprint: &str,
     ) -> Result<Option<CertFilePaths>> {
+        let cert_pem_relative = sources.cert_pem.as_str();
+        let key_pem_relative = sources.key_pem.as_str();
         let revoked_dir = Self::revoked_cert_dir(fingerprint);
         let prefix = base_name_of(cert_pem_relative)
             .strip_suffix(&format!(".{CERT_PEM_SUFFIX}"))
@@ -286,14 +289,27 @@ impl FileStore {
             return Ok(Some(target));
         }
 
+        // 6 个源路径 + 活跃目录的 4 个新布局候选：任一存在即视为有材料。
+        // 空路径（库中旧记录缺列）跳过，避免 resolve 报错中断归档。
         let active_candidates = [
             format!("{ACTIVE_CERT_DIR}/{prefix}.{CERT_SUFFIX}"),
             format!("{ACTIVE_CERT_DIR}/{prefix}.{CA_SUFFIX}"),
             format!("{ACTIVE_CERT_DIR}/{prefix}.{FULLCHAIN_SUFFIX}"),
             format!("{ACTIVE_CERT_DIR}/{prefix}.{KEY_SUFFIX}"),
         ];
+        let source_candidates: Vec<&str> = [
+            sources.cert.as_str(),
+            sources.ca.as_str(),
+            sources.fullchain.as_str(),
+            sources.key.as_str(),
+            cert_pem_relative,
+            key_pem_relative,
+        ]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect();
         let mut any = false;
-        for c in [cert_pem_relative, key_pem_relative].iter().copied().chain(active_candidates.iter().map(|s| s.as_str())) {
+        for c in source_candidates.iter().copied().chain(active_candidates.iter().map(|s| s.as_str())) {
             if tokio::fs::metadata(self.resolve(c)?).await.is_ok() { any = true; break; }
         }
         if !any { return Ok(None); }
@@ -312,13 +328,14 @@ impl FileStore {
                 if src != &dst { let _ = self.move_within(src, &dst).await; }
             }
         }
-        for (src, dst) in [(cert_pem_relative, &target.cert_pem), (key_pem_relative, &target.key_pem)] {
-            if src == dst { continue; }
-            if tokio::fs::metadata(self.resolve(src)?).await.is_ok() { let _ = self.move_within(src, dst).await; }
+        for src in source_candidates.iter() {
+            let dst = format!("{revoked_dir}/{}", base_name_of(src));
+            if src == &dst { continue; }
+            if tokio::fs::metadata(self.resolve(src)?).await.is_ok() { let _ = self.move_within(src, &dst).await; }
         }
         // 扁平活跃目录为共享目录，不应因单条证书归档而尝试删除。
         let active_dir = self.resolve(ACTIVE_CERT_DIR)?;
-        for source in [cert_pem_relative, key_pem_relative] {
+        for source in source_candidates.iter() {
             let Ok(parent) = self.resolve(source).map(|p| p.parent().unwrap().to_path_buf()) else { continue; };
             if parent == active_dir { continue; }
             let _ = self.remove_parent_dir_if_empty(source).await;

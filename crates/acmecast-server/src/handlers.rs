@@ -332,6 +332,9 @@ pub(crate) struct RevokeResponse {
     pub revoked_now: bool,
     /// 本地记录的吊销时间。
     pub revoked_at: DateTime<Utc>,
+    /// 证书材料缺失时的降级标记：本次跳过 CA 吊销与文件移动，仅本地标记吊销终态。
+    #[serde(default)]
+    pub material_missing: bool,
 }
 
 /// 手动归档结果。
@@ -345,6 +348,9 @@ pub(crate) struct ArchiveResponse {
     pub key_pem_path: String,
     /// 是否本次调用完成了文件移动（`false` 表示已在归档/吊销目录或源缺失的幂等返回）。
     pub archived_now: bool,
+    /// 证书材料缺失时的降级标记：本次未移动文件，记录已降级为本地标记吊销终态。
+    #[serde(default)]
+    pub material_missing: bool,
 }
 
 
@@ -372,6 +378,50 @@ async fn revoke_certificate(
             )
         })?;
 
+    // 已吊销的记录直接返回现状：幂等，不重复调用 CA。
+    if let Some(revoked_at) = cert.revoked_at {
+        return Ok(ApiResponse::new(RevokeResponse {
+            cert_id,
+            revoked_now: false,
+            revoked_at,
+            material_missing: false,
+        }));
+    }
+
+    // 材料缺失时无法读取证书发起 CA 吊销：降级为本地标记吊销终态
+    // （设置 revoked_at、清空 archived_at），让孤儿记录可删除。
+    // 置于账号检查之前——孤儿记录往往也无账号绑定，降级不应被其拦截。
+    let store = FileStore::open(&state.app.config.data_dir)
+        .await
+        .map_err(ApiError::from)?;
+    let sources = cert_file_paths(&cert);
+    let mut material_present = false;
+    for path in [&sources.cert, &sources.ca, &sources.fullchain, &sources.key, &sources.cert_pem, &sources.key_pem] {
+        if path.is_empty() { continue; }
+        if store.read(path).await.is_ok() {
+            material_present = true;
+            break;
+        }
+    }
+    if !material_present {
+        tracing::warn!(
+            cert_id,
+            fingerprint = %cert.fingerprint,
+            "吊销时证书材料缺失，降级为本地标记吊销终态"
+        );
+        let revoked_at = Utc::now();
+        repository
+            .mark_revoked(cert_id, revoked_at)
+            .await
+            .map_err(ApiError::from)?;
+        return Ok(ApiResponse::new(RevokeResponse {
+            cert_id,
+            revoked_now: true,
+            revoked_at,
+            material_missing: true,
+        }));
+    }
+
     let access_id = cert.acme_account_access_id.ok_or_else(|| {
         ApiError::new(
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -381,15 +431,6 @@ async fn revoke_certificate(
             ),
         )
     })?;
-
-    // 已吊销的记录直接返回现状：幂等，不重复调用 CA。
-    if let Some(revoked_at) = cert.revoked_at {
-        return Ok(ApiResponse::new(RevokeResponse {
-            cert_id,
-            revoked_now: false,
-            revoked_at,
-        }));
-    }
 
     let cipher = state.runtime.cipher.as_ref().ok_or_else(|| {
         ApiError::new(
@@ -430,9 +471,6 @@ async fn revoke_certificate(
         .await
         .map_err(|e| ApiError::from(acmecast_core::Error::External(e.to_string())))?;
 
-    let store = FileStore::open(&state.app.config.data_dir)
-        .await
-        .map_err(ApiError::from)?;
     let cert_path = cert.fullchain_path.clone().expect("新布局 fullchain_path 必有值");
     let cert_pem = store.read(&cert_path).await.map_err(ApiError::from)?;
     let der = acmecast_cert::first_der(&cert_pem).map_err(ApiError::from)?;
@@ -467,7 +505,30 @@ async fn revoke_certificate(
         cert_id,
         revoked_now,
         revoked_at,
+        material_missing: false,
     }))
+}
+
+/// 从证书记录构造 6 路径集合；缺列回退到 `cert_pem_path`/`key_pem_path`，
+/// 空路径由 `FileStore::move_certificate` 自行跳过。
+fn cert_file_paths(cert: &acmecast_store::entity::cert::Model) -> CertFilePaths {
+    CertFilePaths {
+        cert: cert
+            .cert_path
+            .clone()
+            .unwrap_or_else(|| cert.cert_pem_path.clone()),
+        ca: cert.ca_path.clone().unwrap_or_default(),
+        fullchain: cert
+            .fullchain_path
+            .clone()
+            .unwrap_or_else(|| cert.cert_pem_path.clone()),
+        key: cert
+            .key_path
+            .clone()
+            .unwrap_or_else(|| cert.key_pem_path.clone()),
+        cert_pem: cert.cert_pem_path.clone(),
+        key_pem: cert.key_pem_path.clone(),
+    }
 }
 
 /// 吊销成功后把证书材料归档进吊销目录，并同步库中的路径。
@@ -482,8 +543,10 @@ async fn archive_revoked_material(
     cert: &acmecast_store::entity::cert::Model,
     cert_id: i64,
 ) {
+    // 6 路径全部作为搬迁源：归档布局的 .cer/.ca.cer 等文件也必须搬进吊销目录。
+    let sources = cert_file_paths(cert);
     let paths = match store
-        .move_certificate(&cert.cert_pem_path, &cert.key_pem_path, &cert.fingerprint)
+        .move_certificate(&sources, &cert.fingerprint)
         .await
     {
         Ok(Some(paths)) => paths,
@@ -554,6 +617,7 @@ async fn archive_certificate(
             cert_pem_path: cert.cert_pem_path,
             key_pem_path: cert.key_pem_path,
             archived_now: false,
+            material_missing: false,
         }));
     }
     if cert.revoked_at.is_some() {
@@ -562,6 +626,7 @@ async fn archive_certificate(
             cert_pem_path: cert.cert_pem_path,
             key_pem_path: cert.key_pem_path,
             archived_now: false,
+            material_missing: false,
         }));
     }
 
@@ -577,7 +642,7 @@ async fn archive_certificate(
             tracing::warn!(
                 cert_id,
                 fingerprint = %cert.fingerprint,
-                "归档时证书材料缺失，保持库中路径不变"
+                "归档时证书材料缺失，降级为本地标记吊销终态"
             );
             None
         }
@@ -592,7 +657,7 @@ async fn archive_certificate(
         }
     };
 
-    let (cert_pem_path, key_pem_path, archived_now) = if let Some(paths) = moved {
+    let (cert_pem_path, key_pem_path, archived_now, material_missing) = if let Some(paths) = moved {
         let cert_pem = paths.cert_pem.clone();
         let key_pem = paths.key_pem.clone();
         let archived_at = Utc::now();
@@ -623,9 +688,15 @@ async fn archive_certificate(
             }
             return Err(ApiError::from(error));
         }
-        (cert_pem, key_pem, true)
+        (cert_pem, key_pem, true, false)
     } else {
-        (cert.cert_pem_path.clone(), cert.key_pem_path.clone(), false)
+        // 材料缺失：降级为本地标记吊销终态（设置 revoked_at、清空 archived_at），
+        // 让孤儿记录满足删除按钮的启用条件，不再停留活跃态死锁。
+        repository
+            .mark_revoked(cert_id, Utc::now())
+            .await
+            .map_err(ApiError::from)?;
+        (cert.cert_pem_path.clone(), cert.key_pem_path.clone(), false, true)
     };
 
     Ok(ApiResponse::new(ArchiveResponse {
@@ -633,6 +704,7 @@ async fn archive_certificate(
         cert_pem_path,
         key_pem_path,
         archived_now,
+        material_missing,
     }))
 }
 

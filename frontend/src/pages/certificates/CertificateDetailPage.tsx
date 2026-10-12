@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { App, Button, Card, Descriptions, Space, Typography } from "antd";
 import type { components } from "@/api/schema";
-import { useParams } from "react-router";
+import { useNavigate, useParams } from "react-router";
 import { useState } from "react";
 import { client } from "@/api/client";
 import { downloadFile, formatTime, unwrapData } from "@/api/helpers";
@@ -23,6 +23,7 @@ const FORMATS = [
 export function CertificateDetailPage() {
   const { id } = useParams();
   const certId = Number(id);
+  const navigate = useNavigate();
   const { message, modal } = App.useApp();
   const queryClient = useQueryClient();
   const token = useAuthStore((state) => state.token);
@@ -102,7 +103,12 @@ export function CertificateDetailPage() {
             message.error(msg);
             return;
           }
-          message.success("证书已归档");
+          const archiveData = (result.data as { data?: { material_missing?: boolean } })?.data;
+          if (archiveData?.material_missing) {
+            message.warning("材料缺失，已标记为吊销状态，可直接删除");
+          } else {
+            message.success("证书已归档");
+          }
           await queryClient.invalidateQueries({ queryKey: ["certificate", certId] });
           await queryClient.invalidateQueries({ queryKey: ["certificates"] });
         } finally {
@@ -137,6 +143,8 @@ export function CertificateDetailPage() {
           message.success("证书已删除");
           await queryClient.invalidateQueries({ queryKey: ["certificates"] });
           await queryClient.invalidateQueries({ queryKey: ["certificate", certId] });
+          // 删除成功后导航回列表页，避免停留在已删除证书的报错视图。
+          navigate("/certificates", { replace: true });
         } finally {
           setDeleting(false);
         }
@@ -178,7 +186,12 @@ export function CertificateDetailPage() {
           message.error(msg);
           return;
         }
-        message.success("证书已吊销，本地状态已更新");
+        const revokeData = (result.data as { data?: { material_missing?: boolean } })?.data;
+        if (revokeData?.material_missing) {
+          message.warning("材料缺失，已标记为吊销状态，可直接删除");
+        } else {
+          message.success("证书已吊销，本地状态已更新");
+        }
         await queryClient.invalidateQueries({ queryKey: ["certificate", certId] });
         await queryClient.invalidateQueries({ queryKey: ["certificates"] });
       },

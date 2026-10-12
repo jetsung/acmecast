@@ -501,3 +501,109 @@ async fn deleting_an_archived_certificate_removes_files_and_fingerprint_dir() {
     let body = json(response).await;
     assert_eq!(body["data"]["deleted"], true);
 }
+
+// ---- 材料缺失：归档/吊销降级为本地标记吊销终态 ----
+
+#[tokio::test]
+#[serial]
+async fn archiving_missing_material_degrades_to_local_revocation_mark() {
+    let (fixture, _cert_pem_path, _key_pem_path, _cert_pem) = certificate_fixture().await;
+    let config = acmecast_server::config::ServerConfig {
+        data_dir: fixture.path().to_path_buf(),
+        ..Default::default()
+    };
+    let app = app_with(config, acmecast_server::auth::AuthMode::Disabled).await;
+
+    // 入库一条记录，但其路径指向磁盘上不存在的文件（孤儿记录）。
+    let response = send(
+        &app,
+        json_request(
+            "POST",
+            "/api/certificates",
+            &serde_json::json!({
+                "domains": ["ghost.example.com"],
+                "cert_pem_path": "certs/ssl/ghost.example.com.cert.pem",
+                "key_pem_path": "certs/ssl/ghost.example.com.key.pem",
+                "fingerprint": "sha256:ghost-test",
+                "not_before": "2026-01-01T00:00:00Z",
+                "not_after": "2027-01-01T00:00:00Z"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK, "证书应能创建");
+
+    let response = send(
+        &app,
+        Request::post("/api/certificates/1/archive")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK, "材料缺失也应返回成功（降级）");
+    let body = json(response).await;
+    assert_eq!(body["data"]["archived_now"], false);
+    assert_eq!(body["data"]["material_missing"], true, "应带材料缺失降级标记");
+
+    // 降级后记录进入吊销终态，删除按钮的启用条件满足。
+    let response = send(
+        &app,
+        Request::get("/api/certificates/1").body(Body::empty()).unwrap(),
+    )
+    .await;
+    let body = json(response).await;
+    assert!(
+        body["data"]["revoked_at"].is_string(),
+        "降级应设置 revoked_at：{:?}",
+        body["data"]["revoked_at"]
+    );
+    assert!(body["data"]["archived_at"].is_null(), "降级不应设置 archived_at");
+
+    // 降级后的记录可直接删除。
+    let response = send(
+        &app,
+        Request::delete("/api/certificates/1").body(Body::empty()).unwrap(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK, "降级为吊销态后应可删除");
+}
+
+#[tokio::test]
+#[serial]
+async fn revoking_missing_material_degrades_without_ca_call() {
+    let (fixture, _cert_pem_path, _key_pem_path, _cert_pem) = certificate_fixture().await;
+    let config = acmecast_server::config::ServerConfig {
+        data_dir: fixture.path().to_path_buf(),
+        ..Default::default()
+    };
+    let app = app_with(config, acmecast_server::auth::AuthMode::Disabled).await;
+
+    // 手动上传记录（无账号绑定）且材料缺失：降级不应被账号检查拦截。
+    let response = send(
+        &app,
+        json_request(
+            "POST",
+            "/api/certificates",
+            &serde_json::json!({
+                "domains": ["ghost-revoke.example.com"],
+                "cert_pem_path": "certs/ssl/ghost-revoke.example.com.cert.pem",
+                "key_pem_path": "certs/ssl/ghost-revoke.example.com.key.pem",
+                "fingerprint": "sha256:ghost-revoke",
+                "not_before": "2026-01-01T00:00:00Z",
+                "not_after": "2027-01-01T00:00:00Z"
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK, "证书应能创建");
+
+    let response = send(
+        &app,
+        json_request("POST", "/api/certificates/1/revoke", &serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK, "材料缺失应降级为本地标记");
+    let body = json(response).await;
+    assert_eq!(body["data"]["material_missing"], true, "应带材料缺失降级标记");
+    assert!(body["data"]["revoked_at"].is_string(), "应设置 revoked_at");
+}

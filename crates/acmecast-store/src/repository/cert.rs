@@ -336,6 +336,8 @@ impl<'db> CertRepository<'db> {
         cert::ActiveModel {
             id: Set(row.id),
             revoked_at: Set(Some(revoked_at)),
+            // 吊销是唯一终态：清空 archived_at，不残留「已归档」状态。
+            archived_at: Set(None),
             updated_at: Set(Utc::now()),
             ..Default::default()
         }

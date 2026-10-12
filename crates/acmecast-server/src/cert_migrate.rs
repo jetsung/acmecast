@@ -94,7 +94,7 @@ pub async fn migrate_archived_certs(
                 .await;
             match result {
                 Ok(Some(paths)) => {
-                    if repository.update_paths(old.id, &paths).await.is_ok() {
+                    if repository.set_archived_paths(old.id, &paths, chrono::Utc::now()).await.is_ok() {
                         archived += 1;
                         tracing::info!(
                             cert_id = old.id,
@@ -130,7 +130,7 @@ pub async fn migrate_archived_certs(
                         cert_pem: format!("certs/archived/{}/{}", old.fingerprint, basename(&old.cert_pem_path)),
                         key_pem: format!("certs/archived/{}/{}", old.fingerprint, basename(&old.key_pem_path)),
                     };
-                    if repository.update_paths(old.id, &expected).await.is_ok() {
+                    if repository.set_archived_paths(old.id, &expected, chrono::Utc::now()).await.is_ok() {
                         archived += 1;
                         tracing::warn!(
                             cert_id = old.id,
@@ -244,11 +244,20 @@ async fn ensure_flat_paths(
     if final_paths.cert_pem == row.cert_pem_path && final_paths.key_pem == row.key_pem_path {
         return Ok(false);
     }
-    repository
-        .update_paths(row.id, &final_paths)
-        .await
-        .map(|_| true)
-        .map_err(|_| ())
+    // 终态为 archived/ 时设置 archived_at；终态为活跃的 ssl/ 时不得设归档时间。
+    if final_paths.cert_pem.starts_with("certs/archived/") {
+        repository
+            .set_archived_paths(row.id, &final_paths, chrono::Utc::now())
+            .await
+            .map(|_| true)
+            .map_err(|_| ())
+    } else {
+        repository
+            .update_paths(row.id, &final_paths)
+            .await
+            .map(|_| true)
+            .map_err(|_| ())
+    }
 }
 
 fn basename(relative: &str) -> String {

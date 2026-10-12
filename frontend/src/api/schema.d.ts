@@ -461,6 +461,8 @@ export interface components {
                 cert_pem_path: string;
                 /** @description 归档后的私钥相对路径。 */
                 key_pem_path: string;
+                /** @description 证书材料缺失时的降级标记：本次未移动文件，记录已降级为本地标记吊销终态。 */
+                material_missing: boolean;
             };
         };
         /** @description 统一成功响应。 */
@@ -977,6 +979,8 @@ export interface components {
                 revoked_at: string;
                 /** @description 是否本次调用完成了吊销（`false` 表示 CA 侧早已吊销，本次只是同步状态）。 */
                 revoked_now: boolean;
+                /** @description 证书材料缺失时的降级标记：本次跳过 CA 吊销与文件移动，仅本地标记吊销终态。 */
+                material_missing: boolean;
             };
         };
         /** @description 统一成功响应。 */
@@ -1112,6 +1116,8 @@ export interface components {
             cert_pem_path: string;
             /** @description 归档后的私钥相对路径。 */
             key_pem_path: string;
+            /** @description 证书材料缺失时的降级标记：本次未移动文件，记录已降级为本地标记吊销终态。 */
+            material_missing: boolean;
         };
         /** @description 证书备注更新 DTO（PATCH /api/certificates/{id}）。 */
         CertificateDescriptionRequest: {
@@ -1768,6 +1774,8 @@ export interface components {
             revoked_at: string;
             /** @description 是否本次调用完成了吊销（`false` 表示 CA 侧早已吊销，本次只是同步状态）。 */
             revoked_now: boolean;
+            /** @description 证书材料缺失时的降级标记：本次跳过 CA 吊销与文件移动，仅本地标记吊销终态。 */
+            material_missing: boolean;
         };
         /** @description 手动触发一次流水线运行的响应。 */
         RunResponse: {

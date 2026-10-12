@@ -266,7 +266,7 @@ async fn archiving_moves_certificate_material_into_the_revoked_layout() {
         .unwrap();
 
     let archived = store
-        .move_certificate(&original.cert_pem, &original.key_pem, "fp-1")
+        .move_certificate(&original, "fp-1")
         .await
         .expect("归档应成功")
         .expect("材料齐全时应返回目标路径");
@@ -303,7 +303,7 @@ async fn archiving_moves_the_whole_dir_so_misc_files_come_along() {
         .unwrap();
 
     let moved = store
-        .move_certificate(&original.cert_pem, &original.key_pem, "fp-1")
+        .move_certificate(&original, "fp-1")
         .await
         .unwrap()
         .expect("应能归档");
@@ -333,7 +333,7 @@ async fn archiving_falls_back_to_per_file_move_when_sources_span_dirs() {
     store.write(&paths.key_pem, "私钥").await.unwrap();
 
     let archived = store
-        .move_certificate(&paths.cert_pem, &paths.key_pem, "fp-1")
+        .move_certificate(&paths, "fp-1")
         .await
         .unwrap()
         .expect("材料齐全时应返回目标路径");
@@ -360,7 +360,7 @@ async fn archiving_overwrites_when_the_revoked_dir_already_exists() {
         .unwrap();
 
     let archived = store
-        .move_certificate(&original.cert_pem, &original.key_pem, "fp-1")
+        .move_certificate(&original, "fp-1")
         .await
         .unwrap()
         .expect("目标已存在时也应归档成功");
@@ -369,6 +369,59 @@ async fn archiving_overwrites_when_the_revoked_dir_already_exists() {
     assert_eq!(store.read(&archived.cert_pem).await.unwrap(), "证书链");
     assert_eq!(store.read(&archived.key_pem).await.unwrap(), "私钥");
     assert!(!temp.path().join(&original.cert_pem).exists());
+}
+
+#[tokio::test]
+async fn move_certificate_moves_all_six_files_when_whole_dir_rename_is_unavailable() {
+    // 归档后吊销的场景：源目录 certs/archived/<fp>/ 有 6 个文件，
+    // 吊销目标目录已存在使整目录 rename 不可行，退回逐文件路径——
+    // 6 个文件必须全部搬入吊销目录，不在源目录留遗留。
+    let temp = TempDir::new();
+    let store = FileStore::open(temp.path()).await.unwrap();
+    let prefix = "sub.example.com";
+    let sources = acmecast_store::CertFilePaths {
+        cert: format!("certs/archived/fp-1/{prefix}.cer"),
+        ca: format!("certs/archived/fp-1/{prefix}.ca.cer"),
+        fullchain: format!("certs/archived/fp-1/{prefix}.fullchain.cer"),
+        key: format!("certs/archived/fp-1/{prefix}.key"),
+        cert_pem: format!("certs/archived/fp-1/{prefix}.cert.pem"),
+        key_pem: format!("certs/archived/fp-1/{prefix}.key.pem"),
+    };
+    let contents = [
+        ("证书", &sources.cert),
+        ("中间链", &sources.ca),
+        ("完整链", &sources.fullchain),
+        ("私钥文件", &sources.key),
+        ("证书链", &sources.cert_pem),
+        ("私钥", &sources.key_pem),
+    ];
+    for (content, path) in contents.iter() {
+        store.write(path, content).await.unwrap();
+    }
+    // 目标吊销目录已存在：整目录 rename 不可行，走逐文件搬迁。
+    store
+        .write("certs/revoked/fp-1/stale.txt", "占位")
+        .await
+        .unwrap();
+
+    let moved = store
+        .move_certificate(&sources, "fp-1")
+        .await
+        .unwrap()
+        .expect("材料齐全时应返回目标路径");
+
+    // 6 个文件全部出现在吊销目录，内容不变。
+    assert_eq!(store.read(&moved.cert).await.unwrap(), "证书");
+    assert_eq!(store.read(&moved.ca).await.unwrap(), "中间链");
+    assert_eq!(store.read(&moved.fullchain).await.unwrap(), "完整链");
+    assert_eq!(store.read(&moved.key).await.unwrap(), "私钥文件");
+    assert_eq!(store.read(&moved.cert_pem).await.unwrap(), "证书链");
+    assert_eq!(store.read(&moved.key_pem).await.unwrap(), "私钥");
+    // 源目录不再有任何该证书的文件（目录被清掉）。
+    assert!(
+        !temp.path().join("certs/archived/fp-1").exists(),
+        "源目录应已搬空并清理"
+    );
 }
 
 #[tokio::test]
@@ -381,7 +434,7 @@ async fn restore_moves_the_archived_dir_back_whole() {
         .await
         .unwrap();
     let archived = store
-        .move_certificate(&original.cert_pem, &original.key_pem, "fp-1")
+        .move_certificate(&original, "fp-1")
         .await
         .unwrap()
         .unwrap();
@@ -408,7 +461,7 @@ async fn archived_material_keeps_owner_only_permissions() {
         .unwrap();
 
     let archived = store
-        .move_certificate(&original.cert_pem, &original.key_pem, "fp-1")
+        .move_certificate(&original, "fp-1")
         .await
         .unwrap()
         .unwrap();
@@ -439,14 +492,14 @@ async fn archiving_an_already_archived_certificate_is_a_no_op() {
         .await
         .unwrap();
     let archived = store
-        .move_certificate(&original.cert_pem, &original.key_pem, "fp-1")
+        .move_certificate(&original, "fp-1")
         .await
         .unwrap()
         .unwrap();
 
     // 重复吊销走幂等路径：源已是吊销布局时直接返回目标，不再移动。
     let again = store
-        .move_certificate(&archived.cert_pem, &archived.key_pem, "fp-1")
+        .move_certificate(&archived, "fp-1")
         .await
         .unwrap()
         .expect("已归档的证书应幂等返回目标路径");
@@ -459,12 +512,9 @@ async fn archiving_without_material_reports_nothing_to_move() {
     let temp = TempDir::new();
     let store = FileStore::open(temp.path()).await.unwrap();
 
+    let missing = FileStore::cert_paths("fp-missing", "sub.example.com");
     let outcome = store
-        .move_certificate(
-            &FileStore::cert_paths("fp-missing", "sub.example.com").cert_pem,
-            &FileStore::cert_paths("fp-missing", "sub.example.com").key_pem,
-            "fp-missing",
-        )
+        .move_certificate(&missing, "fp-missing")
         .await
         .expect("源缺失不应报错");
 
@@ -485,7 +535,7 @@ async fn an_evil_fingerprint_is_rejected_when_archiving() {
         .unwrap();
 
     let err = store
-        .move_certificate(&original.cert_pem, &original.key_pem, "a/../escape")
+        .move_certificate(&original, "a/../escape")
         .await
         .expect_err("越界指纹应被拒绝");
     assert!(matches!(err, Error::Validation(_)), "实际 {err:?}");
