@@ -21,6 +21,12 @@ const DEFAULT_BODY_LIMIT_BYTES: usize = 2 * 1024 * 1024;
 /// 指定 `config.toml` 路径的环境变量。
 pub const CONFIG_PATH_ENV: &str = "ACMECAST_CONFIG";
 
+/// 全局出网代理的环境变量键名；覆盖 `config.toml` 的 `[proxy] url`。
+///
+/// 与凭据级 `proxy_mode=inherit`、DoH 解析器代理回退共用同一份取值。
+/// 原 `ACMECAST_DOH_PROXY_URL`（仅 DoH 专用）已废弃合并到此处。
+pub const PROXY_URL_ENV: &str = "ACMECAST_PROXY_URL";
+
 /// 服务端运行配置。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerConfig {
@@ -50,6 +56,10 @@ pub struct ServerConfig {
     /// `config.toml` 的 `[[resolvers]]` 条目；传播等待的阶段 2/3
     /// 用它扩展内置解析器集合。
     pub resolvers: Vec<ResolverEntry>,
+    /// 全局出网代理 URL；来自 `[proxy] url` 与环境变量 `ACMECAST_PROXY_URL`
+    /// 的合并（`builtin < config.toml < env`）。`None` 即直连——不给任何
+    /// 渠道注入代理，也不隐式读取 `HTTPS_PROXY` 之类的标准变量。
+    pub proxy_url: Option<String>,
     /// Redis / Valkey 缓存连接串（可选）；缺省时禁用缓存。
     pub redis_url: Option<String>,
 }
@@ -70,6 +80,7 @@ impl Default for ServerConfig {
                 interval_secs: 5,
             },
             resolvers: Vec::new(),
+            proxy_url: None,
             redis_url: None,
         }
     }
@@ -108,9 +119,27 @@ pub struct AppConfig {
     /// 解析器扩展条目；与内置集合按 endpoint 去重。
     #[serde(default)]
     pub resolvers: Vec<ResolverEntry>,
+    /// 全局出网代理；缺省段即直连。与凭据级 `proxy_mode=inherit`
+    /// 及 DoH 解析器回退共用同一份配置。
+    #[serde(default)]
+    pub proxy: ProxySection,
     /// 通知渠道条目；字段合法性在合并阶段校验。
     #[serde(default)]
     pub notifications: Vec<NotificationEntry>,
+}
+
+/// `config.toml` 中 `[proxy]` 段的字段：全局出网代理。
+///
+/// 独立成段而非塞进 `[server]`：代理语义与服务端基础配置（监听、数据目录）
+/// 正交，且它的消费者跨 DNS 凭据与 DoH 解析器两处。
+/// 取值口径与凭据级 `proxy_url` 完全一致（同一 [`acmecast_dns::validate_proxy_url`]）。
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProxySection {
+    /// 全局代理 URL：`socks5://` / `http://` / `https://` 且可解析。
+    /// 留空或本段缺省即直连，不给任何渠道注入代理。
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 /// `config.toml` 中 `[propagation]` 段的字段：DNS-01 传播等待策略。
@@ -315,10 +344,12 @@ pub fn resolve_config_path(override_path: Option<&Path>) -> PathBuf {
 
 impl ServerConfig {
     /// 仅从环境变量读取配置；未设置的项取默认值。
-    pub fn from_env() -> Self {
+    ///
+    /// `ACMECAST_PROXY_URL` 非法时返回错误（拒绝启动），其余字段同前。
+    pub fn from_env() -> acmecast_core::Result<Self> {
         let mut config = Self::default();
-        apply_env(&mut config);
-        config
+        apply_env(&mut config)?;
+        Ok(config)
     }
 
     /// 从 `config.toml` 与环境变量合并配置：`builtin < config.toml < env`。
@@ -335,8 +366,8 @@ impl ServerConfig {
         let path = resolve_config_path(path);
         let file = AppConfig::load_from_file(&path)?;
         let mut config = Self::default();
-        apply_file(&mut config, &file);
-        apply_env(&mut config);
+        apply_file(&mut config, &file)?;
+        apply_env(&mut config)?;
         Ok(config)
     }
 
@@ -351,7 +382,10 @@ impl ServerConfig {
 }
 
 /// 把 `config.toml` 的 `[server]` 段叠到运行配置上（覆盖内置默认值）。
-fn apply_file(config: &mut ServerConfig, file: &AppConfig) {
+///
+/// `[proxy] url` 与 env `ACMECAST_PROXY_URL` 的非法值在此返回 [`acmecast_core::Error::Config`]，
+/// 由调用方拒绝启动——代理值错在第一次出网时才暴露，报出来只会像「网络不通」。
+fn apply_file(config: &mut ServerConfig, file: &AppConfig) -> acmecast_core::Result<()> {
     let s = &file.server;
     config.listen_addr = s.listen_addr.clone();
     config.data_dir = PathBuf::from(&s.data_dir);
@@ -370,9 +404,25 @@ fn apply_file(config: &mut ServerConfig, file: &AppConfig) {
         interval_secs: file.propagation.interval_secs,
     };
     config.resolvers = file.resolvers.clone();
+    // 全局代理：非空值才覆盖（留空即维持直连），并当场校验——文件值非法
+    // 要让服务拒绝启动，而不是等第一次出网才以「代理连不上」的形式炸开。
+    if let Some(url) = normalized_proxy_url(file.proxy.url.as_deref()) {
+        acmecast_dns::validate_proxy_url(&url)
+            .map_err(|e| acmecast_core::Error::Config(format!("[proxy] url 不合法: {e}")))?;
+        config.proxy_url = Some(url);
+    }
     if s.redis_url.is_some() {
         config.redis_url = s.redis_url.clone();
     }
+    Ok(())
+}
+
+/// 归一化 `[proxy] url` / `ACMECAST_PROXY_URL` 的取值：去首尾空白，
+/// 空串或纯空白归一为 `None`（视为直连，不做覆盖）。
+fn normalized_proxy_url(raw: Option<&str>) -> Option<String> {
+    raw.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
 }
 
 /// 校验并转换 `[[notifications]]` 条目；非法条目跳过并告警。
@@ -548,7 +598,10 @@ fn validate_notification(
 }
 
 /// 把环境变量叠到运行配置上（覆盖文件值）。
-fn apply_env(config: &mut ServerConfig) {
+///
+/// `ACMECAST_PROXY_URL` 的非法值在此返回 [`acmecast_core::Error::Config`]（与
+/// `[proxy] url` 同一口径），拒绝启动而非留到第一次出网才炸。
+fn apply_env(config: &mut ServerConfig) -> acmecast_core::Result<()> {
     if let Ok(addr) = std::env::var("ACMECAST_LISTEN")
         && !addr.trim().is_empty()
     {
@@ -596,6 +649,14 @@ fn apply_env(config: &mut ServerConfig) {
     if let Some(redis_url) = resolve_redis_url_from_env() {
         config.redis_url = Some(redis_url);
     }
+    // 全局代理 env 覆盖文件值：非空才覆盖，非法同样拒绝启动（与文件值同一口径）。
+    // 刻意不读 `HTTPS_PROXY` / `ALL_PROXY` 等标准变量——那会波及所有未配代理的凭据。
+    if let Some(url) = normalized_proxy_url(std::env::var(PROXY_URL_ENV).ok().as_deref()) {
+        acmecast_dns::validate_proxy_url(&url)
+            .map_err(|e| acmecast_core::Error::Config(format!("{PROXY_URL_ENV} 不合法: {e}")))?;
+        config.proxy_url = Some(url);
+    }
+    Ok(())
 }
 
 /// 按优先级从环境变量解析 Redis / Valkey 缓存地址：
@@ -661,6 +722,14 @@ pub fn template_content() -> String {
     out.push_str("[propagation]\n");
     out.push_str("timeout_secs = 300\n");
     out.push_str("interval_secs = 5\n\n");
+
+    out.push_str("# 全局出网代理（可选）。\n");
+    out.push_str("# 支持 socks5:// / http:// / https://，取值须可解析；留空或本段缺省即直连，\n");
+    out.push_str("# 不给任何渠道注入代理。本配置供两处共用：凭据页 proxy_mode=inherit 的凭据\n");
+    out.push_str("# 继承，以及传播 DoH 解析器直连失败后的代理自动回退。\n");
+    out.push_str("# 环境变量 ACMECAST_PROXY_URL 可覆盖本文件取值（builtin < config.toml < env）。\n");
+    out.push_str("[proxy]\n");
+    out.push_str("# url = \"socks5://127.0.0.1:7890\"\n\n");
 
     out.push_str("# DNS-01 传播检测解析器扩展（可选）。\n");
     out.push_str("# type: doh / dot / dns；dot/dns 目前仅校验，传输层尚未实现。\n");
@@ -802,6 +871,7 @@ mod tests {
             "ACMECAST_CONFIG",
             "ACMECAST_PROPAGATION_TIMEOUT_SECS",
             "ACMECAST_PROPAGATION_INTERVAL_SECS",
+            "ACMECAST_PROXY_URL",
         ] {
             // SAFETY: 唯一调用者为标注 `#[serial]` 的测试用例。
             unsafe { std::env::remove_var(k) };
@@ -812,7 +882,7 @@ mod tests {
     #[serial]
     fn from_env_uses_defaults_when_no_env() {
         clear_server_env();
-        let config = ServerConfig::from_env();
+        let config = ServerConfig::from_env().expect("env 应可应用");
         assert_eq!(config.listen_addr, default_listen_addr());
         assert_eq!(config.data_dir, PathBuf::from(default_data_dir()));
         assert_eq!(config.body_limit_bytes, DEFAULT_BODY_LIMIT_BYTES);
@@ -1472,6 +1542,110 @@ mod tests {
         assert!(content.contains("interval_secs = 5"), "{content}");
     }
 
+    // ---- 全局代理（[proxy] 段 / ACMECAST_PROXY_URL）----
+
+    /// `[proxy]` 段反序列化：合法 url 成功、缺段为 `None`、未知键被拒。
+    #[test]
+    fn proxy_section_deserialization() {
+        let file: AppConfig = toml::from_str("[proxy]\nurl = \"socks5://127.0.0.1:7890\"\n").unwrap();
+        assert_eq!(file.proxy.url.as_deref(), Some("socks5://127.0.0.1:7890"));
+
+        let file: AppConfig = toml::from_str("[server]\nlisten_addr = \"127.0.0.1:8080\"\n").unwrap();
+        assert_eq!(file.proxy.url, None, "缺段应视为未配置");
+
+        let err = toml::from_str::<AppConfig>("[proxy]\nurll = \"socks5://127.0.0.1:7890\"\n")
+            .expect_err("deny_unknown_fields 应拒绝未知键");
+        assert!(
+            err.to_string().contains("urll"),
+            "报错应指出未知键: {err}"
+        );
+    }
+
+    /// 合并优先级 `builtin < config.toml < env`：内置直连，文件可设，
+    /// env 非空才覆盖文件。
+    #[test]
+    #[serial]
+    fn proxy_merge_priority_is_builtin_file_then_env() {
+        clear_server_env();
+        let dir = unique_dir("proxy-merge");
+        let path = dir.join("config.toml");
+
+        // 1. 内置：无文件、无 env → 直连。
+        assert_eq!(ServerConfig::default().proxy_url, None);
+
+        // 2. 文件胜过内置。
+        std::fs::write(&path, "[proxy]\nurl = \"socks5://127.0.0.1:7890\"\n").unwrap();
+        let config = ServerConfig::from_env_and_file_at(Some(&path)).unwrap();
+        assert_eq!(config.proxy_url.as_deref(), Some("socks5://127.0.0.1:7890"));
+
+        // 3. env 胜过文件。
+        unsafe { std::env::set_var(PROXY_URL_ENV, "http://proxy.local:8080") };
+        let config = ServerConfig::from_env_and_file_at(Some(&path)).unwrap();
+        assert_eq!(config.proxy_url.as_deref(), Some("http://proxy.local:8080"));
+
+        // 4. env 留空不覆盖文件值。
+        unsafe { std::env::set_var(PROXY_URL_ENV, "   ") };
+        let config = ServerConfig::from_env_and_file_at(Some(&path)).unwrap();
+        assert_eq!(config.proxy_url.as_deref(), Some("socks5://127.0.0.1:7890"));
+
+        // 5. 文件 url 留空 → 维持直连。
+        unsafe { std::env::remove_var(PROXY_URL_ENV) };
+        std::fs::write(&path, "[proxy]\nurl = \"\"\n").unwrap();
+        let config = ServerConfig::from_env_and_file_at(Some(&path)).unwrap();
+        assert_eq!(config.proxy_url, None, "留空应维持直连");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 非法取值（文件与 env 两条路径）都在启动时拒绝，错误提示支持的 scheme。
+    #[test]
+    #[serial]
+    fn invalid_proxy_url_is_rejected_at_startup() {
+        clear_server_env();
+        let dir = unique_dir("proxy-invalid");
+        let path = dir.join("config.toml");
+
+        for bad in ["ftp://127.0.0.1:21", "not-a-url"] {
+            std::fs::write(&path, format!("[proxy]\nurl = \"{bad}\"\n")).unwrap();
+            let err = ServerConfig::from_env_and_file_at(Some(&path))
+                .expect_err("文件非法代理值应拒绝启动");
+            assert!(
+                err.to_string().contains("socks5"),
+                "应提示支持的 scheme: {err}"
+            );
+
+            std::fs::write(&path, "[proxy]\nurl = \"socks5://127.0.0.1:7890\"\n").unwrap();
+            unsafe { std::env::set_var(PROXY_URL_ENV, bad) };
+            let err = ServerConfig::from_env_and_file_at(Some(&path))
+                .expect_err("env 非法代理值应拒绝启动");
+            assert!(
+                err.to_string().contains("socks5"),
+                "应提示支持的 scheme: {err}"
+            );
+            unsafe { std::env::remove_var(PROXY_URL_ENV) };
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 生成模板含 `[proxy]` 段（注释形态：不预置一个会让所有渠道走代理的值），
+    /// 且模板可被解析器读回。
+    #[test]
+    fn template_contains_proxy_section() {
+        let content = template_content();
+        assert!(content.contains("[proxy]"), "{content}");
+        assert!(
+            content.contains("# url = \"socks5://127.0.0.1:7890\""),
+            "示例 url 应整段注释: {content}"
+        );
+        let dir = unique_dir("tpl-proxy");
+        let path = dir.join("config.toml");
+        std::fs::write(&path, &content).unwrap();
+        let file = AppConfig::load_from_file(&path).unwrap();
+        assert_eq!(file.proxy.url, None, "注释示例不应让模板自带代理");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn template_contains_notifications_example() {
         let content = template_content();
@@ -1584,21 +1758,21 @@ mod tests {
         }
 
         let mut config = ServerConfig::default();
-        apply_env(&mut config);
+        apply_env(&mut config).expect("env 应可应用");
         assert_eq!(config.redis_url, None);
 
         unsafe {
             std::env::set_var("ACMECAST_VALKEY_URL", "redis://valkey.test:6379");
         }
         let mut config = ServerConfig::default();
-        apply_env(&mut config);
+        apply_env(&mut config).expect("env 应可应用");
         assert_eq!(config.redis_url.as_deref(), Some("redis://valkey.test:6379"));
 
         unsafe {
             std::env::set_var("ACMECAST_REDIS_URL", "redis://redis.test:6379");
         }
         let mut config = ServerConfig::default();
-        apply_env(&mut config);
+        apply_env(&mut config).expect("env 应可应用");
         assert_eq!(config.redis_url.as_deref(), Some("redis://redis.test:6379"));
 
         unsafe {

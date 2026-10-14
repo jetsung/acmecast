@@ -10,12 +10,13 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use acmecast_access::AcmeAccountFields;
+use acmecast_access::{AcmeAccountFields, AcmeAccountType};
 use acmecast_acme::{AccountMode, AcmeService, EstablishAccountInput};
 use acmecast_dns::{
     AuthoritativeResolver, ChallengeKind as DnsChallengeKind, DnsProviderRegistry,
-    PropagationPolicy, ResolverEntry, TxtRecord, challenge_record_name, challenge_write_name,
-    ensure_kind_covers, load_extended_resolvers, wait_until_visible_phased,
+    PropagationPolicy, ProxyMode, ResolverEntry, TxtRecord, challenge_record_name,
+    challenge_write_name, ensure_kind_covers, load_extended_resolvers, proxy_log_target,
+    proxy_url_from_credentials, wait_until_visible_phased,
 };
 use acmecast_pipeline::{PipelineStep, Result, StepContext, StepOutput};
 use acmecast_store::FileStore;
@@ -142,6 +143,12 @@ pub struct CertApplyStep {
     /// `config.toml` 的 `[[resolvers]]` 条目；传播等待的阶段 2/3
     /// 用它扩展内置解析器集合。
     resolver_entries: Vec<ResolverEntry>,
+    /// 全局出网代理 URL（`[proxy] url` / `ACMECAST_PROXY_URL`，
+    /// 合并优先级 `builtin < config.toml < env`）。两个消费者：
+    /// DoH 解析器传输层（直连失败时经它回退）与提供商侧
+    /// `proxy_mode=inherit` 的凭据（经 DNS 注册表注入）。
+    /// `None` 即直连。
+    proxy_url: Option<String>,
     /// 证书库读取句柄：到期检测在任意触发来源的 `cert.apply` 步骤中
     /// 按库中已存证书的 `not_after` 与 `renew_before_days` 决定是否跳过。
     /// `renew_before_days=0` 视为强制更新，跳过到期检测。
@@ -164,6 +171,7 @@ impl CertApplyStep {
             dns,
             propagation,
             resolver_entries: Vec::new(),
+            proxy_url: None,
             db: None,
             data_dir: None,
         }
@@ -176,6 +184,7 @@ impl CertApplyStep {
             dns,
             propagation: PropagationPolicy::default(),
             resolver_entries: Vec::new(),
+            proxy_url: None,
             db: Some(db),
             data_dir: None,
         }
@@ -192,6 +201,7 @@ impl CertApplyStep {
             dns,
             propagation,
             resolver_entries: Vec::new(),
+            proxy_url: None,
             db: Some(db),
             data_dir: None,
         }
@@ -209,6 +219,7 @@ impl CertApplyStep {
             dns,
             propagation,
             resolver_entries,
+            proxy_url: None,
             db: Some(db),
             data_dir: None,
         }
@@ -227,9 +238,48 @@ impl CertApplyStep {
             dns,
             propagation,
             resolver_entries,
+            proxy_url: None,
             db: Some(db),
             data_dir: Some(data_dir),
         }
+    }
+
+    /// 设置全局出网代理（`[proxy] url` / `ACMECAST_PROXY_URL`）。
+    ///
+    /// 两个消费者都经这一步拿到同一份取值：传播等待的 DoH 解析器
+    /// （直连失败时经它回退）与 DNS 注册表里 `proxy_mode=inherit`
+    /// 的提供商凭据。留空/未配即直连。
+    #[must_use]
+    pub fn with_proxy_url(mut self, proxy_url: Option<impl Into<String>>) -> Self {
+        self.proxy_url = proxy_url.map(Into::into);
+        self
+    }
+
+    /// 传播等待的 DoH 解析器传输层：按全局代理构建（配置了走代理，
+    /// 直连失败的端点经它回退），未配则直连。
+    ///
+    /// 凭据的出网客户端由各提供商独立构建（经注册表注入全局代理），
+    /// 不走这里——该配置仅作用于 DoH 解析器。
+    fn doh_http(&self) -> acmecast_dns::Result<Arc<dyn acmecast_dns::HttpTransport>> {
+        acmecast_dns::doh_transport_from(self.proxy_url.as_deref())
+            .map_err(|e| acmecast_dns::Error::provider(format!("构造解析器客户端: {e}")))
+    }
+}
+
+/// 凭据真实生效的代理 URL：`direct`→直连；`inherit`→非空全局代理；
+/// `custom`→凭据自带 `proxy_url`（存量凭据无 `proxy_mode` 时按旧
+/// `proxy_url` 有无归一化）。与 `transport_for_credentials` 的分支口径一致。
+pub(crate) fn credential_effective_proxy(
+    credentials: &serde_json::Value,
+    global_proxy_url: Option<&str>,
+) -> Option<String> {
+    match ProxyMode::from_credentials(credentials) {
+        ProxyMode::Direct => None,
+        ProxyMode::Inherit => global_proxy_url
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned),
+        ProxyMode::Custom => proxy_url_from_credentials(credentials),
     }
 }
 
@@ -399,14 +449,6 @@ impl PipelineStep for CertApplyStep {
                         let store = FileStore::open(data_dir)
                             .await
                             .map_err(|e| domain_error("打开数据目录", e))?;
-                        let cert_pem = store
-                            .read(&cert.cert_pem_path)
-                            .await
-                            .map_err(|e| domain_error("读取库中证书文件", e))?;
-                        let key_pem = store
-                            .read(&cert.key_pem_path)
-                            .await
-                            .map_err(|e| domain_error("读取库中私钥文件", e))?;
                         let domains_value = {
                             let decoded = acmecast_store::entity::cert::decode_domains(&cert.domains);
                             if decoded.is_empty() {
@@ -415,9 +457,102 @@ impl PipelineStep for CertApplyStep {
                                 decoded
                             }
                         };
+                        let primary_domain = domains_value
+                            .first()
+                            .cloned()
+                            .unwrap_or_else(|| "certificate".to_owned());
+                        // 兼容回退候选：记录路径 → 新旧前缀/新旧后缀推导 → 归档副本。
+                        // 后缀序列对齐 acme.sh 新布局与旧 pem 布局，防止迁移滞后时误失败。
+                        const CHAIN_SUFFIXES: &[&str] = &["fullchain.cer", "cer", "cert.pem"];
+                        const KEY_SUFFIXES: &[&str] = &["key", "key.pem"];
+                        let chain_record: Vec<&str> = [
+                            Some(cert.cert_pem_path.as_str()),
+                            cert.fullchain_path.as_deref(),
+                            cert.cert_path.as_deref(),
+                        ]
+                        .into_iter()
+                        .flatten()
+                        .collect();
+                        let key_record: Vec<&str> = [
+                            Some(cert.key_pem_path.as_str()),
+                            cert.key_path.as_deref(),
+                        ]
+                        .into_iter()
+                        .flatten()
+                        .collect();
+                        let chain_candidates = FileStore::cert_read_candidates(
+                            &chain_record,
+                            &primary_domain,
+                            &cert.fingerprint,
+                            CHAIN_SUFFIXES,
+                        );
+                        let key_candidates = FileStore::cert_read_candidates(
+                            &key_record,
+                            &primary_domain,
+                            &cert.fingerprint,
+                            KEY_SUFFIXES,
+                        );
+                        let (cert_pem, cert_hit, key_pem, key_hit) = match (
+                            store.read_with_fallback(&chain_candidates).await,
+                            store.read_with_fallback(&key_candidates).await,
+                        ) {
+                            (Ok(chain), Ok(key)) => (chain.0, chain.1, key.0, key.1),
+                            (chain_result, key_result) => {
+                                // 链与私钥都尝试完，凑齐完整尝试清单再失败，便于诊断。
+                                let mut attempts: Vec<(String, acmecast_store::Error)> = Vec::new();
+                                if let Err(mut list) = chain_result {
+                                    attempts.append(&mut list);
+                                }
+                                if let Err(mut list) = key_result {
+                                    attempts.append(&mut list);
+                                }
+                                let dir_status = match tokio::fs::metadata(data_dir).await {
+                                    Ok(meta) if meta.is_dir() => "数据目录存在且可访问".to_owned(),
+                                    Ok(_) => "数据目录路径不是目录".to_owned(),
+                                    Err(_) => "数据目录不存在或不可访问".to_owned(),
+                                };
+                                let attempted: Vec<String> = attempts
+                                    .iter()
+                                    .map(|(path, error)| format!("{path}（{error}）"))
+                                    .collect();
+                                ctx.log_error(format!(
+                                    "跳过 cert.apply 注入失败：证书 #{}（指纹 {}，domains=[{}]）的文件在所有兼容路径均缺失，{}。已尝试：{}。指引：检查数据目录挂载与权限；核对证书是否已归档/迁移；或将 renew_before_days 设为 0 强制重签",
+                                    cert.id,
+                                    cert.fingerprint,
+                                    domains_value.join(", "),
+                                    dir_status,
+                                    attempted.join("、"),
+                                ));
+                                return Err(acmecast_pipeline::Error::Core(
+                                    acmecast_core::Error::Internal(format!(
+                                        "跳过 cert.apply 后注入产物失败：证书 #{}（指纹 {}，domains=[{}]）的证书与私钥文件在所有兼容路径均缺失，{}。已尝试路径：{}。可操作指引：检查数据目录挂载与权限；核对证书是否已归档/迁移完成；或将该步骤 renew_before_days 设为 0 强制重签",
+                                        cert.id,
+                                        cert.fingerprint,
+                                        domains_value.join(", "),
+                                        dir_status,
+                                        attempts
+                                            .iter()
+                                            .map(|(path, _)| path.as_str())
+                                            .collect::<Vec<_>>()
+                                            .join("、"),
+                                    )),
+                                ));
+                            }
+                        };
+                        // 回退命中仅补充一条说明，不为每个候选单独打日志。
+                        let hit_note = if chain_record.contains(&cert_hit.as_str())
+                            && key_record.contains(&key_hit.as_str())
+                        {
+                            format!("证书 #{}", cert.id)
+                        } else {
+                            format!(
+                                "证书 #{}，经兼容回退读取 cert={} key={}",
+                                cert.id, cert_hit, key_hit
+                            )
+                        };
                         ctx.log_info(format!(
-                            "已注入库中证书以继续部署（指纹 {}，证书 #{}）",
-                            cert.fingerprint, cert.id
+                            "已注入库中证书以继续部署（指纹 {}，{hit_note}）",
+                            cert.fingerprint
                         ));
                         return Ok(StepOutput::empty()
                             .with_log(acmecast_pipeline::StepLog::info(format!(
@@ -575,7 +710,7 @@ impl CertApplyStep {
             .resolve_directory()
             .map_err(|e| domain_error("解析 CA 端点", e))?;
 
-        let transport = transport_options(input);
+        let transport = transport_options(input, &fields, self.proxy_url.as_deref());
         if let Some(stored) = fields
             .credentials()
             .map_err(|e| domain_error("账号凭据字段", e))?
@@ -727,6 +862,15 @@ impl CertApplyStep {
             materials.dns_txt_value
         ));
 
+        // 凭据代理真实触发出网（inherit 继承全局且全局非空 / custom 自带
+        // URL）时明示一行；直连不新增。展示形态经 proxy_log_target 剥掉
+        // userinfo——认证材料不进运行历史。
+        if let Some(proxy) =
+            credential_effective_proxy(&credentials, self.proxy_url.as_deref())
+        {
+            ctx.log_info(format!("proxy: via {}", proxy_log_target(&proxy)));
+        }
+
         let ready = order.set_challenge_ready(&authorization.identifier, acme_kind);
         ctx.log_info(format!(
             "通知 CA 挑战就绪（challenge ready）：identifier={}",
@@ -748,9 +892,11 @@ impl CertApplyStep {
             ));
 
             if input.wait_propagation {
-                let http = Arc::new(acmecast_dns::ReqwestTransport::new().map_err(|e| {
-                    acmecast_dns::Error::provider(format!("构造解析器客户端: {e}"))
-                })?);
+                // 解析器专用传输层：按全局代理（[proxy] url /
+                // ACMECAST_PROXY_URL）构建——配置了则 DoH 端点直连失败时
+                // 经它回退（国内访问 cloudflare-dns.com 不可达），未配置直连；
+                // 凭据的出网客户端独立构建，不受此配置影响。
+                let http = self.doh_http()?;
 
                 // 阶段 1：权威 NS 直查——最贴近 CA 视角，不受公共解析器
                 // 否定缓存影响。首跳 zone 取 CA 查询名所属的委派源 zone：
@@ -784,6 +930,7 @@ impl CertApplyStep {
                     &ext_refs,
                     &ext_refs,
                     &self.propagation,
+                    self.proxy_url.as_deref(),
                     |msg| {
                         ctx.log_info(msg);
                     },
@@ -860,14 +1007,16 @@ async fn wait_for_ready(order: &mut acmecast_acme::PendingOrder) -> Result<()> {
     }
 }
 
-/// 依据输入构造传输配置；当前只有 TLS 校验开关，代理留待后续接入。
-fn transport_options(input: &AcmeApplyInput) -> acmecast_acme::ProxyConfig {
-    acmecast_acme::ProxyConfig {
-        http: None,
-        https: None,
-        socks5: None,
-        accept_invalid_certs: input.insecure_skip_verify,
-    }
+/// 依据输入与 ACME 账号凭据构造传输配置：TLS 校验开关 + 按凭据
+/// `proxy_mode` 派生的代理（`inherit` 继承全局、`custom` 自带 URL）。
+fn transport_options(
+    input: &AcmeApplyInput,
+    account_fields: &AcmeAccountFields,
+    global_proxy_url: Option<&str>,
+) -> acmecast_acme::ProxyConfig {
+    let mut transport = AcmeAccountType::acme_proxy_config(account_fields, global_proxy_url);
+    transport.accept_invalid_certs = input.insecure_skip_verify;
+    transport
 }
 
 /// 生成本次申请的密钥对与 CSR（SAN 覆盖全部域名，通配符原样保留）。
@@ -1113,7 +1262,8 @@ fn classify_dns_error(err: &acmecast_dns::Error) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        CertKeyAlgorithm, challenge_record, generate_key_and_csr, normalize_contacts, zone_of,
+        CertKeyAlgorithm, challenge_record, credential_effective_proxy, generate_key_and_csr,
+        normalize_contacts, zone_of,
     };
 
     #[test]
@@ -1476,5 +1626,85 @@ mod tests {
         }))
         .expect("残留 dns_provider 应被静默忽略，不报错");
         assert_eq!(input.dns_credential_id, Some(4));
+    }
+
+    /// 全局代理接线：DoH 传输层按步骤装配的 `proxy_url` 构建——
+    /// 配置合法代理即经代理（DoH 回退与 inherit 凭据同源），非法值被拒
+    /// 并提示 scheme，未配/留空则直连。
+    #[test]
+    fn the_doh_transport_follows_the_configured_global_proxy() {
+        use std::sync::Arc;
+
+        use super::CertApplyStep;
+        use acmecast_dns::DnsProviderRegistry;
+
+        let dns = Arc::new(DnsProviderRegistry::new());
+        // 未配全局代理 → 直连构建成功。
+        CertApplyStep::new(Arc::clone(&dns))
+            .doh_http()
+            .expect("未配代理应直连构建成功");
+        // 留空/空白同样视为直连。
+        CertApplyStep::new(Arc::clone(&dns))
+            .with_proxy_url(Some("   "))
+            .doh_http()
+            .expect("空白代理应直连");
+        // 配置合法全局代理 → 经代理构建成功。
+        CertApplyStep::new(Arc::clone(&dns))
+            .with_proxy_url(Some("socks5://127.0.0.1:7890"))
+            .doh_http()
+            .expect("合法代理应能构建 DoH 传输层");
+        // 非法值被拒并提示支持的 scheme——证明 proxy_url 确实流入传输层构建。
+        let error = CertApplyStep::new(dns)
+            .with_proxy_url(Some("ftp://127.0.0.1:21"))
+            .doh_http()
+            .expect_err("非法代理应被拒绝");
+        assert!(
+            error.to_string().contains("socks5"),
+            "应提示支持的 scheme: {error}"
+        );
+    }
+
+    /// 凭据生效代理的三态判定与日志行脱敏：
+    /// `inherit` 非空全局→走全局；`custom`→自带 URL；`direct`/`inherit`
+    /// 但全局为空→直连不报行。日志行含 `proxy: via` 且不含 userinfo 明文。
+    #[test]
+    fn credential_proxy_line_follows_proxy_mode() {
+        let custom = serde_json::json!({"proxy_mode": "custom", "proxy_url": "socks5://user:pass@10.0.0.1:3128"});
+        let inherit = serde_json::json!({"proxy_mode": "inherit"});
+        let direct = serde_json::json!({"proxy_mode": "direct"});
+        let legacy = serde_json::json!({"proxy_url": "http://10.0.0.2:8080"});
+
+        let global = Some("socks5://1.2.3.4:7890");
+        // custom：自带 URL 优先，与全局无关。
+        assert_eq!(
+            credential_effective_proxy(&custom, global).as_deref(),
+            Some("socks5://user:pass@10.0.0.1:3128")
+        );
+        // inherit：非空全局生效。
+        assert_eq!(
+            credential_effective_proxy(&inherit, global).as_deref(),
+            Some("socks5://1.2.3.4:7890")
+        );
+        // inherit 但全局为空/未配 → 直连。
+        assert_eq!(credential_effective_proxy(&inherit, None), None);
+        assert_eq!(credential_effective_proxy(&inherit, Some("   ")), None);
+        // direct：恒直连。
+        assert_eq!(credential_effective_proxy(&direct, global), None);
+        // 存量兼容：无 proxy_mode 但旧 proxy_url 有值 → custom。
+        assert_eq!(
+            credential_effective_proxy(&legacy, None).as_deref(),
+            Some("http://10.0.0.2:8080")
+        );
+
+        // 日志行：含 `proxy: via`，userinfo 认证材料不落明文。
+        let line = format!(
+            "proxy: via {}",
+            acmecast_dns::proxy_log_target("socks5://user:pass@10.0.0.1:3128")
+        );
+        assert!(line.starts_with("proxy: via "), "{line}");
+        assert!(line.contains("10.0.0.1:3128"), "{line}");
+        assert!(!line.contains("user:pass"), "凭据明文不得进日志: {line}");
+        // 直连分支不产生日志行。
+        assert!(credential_effective_proxy(&direct, global).is_none());
     }
 }

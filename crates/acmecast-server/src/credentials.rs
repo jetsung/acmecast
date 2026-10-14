@@ -12,15 +12,14 @@ use std::sync::Arc;
 
 use acmecast_access::{ConnectivityOutcome, CredentialType};
 use acmecast_deploy::{SshHostFields, probe_host, ssh_host_fields_schema};
-use acmecast_dns::providers::aliyun::AliyunCredentials;
-use acmecast_dns::providers::cloudflare::CloudflareCredentials;
+use acmecast_dns::providers::aliyun::{AliyunCredentials, aliyun_credentials_schema};
+use acmecast_dns::providers::cloudflare::{CloudflareCredentials, cloudflare_credentials_schema};
 use acmecast_dns::providers::tencent::{TencentCredentials, tencent_credentials_schema};
 use acmecast_dns::{
     AliyunProvider, CloudflareProvider, HttpTransport, ReqwestTransport, TencentEoProvider,
     TencentProvider,
 };
 use schemars::schema::RootSchema;
-use schemars::schema_for;
 
 /// Cloudflare DNS 凭据类型（字段：`api_token`）。
 ///
@@ -30,6 +29,9 @@ use schemars::schema_for;
 pub struct CloudflareCredentialType {
     /// 测试用传输层替身。
     transport: Option<Arc<dyn HttpTransport>>,
+    /// 全局出网代理（`[proxy] url` / `ACMECAST_PROXY_URL`）；供
+    /// `proxy_mode=inherit` 的凭据在连通性测试里继承。
+    global_proxy_url: Option<String>,
 }
 
 impl CloudflareCredentialType {
@@ -38,7 +40,15 @@ impl CloudflareCredentialType {
     pub fn with_transport(transport: Arc<dyn HttpTransport>) -> Self {
         Self {
             transport: Some(transport),
+            global_proxy_url: None,
         }
+    }
+
+    /// 设置全局出网代理，供 `proxy_mode=inherit` 的凭据继承。
+    #[must_use]
+    pub fn with_global_proxy(mut self, proxy_url: Option<impl Into<String>>) -> Self {
+        self.global_proxy_url = proxy_url.map(Into::into);
+        self
     }
 
     fn provider(&self) -> CloudflareProvider {
@@ -46,7 +56,7 @@ impl CloudflareCredentialType {
             Some(transport) => Arc::clone(transport),
             None => Arc::new(ReqwestTransport::default()),
         };
-        CloudflareProvider::with_transport(transport)
+        CloudflareProvider::with_transport(transport).with_global_proxy(self.global_proxy_url.clone())
     }
 }
 
@@ -63,7 +73,9 @@ impl CredentialType for CloudflareCredentialType {
     }
 
     fn fields_schema(&self) -> RootSchema {
-        schema_for!(CloudflareCredentials)
+        // 走提供商的 schema 注入函数：proxy_mode 的 x-enum-labels 与
+        // proxy_url 的 x-visible-when 联动都在那里统一挂上。
+        cloudflare_credentials_schema()
     }
 
     fn validate(&self, fields: &serde_json::Value) -> acmecast_core::Result<()> {
@@ -77,7 +89,7 @@ impl CredentialType for CloudflareCredentialType {
                 "API Token 不能为空白",
             ));
         }
-        Ok(())
+        validate_proxy_url_field(fields)
     }
 
     async fn test_connectivity(&self, fields: &serde_json::Value) -> ConnectivityOutcome {
@@ -96,6 +108,9 @@ impl CredentialType for CloudflareCredentialType {
 pub struct AliyunCredentialType {
     /// 测试用传输层替身。
     transport: Option<Arc<dyn HttpTransport>>,
+    /// 全局出网代理（`[proxy] url` / `ACMECAST_PROXY_URL`）；供
+    /// `proxy_mode=inherit` 的凭据在连通性测试里继承。
+    global_proxy_url: Option<String>,
 }
 
 impl AliyunCredentialType {
@@ -104,7 +119,15 @@ impl AliyunCredentialType {
     pub fn with_transport(transport: Arc<dyn HttpTransport>) -> Self {
         Self {
             transport: Some(transport),
+            global_proxy_url: None,
         }
+    }
+
+    /// 设置全局出网代理，供 `proxy_mode=inherit` 的凭据继承。
+    #[must_use]
+    pub fn with_global_proxy(mut self, proxy_url: Option<impl Into<String>>) -> Self {
+        self.global_proxy_url = proxy_url.map(Into::into);
+        self
     }
 
     fn provider(&self) -> AliyunProvider {
@@ -112,7 +135,7 @@ impl AliyunCredentialType {
             Some(transport) => Arc::clone(transport),
             None => Arc::new(ReqwestTransport::default()),
         };
-        AliyunProvider::with_transport(transport)
+        AliyunProvider::with_transport(transport).with_global_proxy(self.global_proxy_url.clone())
     }
 }
 
@@ -129,7 +152,7 @@ impl CredentialType for AliyunCredentialType {
     }
 
     fn fields_schema(&self) -> RootSchema {
-        schema_for!(AliyunCredentials)
+        aliyun_credentials_schema()
     }
 
     fn validate(&self, fields: &serde_json::Value) -> acmecast_core::Result<()> {
@@ -149,7 +172,7 @@ impl CredentialType for AliyunCredentialType {
                 "AccessKey Secret 不能为空白",
             ));
         }
-        Ok(())
+        validate_proxy_url_field(fields)
     }
 
     async fn test_connectivity(&self, fields: &serde_json::Value) -> ConnectivityOutcome {
@@ -160,6 +183,18 @@ impl CredentialType for AliyunCredentialType {
             },
         }
     }
+}
+
+/// 校验凭据的代理字段：`proxy_mode=custom` 时要求 `proxy_url` 非空且
+/// scheme 合法（`socks5://` / `http://` / `https://` 且可解析），非法定位到
+/// `proxy_url`；`direct` / `inherit` 放行（`proxy_url` 可空）。
+///
+/// 口径与提供商侧 `transport_for_credentials` 一致（同一校验函数），
+/// 保证「保存时拦得住、运行期不炸」。存量凭据无 `proxy_mode` 时由
+/// [`acmecast_dns::ProxyMode::from_credentials`] 按旧 `proxy_url` 有无归一化。
+fn validate_proxy_url_field(fields: &serde_json::Value) -> acmecast_core::Result<()> {
+    // 单一口径在 core：保存入口与各凭据类型 validate 共用同一实现。
+    acmecast_core::validate_proxy_field(fields)
 }
 
 /// 腾讯云体系的凭据字段校验：云解析与 EdgeOne 共用一份字段定义，
@@ -180,7 +215,7 @@ fn validate_tencent_fields(fields: &serde_json::Value) -> acmecast_core::Result<
             "SecretKey 不能为空白",
         ));
     }
-    Ok(())
+    validate_proxy_url_field(fields)
 }
 
 /// 腾讯云凭据类型（字段：`secret_id` / `secret_key` / `account_site`；同一套账号密钥同时服务 DNS 提供商与 SSL 证书部署）。
@@ -188,6 +223,9 @@ fn validate_tencent_fields(fields: &serde_json::Value) -> acmecast_core::Result<
 pub struct TencentCredentialType {
     /// 测试用传输层替身。
     transport: Option<Arc<dyn HttpTransport>>,
+    /// 全局出网代理（`[proxy] url` / `ACMECAST_PROXY_URL`）；供
+    /// `proxy_mode=inherit` 的凭据在连通性测试里继承。
+    global_proxy_url: Option<String>,
 }
 
 impl TencentCredentialType {
@@ -196,7 +234,15 @@ impl TencentCredentialType {
     pub fn with_transport(transport: Arc<dyn HttpTransport>) -> Self {
         Self {
             transport: Some(transport),
+            global_proxy_url: None,
         }
+    }
+
+    /// 设置全局出网代理，供 `proxy_mode=inherit` 的凭据继承。
+    #[must_use]
+    pub fn with_global_proxy(mut self, proxy_url: Option<impl Into<String>>) -> Self {
+        self.global_proxy_url = proxy_url.map(Into::into);
+        self
     }
 
     fn provider(&self) -> TencentProvider {
@@ -204,7 +250,7 @@ impl TencentCredentialType {
             Some(transport) => Arc::clone(transport),
             None => Arc::new(ReqwestTransport::default()),
         };
-        TencentProvider::with_transport(transport)
+        TencentProvider::with_transport(transport).with_global_proxy(self.global_proxy_url.clone())
     }
 }
 
@@ -243,6 +289,9 @@ impl CredentialType for TencentCredentialType {
 pub struct TencentEoCredentialType {
     /// 测试用传输层替身。
     transport: Option<Arc<dyn HttpTransport>>,
+    /// 全局出网代理（`[proxy] url` / `ACMECAST_PROXY_URL`）；供
+    /// `proxy_mode=inherit` 的凭据在连通性测试里继承。
+    global_proxy_url: Option<String>,
 }
 
 impl TencentEoCredentialType {
@@ -251,7 +300,15 @@ impl TencentEoCredentialType {
     pub fn with_transport(transport: Arc<dyn HttpTransport>) -> Self {
         Self {
             transport: Some(transport),
+            global_proxy_url: None,
         }
+    }
+
+    /// 设置全局出网代理，供 `proxy_mode=inherit` 的凭据继承。
+    #[must_use]
+    pub fn with_global_proxy(mut self, proxy_url: Option<impl Into<String>>) -> Self {
+        self.global_proxy_url = proxy_url.map(Into::into);
+        self
     }
 
     fn provider(&self) -> TencentEoProvider {
@@ -259,7 +316,7 @@ impl TencentEoCredentialType {
             Some(transport) => Arc::clone(transport),
             None => Arc::new(ReqwestTransport::default()),
         };
-        TencentEoProvider::with_transport(transport)
+        TencentEoProvider::with_transport(transport).with_global_proxy(self.global_proxy_url.clone())
     }
 }
 
@@ -295,7 +352,20 @@ impl CredentialType for TencentEoCredentialType {
 
 /// SSH 主机凭据类型（SSH 主机档案：主机、用户、认证材料与远端默认值）。
 #[derive(Debug, Default)]
-pub struct SshHostCredentialType;
+pub struct SshHostCredentialType {
+    /// 全局出网代理（`[proxy] url` / `ACMECAST_PROXY_URL`）；供
+    /// `proxy_mode=inherit` 的凭据在连通性测试里继承。
+    global_proxy_url: Option<String>,
+}
+
+impl SshHostCredentialType {
+    /// 设置全局出网代理（`[proxy] url` / `ACMECAST_PROXY_URL`）。
+    #[must_use]
+    pub fn with_global_proxy(mut self, proxy_url: Option<impl Into<String>>) -> Self {
+        self.global_proxy_url = proxy_url.map(Into::into);
+        self
+    }
+}
 
 #[async_trait::async_trait]
 impl CredentialType for SshHostCredentialType {
@@ -328,7 +398,7 @@ impl CredentialType for SshHostCredentialType {
             };
         };
         // 探测的报错文本可能回显请求里的字段值，先过一遍脱敏再呈现。
-        match probe_host(&parsed).await {
+        match probe_host(&parsed, self.global_proxy_url.as_deref()).await {
             Ok(()) => ConnectivityOutcome::Ok,
             Err(error) => ConnectivityOutcome::Unavailable {
                 reason: self.redact(fields, &error.to_string()),
@@ -340,7 +410,8 @@ impl CredentialType for SshHostCredentialType {
     ///
     /// 默认实现会把**所有**字段值原样出现的地方抹掉——host 也会中招，
     /// 「连不上哪台」就看不出来了。host/port/user 是用户刚填的连接信息，
-    /// 不是秘密；真正要挡住的只有私钥与口令。
+    /// 不是秘密；真正要挡住的只有私钥、口令与代理 URL——后者允许
+    /// `socks5://user:pass@host:port` 形态，内嵌的凭据不能进错误信息。
     fn redact(&self, fields: &serde_json::Value, message: &str) -> String {
         let mut redacted = message.to_owned();
         for secret in [
@@ -348,6 +419,7 @@ impl CredentialType for SshHostCredentialType {
                 .get("private_key")
                 .and_then(serde_json::Value::as_str),
             fields.get("password").and_then(serde_json::Value::as_str),
+            fields.get("proxy_url").and_then(serde_json::Value::as_str),
         ]
         .into_iter()
         .flatten()
@@ -410,6 +482,113 @@ mod tests {
         );
     }
 
+    /// 端口 1 上没有代理服务，连接立即被拒——用来在无外网依赖下
+    /// 验证「代理不可达」的错误归因。
+    #[tokio::test]
+    async fn connectivity_failure_through_a_dead_proxy_names_the_proxy() {
+        let cloudflare = CloudflareCredentialType::default();
+        let fields = serde_json::json!({
+            "api_token": "cf-token",
+            "proxy_mode": "custom",
+            "proxy_url": "socks5://user:supersecret@127.0.0.1:1",
+        });
+        let acmecast_access::ConnectivityOutcome::Unavailable { reason } =
+            cloudflare.test_connectivity(&fields).await
+        else {
+            panic!("代理不可达时应报不可用");
+        };
+        // 错误归因到代理主机，而不是伪装成凭据无效。
+        assert!(
+            reason.contains("经代理 127.0.0.1:1"),
+            "错误应指向代理地址: {reason}"
+        );
+        // 代理 URL 内嵌的凭据经 redact 脱敏，不出现在错误信息里。
+        assert!(!reason.contains("supersecret"), "内嵌凭据应被脱敏: {reason}");
+    }
+
+    /// 连通性测试走与正式调用相同的 `proxy_mode` transport：
+    /// `inherit` 模式按全局代理构建，`direct` 模式不走代理。
+    #[tokio::test]
+    async fn connectivity_follows_the_credential_proxy_mode() {
+        let cloudflare = CloudflareCredentialType::default();
+        // direct：全局代理已配也不该经代理——直连会因无网络而失败，
+        // 但错误里不该出现代理主机（无代理主机可指认）。
+        let outcome = cloudflare
+            .test_connectivity(&serde_json::json!({
+                "api_token": "cf-token",
+                "proxy_mode": "direct",
+                "proxy_url": "socks5://user:supersecret@127.0.0.1:1",
+            }))
+            .await;
+        let acmecast_access::ConnectivityOutcome::Unavailable { reason } = outcome else {
+            panic!("直连应失败并给出原因");
+        };
+        assert!(
+            !reason.contains("经代理"),
+            "direct 模式不该出现代理归因: {reason}"
+        );
+        assert!(!reason.contains("supersecret"), "内嵌凭据应被脱敏: {reason}");
+    }
+
+    /// 保存校验：`proxy_mode=custom` 时校验 `proxy_url`，
+    /// `direct` / `inherit` 放行；错误定位到 `proxy_url`。
+    #[test]
+    fn proxy_fields_are_validated_per_proxy_mode() {
+        let cloudflare = CloudflareCredentialType::default();
+        let validate = |fields: serde_json::Value| cloudflare.validate(&fields);
+
+        // custom + 三种合法 scheme 均通过。
+        for url in [
+            "socks5://127.0.0.1:7890",
+            "http://127.0.0.1:8080",
+            "https://proxy.example.com",
+        ] {
+            validate(serde_json::json!({
+                "api_token": "t", "proxy_mode": "custom", "proxy_url": url
+            }))
+            .unwrap_or_else(|e| panic!("{url} 应通过校验: {e}"));
+        }
+
+        // custom + 非法 scheme / 不可解析 → 拒绝并定位到 proxy_url。
+        for url in ["ftp://127.0.0.1:21", "not-a-url"] {
+            let error = validate(serde_json::json!({
+                "api_token": "t", "proxy_mode": "custom", "proxy_url": url
+            }))
+            .expect_err("非法代理 URL 应被拒绝");
+            let acmecast_core::Error::Validation { field, .. } = &error else {
+                panic!("错误应定位到字段: {error:?}");
+            };
+            assert_eq!(field, "proxy_url", "错误应定位到 proxy_url: {error:?}");
+            assert!(
+                error.to_string().contains("socks5"),
+                "应提示支持的 scheme: {error}"
+            );
+        }
+
+        // custom 但 proxy_url 留空 → 拒绝（矛盾配置不能放行）。
+        validate(serde_json::json!({
+            "api_token": "t", "proxy_mode": "custom", "proxy_url": ""
+        }))
+        .expect_err("custom 缺 proxy_url 应被拒绝");
+
+        // direct / inherit 放行（proxy_url 可空，配了也不拦）。
+        for mode in ["direct", "inherit"] {
+            validate(serde_json::json!({ "api_token": "t", "proxy_mode": mode }))
+                .unwrap_or_else(|e| panic!("{mode} 应放行: {e}"));
+        }
+        validate(serde_json::json!({
+            "api_token": "t", "proxy_mode": "direct", "proxy_url": "ftp://127.0.0.1:21"
+        }))
+        .expect("direct 不读 proxy_url，配了也不该拦");
+
+        // 存量凭据（无 proxy_mode）：旧 proxy_url 有值 → custom 语义，同样校验。
+        validate(serde_json::json!({
+            "api_token": "t", "proxy_url": "ftp://127.0.0.1:21"
+        }))
+        .expect_err("存量旧 proxy_url 非法应被拒绝");
+        validate(serde_json::json!({ "api_token": "t" })).expect("存量缺字段应视为 direct");
+    }
+
     #[tokio::test]
     async fn tencent_probe_reports_ok_or_a_redacted_reason() {
         let ok = TencentCredentialType::with_transport(Arc::new(FakeTransport { body: STS_OK }));
@@ -461,8 +640,8 @@ mod tests {
     /// SSH 档案的标识必须与 SSH 部署目标一致，前端据此对齐语义。
     #[test]
     fn the_ssh_host_type_id_aligns_with_the_deploy_target() {
-        assert_eq!(SshHostCredentialType.type_id(), "deploy.ssh");
-        assert_eq!(SshHostCredentialType.display_name(), "SSH 主机");
+        assert_eq!(SshHostCredentialType::default().type_id(), "deploy.ssh");
+        assert_eq!(SshHostCredentialType::default().display_name(), "SSH 主机");
     }
 
     #[test]
@@ -546,6 +725,47 @@ mod tests {
             .expect("合法字段应通过");
     }
 
+    #[test]
+    fn a_valid_proxy_url_passes_validation() {
+        // 合法三种 scheme 均放行（腾讯系校验即代表三处 DNS 凭据类型的口径）。
+        for proxy in ["socks5://127.0.0.1:7890", "http://proxy.local:8080", "https://p.example.com"] {
+            TencentCredentialType::default()
+                .validate(&serde_json::json!({
+                    "secret_id": "id", "secret_key": "secret", "proxy_url": proxy,
+                }))
+                .unwrap_or_else(|e| panic!("{proxy} 应通过校验: {e}"));
+        }
+    }
+
+    #[test]
+    fn an_invalid_proxy_url_is_rejected_and_located() {
+        for proxy in ["ftp://127.0.0.1:21", "not-a-url"] {
+            let error = TencentCredentialType::default()
+                .validate(&serde_json::json!({
+                    "secret_id": "id", "secret_key": "secret", "proxy_url": proxy,
+                }))
+                .expect_err("非法代理应被拒绝");
+            let acmecast_core::Error::Validation { field, reason } = &error else {
+                panic!("应为校验错误: {error}");
+            };
+            assert_eq!(field, "proxy_url", "错误应定位到 proxy_url 字段: {error}");
+            assert!(reason.contains("socks5"), "应提示支持的 scheme: {error}");
+        }
+    }
+
+    #[test]
+    fn an_absent_or_blank_proxy_url_is_direct_connection() {
+        for fields in [
+            serde_json::json!({ "secret_id": "id", "secret_key": "secret" }),
+            serde_json::json!({ "secret_id": "id", "secret_key": "secret", "proxy_url": "" }),
+            serde_json::json!({ "secret_id": "id", "secret_key": "secret", "proxy_url": "  " }),
+        ] {
+            TencentCredentialType::default()
+                .validate(&fields)
+                .expect("缺字段或留空应视为直连放行");
+        }
+    }
+
     /// 一份可直接创建的档案字段。
     fn profile_fields() -> serde_json::Value {
         serde_json::json!({
@@ -557,13 +777,13 @@ mod tests {
 
     #[test]
     fn the_ssh_host_type_reuses_the_field_validation() {
-        SshHostCredentialType
+        SshHostCredentialType::default()
             .validate(&profile_fields())
             .expect("完整档案应通过");
 
         let mut broken = profile_fields();
         broken["private_key"] = serde_json::Value::Null;
-        let err = SshHostCredentialType
+        let err = SshHostCredentialType::default()
             .validate(&broken)
             .expect_err("缺认证材料应被拒绝");
         match err {
@@ -573,7 +793,7 @@ mod tests {
 
         let mut broken = profile_fields();
         broken["host"] = serde_json::json!("   ");
-        let err = SshHostCredentialType
+        let err = SshHostCredentialType::default()
             .validate(&broken)
             .expect_err("空白主机应被拒绝");
         match err {
@@ -583,7 +803,7 @@ mod tests {
 
         let mut broken = profile_fields();
         broken["password"] = serde_json::json!("pw");
-        SshHostCredentialType
+        SshHostCredentialType::default()
             .validate(&broken)
             .expect_err("两种认证材料同给应被拒绝");
     }
@@ -591,7 +811,7 @@ mod tests {
     #[test]
     fn the_ssh_host_schema_marks_the_private_key_multiline() {
         let rendered =
-            serde_json::to_value(SshHostCredentialType.fields_schema()).expect("Schema 应可序列化");
+            serde_json::to_value(SshHostCredentialType::default().fields_schema()).expect("Schema 应可序列化");
         assert_eq!(
             rendered["properties"]["private_key"]["x-multiline"],
             serde_json::Value::Bool(true)
@@ -601,7 +821,7 @@ mod tests {
     #[test]
     fn the_ssh_host_schema_carries_only_profile_fields_with_form_defaults() {
         let rendered =
-            serde_json::to_value(SshHostCredentialType.fields_schema()).expect("Schema 应可序列化");
+            serde_json::to_value(SshHostCredentialType::default().fields_schema()).expect("Schema 应可序列化");
         let properties = rendered["properties"]
             .as_object()
             .expect("schema 应有 properties");
@@ -616,6 +836,8 @@ mod tests {
                 "password",
                 "port",
                 "private_key",
+                "proxy_mode",
+                "proxy_url",
                 "user"
             ],
             "档案 schema 只应含档案字段（路径与重载命令属部署输入）: {names:?}"
@@ -638,7 +860,7 @@ mod tests {
         fields["host"] = serde_json::json!("127.0.0.1");
         fields["port"] = serde_json::json!(1);
 
-        let outcome = SshHostCredentialType.test_connectivity(&fields).await;
+        let outcome = SshHostCredentialType::default().test_connectivity(&fields).await;
         let ConnectivityOutcome::Unavailable { reason } = outcome else {
             panic!("不可达主机应报不可用，实际 {outcome:?}");
         };
@@ -658,14 +880,14 @@ mod tests {
             "password": "S3CRET-PASSWORD",
         });
         let message = "连接 web-1.example.com 失败，请求携 S3CRET-PASSWORD";
-        let redacted = SshHostCredentialType.redact(&fields, message);
+        let redacted = SshHostCredentialType::default().redact(&fields, message);
         assert!(redacted.contains("web-1.example.com"), "{redacted}");
         assert!(!redacted.contains("S3CRET-PASSWORD"), "{redacted}");
     }
 
     #[tokio::test]
     async fn ssh_host_connectivity_rejects_malformed_fields() {
-        let outcome = SshHostCredentialType
+        let outcome = SshHostCredentialType::default()
             .test_connectivity(&serde_json::json!({ "host": 1 }))
             .await;
         assert!(

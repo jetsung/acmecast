@@ -5,6 +5,11 @@
 pub mod config;
 pub mod crypto;
 pub mod error;
+pub mod proxy;
 
 pub use crypto::{CredentialCipher, REDACTED, redact_presence};
 pub use error::{Error, Result};
+pub use proxy::{
+    ProxyMode, effective_proxy_url, inject_proxy_field_annotations, proxy_log_target,
+    proxy_url_from_credentials, validate_proxy_field, validate_proxy_url,
+};

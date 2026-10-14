@@ -21,7 +21,10 @@ use serde_json::{Value, json};
 use sha1::Sha1;
 
 use crate::error::{Error, Result};
-use crate::http::{HttpRequest, HttpResponse, HttpTransport, ReqwestTransport, encode};
+use crate::http::{
+    HttpRequest, HttpResponse, HttpTransport, ReqwestTransport, encode, inject_proxy_field_annotations,
+    transport_for_credentials,
+};
 use crate::provider::{DnsProvider, TxtRecord, parse_credentials};
 
 type HmacSha1 = Hmac<Sha1>;
@@ -42,12 +45,25 @@ pub struct AliyunCredentials {
     pub access_key_id: String,
     /// AccessKey Secret。
     pub access_key_secret: String,
+    /// 出网代理模式：`direct`（缺省，直连）/ `inherit`（继承全局代理，
+    /// 见 `config.toml` 的 `[proxy] url` 或 `ACMECAST_PROXY_URL`）/
+    /// `custom`（走下面 `proxy_url`，覆盖全局）。
+    #[serde(default)]
+    pub proxy_mode: Option<String>,
+    /// 自定义出网代理（`proxy_mode=custom` 时生效）：支持 `socks5://`、
+    /// `http://`、`https://`，留空直连；仅该提供商的 API 调用经此代理发送，
+    /// 不影响 ACME 申请与通知渠道的出网路径。
+    #[serde(default)]
+    pub proxy_url: Option<String>,
 }
 
 /// 阿里云 DNS。
 #[derive(Debug)]
 pub struct AliyunProvider {
     http: Arc<dyn HttpTransport>,
+    /// 全局出网代理（`[proxy] url` / `ACMECAST_PROXY_URL`）；仅
+    /// `proxy_mode=inherit` 的凭据读它。`None` 即直连。
+    global_proxy_url: Option<String>,
 }
 
 impl AliyunProvider {
@@ -60,17 +76,42 @@ impl AliyunProvider {
     /// 注入传输层，供测试用。
     #[must_use]
     pub fn with_transport(http: Arc<dyn HttpTransport>) -> Self {
-        Self { http }
+        Self {
+            http,
+            global_proxy_url: None,
+        }
+    }
+
+    /// 设置全局出网代理，供 `proxy_mode=inherit` 的凭据继承。
+    #[must_use]
+    pub fn with_global_proxy(mut self, proxy_url: Option<impl Into<String>>) -> Self {
+        self.global_proxy_url = proxy_url.map(Into::into);
+        self
+    }
+
+    /// 全局代理 URL；`proxy_mode=inherit` 时读它（留空/未配即直连）。
+    fn global_proxy_url(&self) -> Option<&str> {
+        self.global_proxy_url.as_deref()
+    }
+
+    /// 按凭据选传输层：`proxy_mode` 三态决定直连 / 继承全局 / 走凭据自定义代理。
+    fn http_for(
+        &self,
+        credentials: &Value,
+        global_proxy_url: Option<&str>,
+    ) -> Result<Arc<dyn HttpTransport>> {
+        transport_for_credentials(credentials, &self.http, global_proxy_url)
     }
 
     /// 发一次 RPC 调用（DNS 服务端点）。
     async fn call(
         &self,
+        http: &Arc<dyn HttpTransport>,
         credentials: &AliyunCredentials,
         action: &str,
         extra: BTreeMap<String, String>,
     ) -> Result<Value> {
-        self.call_service(credentials, API_ENDPOINT, API_VERSION, action, extra)
+        self.call_service(http, credentials, API_ENDPOINT, API_VERSION, action, extra)
             .await
     }
 
@@ -78,6 +119,7 @@ impl AliyunProvider {
     /// DNS 与 STS（凭据探测的 `GetCallerIdentity`）共用同一套签名。
     async fn call_service(
         &self,
+        http: &Arc<dyn HttpTransport>,
         credentials: &AliyunCredentials,
         endpoint: &str,
         version: &str,
@@ -106,7 +148,7 @@ impl AliyunProvider {
             .join("&");
 
         let request = HttpRequest::new("GET", format!("{endpoint}?{query}"));
-        let response = self.http.send(request).await?;
+        let response = http.send(request).await?;
 
         ensure_success(response, action)
     }
@@ -116,9 +158,11 @@ impl AliyunProvider {
     /// 这是凭据页「测试」按钮的探测动作——只做身份辨识，
     /// 不依赖任何 DNS 业务权限，子账号默认可调。
     pub async fn verify_credentials(&self, credentials: &Value) -> Result<()> {
+        let http = self.http_for(credentials, self.global_proxy_url())?;
         let credentials: AliyunCredentials = parse_credentials(credentials)?;
         let body = self
             .call_service(
+                &http,
                 &credentials,
                 "https://sts.aliyuncs.com/",
                 "2015-04-01",
@@ -141,6 +185,7 @@ impl AliyunProvider {
     /// 列出某个主机记录下的全部 TXT 记录（RecordId 与值）。
     async fn list_records(
         &self,
+        http: &Arc<dyn HttpTransport>,
         credentials: &AliyunCredentials,
         record: &TxtRecord,
     ) -> Result<Vec<(String, String)>> {
@@ -150,7 +195,7 @@ impl AliyunProvider {
             ("TypeKeyWord".to_owned(), "TXT".to_owned()),
         ]);
         let body = self
-            .call(credentials, "DescribeDomainRecords", query)
+            .call(http, credentials, "DescribeDomainRecords", query)
             .await?;
 
         Ok(body["DomainRecords"]["Record"]
@@ -187,10 +232,11 @@ impl DnsProvider for AliyunProvider {
     }
 
     fn credential_fields(&self) -> RootSchema {
-        schema_for!(AliyunCredentials)
+        aliyun_credentials_schema()
     }
 
     async fn create_txt(&self, credentials: &Value, record: &TxtRecord) -> Result<()> {
+        let http = self.http_for(credentials, self.global_proxy_url())?;
         let credentials: AliyunCredentials = parse_credentials(credentials)?;
 
         let extra = BTreeMap::from([
@@ -204,15 +250,17 @@ impl DnsProvider for AliyunProvider {
             ),
         ]);
 
-        self.call(&credentials, "AddDomainRecord", extra).await?;
+        self.call(&http, &credentials, "AddDomainRecord", extra)
+            .await?;
         Ok(())
     }
 
     async fn find_txt(&self, credentials: &Value, record: &TxtRecord) -> Result<Vec<String>> {
+        let http = self.http_for(credentials, self.global_proxy_url())?;
         let credentials: AliyunCredentials = parse_credentials(credentials)?;
 
         Ok(self
-            .list_records(&credentials, record)
+            .list_records(&http, &credentials, record)
             .await?
             .into_iter()
             .map(|(_, value)| value)
@@ -220,9 +268,11 @@ impl DnsProvider for AliyunProvider {
     }
 
     async fn probe_zone(&self, credentials: &Value, zone: &str) -> Result<()> {
+        let http = self.http_for(credentials, self.global_proxy_url())?;
         let credentials: AliyunCredentials = parse_credentials(credentials)?;
         // DescribeDomain 对不存在的域名直接报错，存在即托管——无需读响应内容。
         self.call(
+            &http,
             &credentials,
             "DescribeDomain",
             BTreeMap::from([("DomainName".to_owned(), zone.to_owned())]),
@@ -232,12 +282,13 @@ impl DnsProvider for AliyunProvider {
     }
 
     async fn delete_txt(&self, credentials: &Value, record: &TxtRecord) -> Result<()> {
+        let http = self.http_for(credentials, self.global_proxy_url())?;
         let credentials: AliyunCredentials = parse_credentials(credentials)?;
 
         // 删除要 RecordId，而 trait 的入参只有记录本身；先查出来，
         // 并且**只删值与我们这条相同的**——同名但不是我们写的记录不该被替人清掉。
         let ids: Vec<String> = self
-            .list_records(&credentials, record)
+            .list_records(&http, &credentials, record)
             .await?
             .into_iter()
             .filter(|(_, value)| value == &record.value)
@@ -247,10 +298,27 @@ impl DnsProvider for AliyunProvider {
         // 一条都没找到也算成功：删除是幂等的，清理路径上不该为「它本来就不在」报错。
         for id in ids {
             let extra = BTreeMap::from([("RecordId".to_owned(), id)]);
-            self.call(&credentials, "DeleteDomainRecord", extra).await?;
+            self.call(&http, &credentials, "DeleteDomainRecord", extra)
+                .await?;
         }
         Ok(())
     }
+}
+
+/// 阿里云凭据字段的 schema。
+///
+/// serde_json 的 Map 会把 schemars 产物的 `properties` 按字母序重排——
+/// 用 `x-field-order` 钉住渲染顺序：密钥对在前，代理字段钉在凭据字段之后。
+/// `proxy_url` 挂 `x-visible-when` 与 `proxy_mode=custom` 联动显隐。
+#[must_use]
+pub fn aliyun_credentials_schema() -> RootSchema {
+    let mut schema = schema_for!(AliyunCredentials);
+    schema.schema.extensions.insert(
+        "x-field-order".to_owned(),
+        serde_json::json!(["access_key_id", "access_key_secret", "proxy_mode", "proxy_url"]),
+    );
+    inject_proxy_field_annotations(&mut schema);
+    schema
 }
 
 /// 按阿里云 RPC 风格签名。
@@ -313,6 +381,51 @@ fn ensure_success(response: HttpResponse, action: &str) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_schema_pins_proxy_fields_after_credential_fields() {
+        let rendered = serde_json::to_string(&aliyun_credentials_schema()).unwrap();
+        // Map 会把 properties 按字母序重排，布局全靠 x-field-order 钉住：
+        // 密钥对在前，代理字段钉在凭据字段之后。
+        assert!(
+            rendered.contains(
+                r#""x-field-order":["access_key_id","access_key_secret","proxy_mode","proxy_url"]"#
+            ),
+            "应注入声明顺序: {rendered}"
+        );
+        // 描述写明支持的 scheme 与代理作用域。
+        assert!(
+            rendered.contains("socks5://") && rendered.contains("仅该提供商"),
+            "proxy_url 描述应写明支持 scheme 与作用域: {rendered}"
+        );
+        // proxy_mode 是枚举下拉：schemars 对 Option<String> 不产 enum 数组，
+        // 由注入函数手动补——缺了前端 SchemaForm 会退化为普通文本输入框。
+        assert!(
+            rendered.contains(r#""enum":["direct","inherit","custom"]"#),
+            "proxy_mode 应注入枚举候选: {rendered}"
+        );
+        // proxy_url 与 proxy_mode=custom 联动显隐。
+        assert!(
+            rendered.contains(
+                r#""x-visible-when":{"Equals":{"field":"proxy_mode","values":["custom"]}}"#
+            ),
+            "proxy_url 应仅在 custom 模式显隐: {rendered}"
+        );
+        for label in ["直连", "继承全局", "自定义"] {
+            assert!(
+                rendered.contains(label),
+                "proxy_mode 应标注中文展示名 {label}: {rendered}"
+            );
+        }
+        // 前驱字段（access_key_secret）带 x-end-row，使 proxy_mode 从新行首列开始、
+        // 与 proxy_url 同行（左下拉、右输入框）。
+        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(
+            value["properties"]["access_key_secret"]["x-end-row"],
+            serde_json::json!(true),
+            "access_key_secret 应带 x-end-row 把 proxy_mode 推到新行: {rendered}"
+        );
+    }
 
     #[test]
     fn the_signature_follows_the_documented_recipe() {

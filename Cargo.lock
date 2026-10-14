@@ -13,6 +13,8 @@ dependencies = [
  "aws-config",
  "aws-credential-types",
  "aws-sdk-s3",
+ "aws-smithy-http-client",
+ "aws-smithy-runtime-api",
  "aws-smithy-types",
  "chrono",
  "http-body-util",
@@ -77,12 +79,14 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "rand 0.9.5",
+ "schemars",
  "serde",
  "serde_json",
  "serde_yaml",
  "serial_test",
  "thiserror 2.0.20",
  "tracing",
+ "url",
  "uuid",
 ]
 
@@ -99,6 +103,8 @@ dependencies = [
  "aws-config",
  "aws-credential-types",
  "aws-sdk-s3",
+ "aws-smithy-http-client",
+ "aws-smithy-runtime-api",
  "aws-smithy-types",
  "base64 0.22.1",
  "chrono",
@@ -115,6 +121,7 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tracing",
+ "url",
  "uuid",
 ]
 

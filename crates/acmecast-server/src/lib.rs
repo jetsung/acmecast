@@ -160,11 +160,17 @@ impl RuntimeState {
     ///
     /// 鉴权配置缺失（如未设 JWT 密钥）属于配置错误，直接失败——
     /// 令牌无法校验的服务不该悄悄放行请求。
+    ///
+    /// 全局代理读环境变量 `ACMECAST_PROXY_URL`（与 `config.toml` 的
+    /// `[proxy] url` 同源，env 优先）：需要文件合并的调用方走
+    /// [`RuntimeState::from_environment_with_steps_and_redis_url`] 显式传入。
     pub async fn from_environment() -> acmecast_core::Result<Self> {
         let redis_url = crate::config::resolve_redis_url_from_env();
+        let proxy_url = std::env::var(acmecast_dns::PROXY_URL_ENV).ok();
         Self::from_environment_with_steps_and_redis_url(
             handlers::default_step_registry(),
             redis_url.as_deref(),
+            proxy_url.as_deref(),
         )
         .await
     }
@@ -177,15 +183,27 @@ impl RuntimeState {
         step_registry: Arc<StepRegistry>,
     ) -> acmecast_core::Result<Self> {
         let redis_url = crate::config::resolve_redis_url_from_env();
-        Self::from_environment_with_steps_and_redis_url(step_registry, redis_url.as_deref()).await
+        let proxy_url = std::env::var(acmecast_dns::PROXY_URL_ENV).ok();
+        Self::from_environment_with_steps_and_redis_url(
+            step_registry,
+            redis_url.as_deref(),
+            proxy_url.as_deref(),
+        )
+        .await
     }
 
-    /// 允许显式传入步骤注册表与可选 Redis 连接串（如来自 `config.toml` 或环境变量）。
+    /// 允许显式传入步骤注册表、可选 Redis 连接串（如来自 `config.toml` 或环境变量）
+    /// 与全局出网代理（`[proxy] url` / `ACMECAST_PROXY_URL`）。
+    ///
+    /// 代理注入两处消费者：DNS 提供商凭据类型（`proxy_mode=inherit` 的
+    /// 连通性测试）与调用方装配的 `cert.apply` 步骤（DoH 解析器回退）；
+    /// `direct` / `custom` 模式的凭据不受影响。留空即直连。
     pub async fn from_environment_with_steps_and_redis_url(
         step_registry: Arc<StepRegistry>,
         redis_url: Option<&str>,
+        proxy_url: Option<&str>,
     ) -> acmecast_core::Result<Self> {
-        let credential_registry = handlers::default_credential_registry();
+        let credential_registry = handlers::default_credential_registry(proxy_url);
         let key = std::env::var("ACMECAST__SECURITY__CREDENTIAL_KEY")
             .or_else(|_| std::env::var("ACMECAST_CREDENTIAL_KEY"));
         let cipher = key
@@ -248,7 +266,7 @@ pub mod dependencies {
     /// 默认凭据注册表（含内置 ACME 账号类型）。
     #[must_use]
     pub fn credential_registry() -> Arc<CredentialRegistry> {
-        crate::handlers::default_credential_registry()
+        crate::handlers::default_credential_registry(None)
     }
 
     /// 空步骤注册表；需要执行流水线的测试请用 [`crate::steps::default_steps`]。
@@ -266,6 +284,7 @@ pub async fn assemble_router(state: AppState) -> acmecast_core::Result<Router> {
     let runtime = RuntimeState::from_environment_with_steps_and_redis_url(
         handlers::default_step_registry(),
         state.config.redis_url.as_deref(),
+        state.config.proxy_url.as_deref(),
     )
     .await?;
     Ok(assemble_router_with_runtime(state, runtime))

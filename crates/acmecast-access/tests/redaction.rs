@@ -120,6 +120,8 @@ fn acme_account_fields_hides_the_secrets() {
         eab_kid: Some("eab-kid".to_owned()),
         eab_hmac_key: Some(SECRET.to_owned()),
         credentials: Some(format!(r#"{{"id":"kid-1","key_pkcs8":"{SECRET}"}}"#)),
+        proxy_mode: None,
+        proxy_url: None,
     };
 
     let rendered = format!("{fields:?}");

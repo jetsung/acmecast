@@ -77,7 +77,7 @@ impl SshAuth {
 /// 两种写法都合法：**引用主机档案**（顶层 `credential_id`，其余字段可选地
 /// 覆盖档案默认值）或**直填**（主机、用户、认证一样不缺）。合并与校验集中在
 /// [`resolve_input`]——这里的字段全部可选，不等于运行时也宽松。
-#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
 pub struct SshInput {
     /// SSH 主机档案凭据的标识；其连接信息、认证材料与远端默认值成为底座。
     #[serde(default)]
@@ -135,6 +135,9 @@ pub struct ResolvedSshConfig {
     pub key_mode: String,
     /// 写入成功后在远程执行的重载命令。
     pub reload_command: Option<String>,
+    /// 生效的出网代理（`socks5://` 或 `http(s)://`）；`None` 直连。
+    /// 仅档案 `proxy_mode=custom` 自带 URL 时生效（deploy 链路无全局来源）。
+    pub proxy_url: Option<String>,
 }
 
 /// 把部署输入与可选的主机档案合并成完整的执行配置。
@@ -224,6 +227,14 @@ pub fn resolve_input(
             .or_else(|| profile.and_then(|profile| profile.key_mode.clone()))
             .unwrap_or_else(default_key_mode),
         reload_command: input.reload_command.clone(),
+        // 出网代理：仅档案 custom 自带 URL 生效（deploy 链路无全局来源，
+        // inherit 等同直连）。
+        proxy_url: profile.and_then(|profile| {
+            acmecast_core::effective_proxy_url(
+                &serde_json::to_value(profile).expect("SshHostFields 必可序列化"),
+                None,
+            )
+        }),
     })
 }
 
@@ -378,9 +389,209 @@ async fn resolve_profile(
     })
 }
 
+/// 建立 SSH 会话：配了代理就先开隧道流，再走 `connect_stream`；
+/// 未配置则直连。两种路径共用同一份客户端配置与回调。
+async fn connect_ssh(
+    settings: Arc<russh::client::Config>,
+    host: &str,
+    port: u16,
+    proxy_url: Option<&str>,
+) -> Result<russh::client::Handle<ClientHandler>> {
+    let Some(proxy_url) = proxy_url else {
+        return russh::client::connect(settings, (host, port), ClientHandler)
+            .await
+            .map_err(|e| Error::Remote(e.to_string()));
+    };
+    let stream = open_proxy_stream(proxy_url, host, port).await?;
+    russh::client::connect_stream(settings, stream, ClientHandler)
+        .await
+        .map_err(|e| Error::Remote(e.to_string()))
+}
+
 /// 走 russh 的连接器。
 #[derive(Debug, Default)]
 pub struct RusshConnector;
+
+/// 经代理隧道建立到目标主机的 TCP 流：
+///
+/// - `socks5://` → RFC 1928 握手（无认证）+ CONNECT 请求；
+/// - `http://` / `https://` → HTTP CONNECT 隧道。
+///
+/// 返回的流直接交给 `russh::client::connect_stream` 建立 SSH 会话。
+/// 代理 URL 的 scheme/可解析性已在保存时由 `validate_proxy_url` 拦下，
+/// 这里对无法解析的输入直接报 `Remote` 错误。
+async fn open_proxy_stream(
+    proxy_url: &str,
+    host: &str,
+    port: u16,
+) -> Result<tokio::net::TcpStream> {
+    let parsed = url::Url::parse(proxy_url)
+        .map_err(|e| Error::Remote(format!("代理 URL 非法: {e}")))?;
+    let (proxy_host, proxy_port) = match parsed.host_str() {
+        Some(h) if !h.is_empty() => (
+            h.to_owned(),
+            parsed.port().unwrap_or(match parsed.scheme() {
+                "http" => 80,
+                _ => 1080,
+            }),
+        ),
+        _ => {
+            return Err(Error::Remote(format!(
+                "代理 URL 缺少主机: {}",
+                acmecast_core::proxy_log_target(proxy_url)
+            )))
+        }
+    };
+    let stream = tokio::net::TcpStream::connect((proxy_host.as_str(), proxy_port))
+        .await
+        .map_err(|e| {
+            Error::Remote(format!(
+                "连接代理 {} 失败: {e}",
+                acmecast_core::proxy_log_target(proxy_url)
+            ))
+        })?;
+    match parsed.scheme() {
+        "socks5" => socks5_connect(stream, host, port).await,
+        _ => http_connect(stream, host, port).await,
+    }
+}
+
+/// SOCKS5（RFC 1928）握手 + CONNECT：无认证，支持域名（ATYP=3）与 IPv4（ATYP=1）。
+async fn socks5_connect(
+    mut stream: tokio::net::TcpStream,
+    host: &str,
+    port: u16,
+) -> Result<tokio::net::TcpStream> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    // 方法选择：只支持无认证。
+    stream.write_all(&[0x05, 0x01, 0x00]).await.map_err(|e| {
+        Error::Remote(format!("SOCKS5 隧道握手失败: {e}"))
+    })?;
+    let mut greeting = [0u8; 2];
+    stream.read_exact(&mut greeting).await.map_err(|e| {
+        Error::Remote(format!("SOCKS5 隧道握手失败: {e}"))
+    })?;
+    if greeting[0] != 0x05 || greeting[1] != 0x00 {
+        return Err(Error::Remote(format!(
+            "SOCKS5 代理拒绝了无认证方法（回复 {:02x} {:02x}）",
+            greeting[0], greeting[1]
+        )));
+    }
+
+    // CONNECT 请求：IPv4 字面量用 ATYP=1，其余一律按域名（ATYP=3）。
+    let mut request = vec![0x05, 0x01, 0x00];
+    if let Ok(ip) = host.parse::<std::net::Ipv4Addr>() {
+        request.push(0x01);
+        request.extend_from_slice(&ip.octets());
+    } else {
+        if host.len() > 255 {
+            return Err(Error::Remote("目标主机名过长，SOCKS5 域名寻址不支持".to_owned()));
+        }
+        request.push(0x03);
+        request.push(host.len() as u8);
+        request.extend_from_slice(host.as_bytes());
+    }
+    request.extend_from_slice(&port.to_be_bytes());
+    stream.write_all(&request).await.map_err(|e| {
+        Error::Remote(format!("SOCKS5 隧道请求失败: {e}"))
+    })?;
+
+    // 响应：VER REP RSV ATYP BND ADDR BND PORT。
+    let mut head = [0u8; 4];
+    stream.read_exact(&mut head).await.map_err(|e| {
+        Error::Remote(format!("SOCKS5 隧道响应读取失败: {e}"))
+    })?;
+    if head[0] != 0x05 {
+        return Err(Error::Remote(format!(
+            "SOCKS5 代理返回了非 SOCKS5 版本 {:02x}",
+            head[0]
+        )));
+    }
+    if head[1] != 0x00 {
+        return Err(Error::Remote(format!(
+            "SOCKS5 代理拒绝连接（错误码 {:02x}）",
+            head[1]
+        )));
+    }
+    // 跳过绑定的地址与端口（长度取决于 ATYP）。
+    let skip = match head[3] {
+        0x01 => 4 + 2, // IPv4 + 端口
+        0x04 => 16 + 2, // IPv6 + 端口
+        0x03 => {
+            let mut len = [0u8; 1];
+            stream
+                .read_exact(&mut len)
+                .await
+                .map_err(|e| Error::Remote(format!("SOCKS5 隧道响应读取失败: {e}")))?;
+            len[0] as usize + 2
+        }
+        other => {
+            return Err(Error::Remote(format!(
+                "SOCKS5 代理返回了未知寻址类型 {:02x}",
+                other
+            )))
+        }
+    };
+    let mut rest = vec![0u8; skip];
+    stream.read_exact(&mut rest).await.map_err(|e| {
+        Error::Remote(format!("SOCKS5 隧道响应读取失败: {e}"))
+    })?;
+    Ok(stream)
+}
+
+/// HTTP CONNECT 隧道：发 `CONNECT host:port`，确认 `2xx` 后流即为隧道。
+async fn http_connect(
+    mut stream: tokio::net::TcpStream,
+    host: &str,
+    port: u16,
+) -> Result<tokio::net::TcpStream> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let request = format!("CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n");
+    stream.write_all(request.as_bytes()).await.map_err(|e| {
+        Error::Remote(format!("HTTP CONNECT 请求失败: {e}"))
+    })?;
+
+    // 逐字节读响应头直到 `\r\n\r\n` 结束：CONNECT 2xx 按规范无 body，
+    // 响应头之后的第一个字节就是 SSH banner——绝不能多读。
+    let mut byte = [0u8; 1];
+    let mut seen: [u8; 4] = [0; 4];
+    let mut header = Vec::new();
+    let mut index = 0usize;
+    loop {
+        stream.read_exact(&mut byte).await.map_err(|e| {
+            Error::Remote(format!("HTTP 代理响应读取失败: {e}"))
+        })?;
+        let slot = index % 4;
+        seen[slot] = byte[0];
+        header.push(byte[0]);
+        // 按循环序取最近 4 个字节比较（槽位 i%4 写入后，最近四字节是
+        // (i+1)%4, (i+2)%4, (i+3)%4, i%4 依次排开）。
+        let last4 = [
+            seen[(slot + 1) % 4],
+            seen[(slot + 2) % 4],
+            seen[(slot + 3) % 4],
+            seen[slot],
+        ];
+        if last4 == *b"\r\n\r\n" {
+            break;
+        }
+        index += 1;
+        if header.len() > 8192 {
+            return Err(Error::Remote("HTTP 代理响应头过长，格式非法".to_owned()));
+        }
+    }
+    // 状态行是响应头的第一行：`HTTP/1.x 2xx ...`。
+    let status_line = String::from_utf8_lossy(&header);
+    if !status_line.split("\r\n").next().unwrap_or("").contains(" 2") {
+        return Err(Error::Remote(format!(
+            "HTTP 代理拒绝连接（响应: {}）",
+            status_line.lines().next().unwrap_or("").trim()
+        )));
+    }
+    Ok(stream)
+}
 
 #[async_trait]
 impl SshConnector for RusshConnector {
@@ -390,15 +601,12 @@ impl SshConnector for RusshConnector {
         credentials: &CredentialStore<'_>,
     ) -> Result<Box<dyn SshTransport>> {
         let settings = Arc::new(russh::client::Config::default());
-        let mut session = russh::client::connect(
-            settings,
-            (config.host.as_str(), config.port),
-            ClientHandler,
-        )
-        .await
-        .map_err(|e| {
-            Error::Remote(format!("连接 {}:{} 失败: {e}", config.host, config.port))
-        })?;
+        let session = connect_ssh(settings, &config.host, config.port, config.proxy_url.as_deref())
+            .await
+            .map_err(|e| {
+                Error::Remote(format!("连接 {}:{} 失败: {e}", config.host, config.port))
+            })?;
+        let mut session = session;
 
         // 三种材料来源各读各的：凭据缺哪个字段就报哪个，比一句「认证失败」有用。
         match &config.auth {
@@ -516,7 +724,7 @@ const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 /// 供凭据的连通性测试使用：字段校验先行（缺材料不发起任何网络请求），
 /// 然后带超时连上主机完成认证。成功即返回；失败原因**未脱敏**——
 /// 调用方（凭据类型）要先用 [`SshHostFields`] 的字段值过一遍脱敏再呈现。
-pub async fn probe_host(fields: &SshHostFields) -> Result<()> {
+pub async fn probe_host(fields: &SshHostFields, global_proxy_url: Option<&str>) -> Result<()> {
     fields.validate().map_err(|error| match error {
         acmecast_core::Error::Validation { field, reason } => {
             Error::invalid_input(field, reason)
@@ -525,11 +733,11 @@ pub async fn probe_host(fields: &SshHostFields) -> Result<()> {
     })?;
 
     let settings = Arc::new(russh::client::Config::default());
-    let connect = russh::client::connect(
-        settings,
-        (fields.host.as_str(), fields.port),
-        ClientHandler,
+    let proxy_url = acmecast_core::effective_proxy_url(
+        &serde_json::to_value(fields).expect("SshHostFields 必可序列化"),
+        global_proxy_url,
     );
+    let connect = connect_ssh(settings, &fields.host, fields.port, proxy_url.as_deref());
     let mut session = tokio::time::timeout(PROBE_TIMEOUT, connect)
         .await
         .map_err(|_| {
@@ -675,6 +883,162 @@ async fn run_channel(
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn socks5_tunnel_handshakes_with_an_in_process_proxy() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        // 进程内假 SOCKS5：应答方法选择与 CONNECT（域名寻址）。
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_addr = listener.local_addr().unwrap();
+        let proxy = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut greeting = [0u8; 3];
+            sock.read_exact(&mut greeting).await.unwrap();
+            assert_eq!(&greeting, &[0x05, 0x01, 0x00]);
+            sock.write_all(&[0x05, 0x00]).await.unwrap();
+            // CONNECT 请求头：VER CMD RSV ATYP（再按 ATYP 读地址与端口）。
+            let mut head = [0u8; 5];
+            sock.read_exact(&mut head).await.unwrap();
+            assert_eq!(&head, &[0x05, 0x01, 0x00, 0x03, 18]); // 域名寻址 + 长度
+            let mut host_bytes = vec![0u8; head[4] as usize];
+            sock.read_exact(&mut host_bytes).await.unwrap();
+            assert_eq!(
+                String::from_utf8_lossy(&host_bytes),
+                "target.example.com",
+                "隧道请求必须带上目标主机"
+            );
+            let mut port_bytes = [0u8; 2];
+            sock.read_exact(&mut port_bytes).await.unwrap();
+            assert_eq!(u16::from_be_bytes(port_bytes), 2222, "隧道请求必须带上目标端口");
+            // REP=0 成功，绑定地址用 0.0.0.0:0。
+            sock.write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await.unwrap();
+        });
+
+        let stream = open_proxy_stream(
+            &format!("socks5://{proxy_addr}"),
+            "target.example.com",
+            2222,
+        )
+        .await
+        .expect("SOCKS5 隧道应建立成功");
+        // 隧道流可继续收发：SSH banner 会直接流过这条流。
+        assert!(stream.peer_addr().is_ok());
+        proxy.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn http_connect_tunnel_passes_through_on_2xx() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_addr = listener.local_addr().unwrap();
+        let proxy = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut reader = tokio::io::BufReader::new(&mut sock);
+            let mut request = String::new();
+            reader.read_line(&mut request).await.unwrap();
+            assert!(
+                request.starts_with("CONNECT target.example.com:2222 HTTP/1.1"),
+                "CONNECT 请求必须带上目标地址: {request:?}"
+            );
+            // 排空剩余请求头（Host 行 + 空行），否则退出时内核缓冲里有
+            // 未读数据会发 RST，把已写出的响应冲掉。
+            let mut rest = String::new();
+            reader.read_line(&mut rest).await.unwrap();
+            reader.read_line(&mut rest).await.unwrap();
+            sock.write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                .await
+                .unwrap();
+        });
+
+        let stream = open_proxy_stream(
+            &format!("http://{proxy_addr}"),
+            "target.example.com",
+            2222,
+        )
+        .await
+        .expect("HTTP CONNECT 隧道应建立成功");
+        assert!(stream.peer_addr().is_ok());
+        proxy.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn http_connect_tunnel_rejects_non_2xx() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_addr = listener.local_addr().unwrap();
+        let proxy = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut reader = tokio::io::BufReader::new(&mut sock);
+            let mut line = String::new();
+            reader.read_line(&mut line).await.unwrap();
+            reader.read_line(&mut line).await.unwrap();
+            reader.read_line(&mut line).await.unwrap();
+            sock.write_all(b"HTTP/1.1 403 Forbidden\r\n\r\n").await.unwrap();
+        });
+
+        let result = open_proxy_stream(
+            &format!("http://{proxy_addr}"),
+            "target.example.com",
+            2222,
+        )
+        .await;
+        let Err(e) = result else {
+            panic!("非 2xx 应拒绝隧道: {result:?}");
+        };
+        assert!(
+            e.to_string().contains("403"),
+            "错误信息应带响应: {e}"
+        );
+        proxy.await.unwrap();
+    }
+
+    #[test]
+    fn resolved_config_carrying_a_custom_proxy_passes_it_through() {
+        let input = SshInput {
+            cert_path: Some("/etc/ssl/example.com.crt".to_owned()),
+            key_path: Some("/etc/ssl/example.com.key".to_owned()),
+            ..SshInput::default()
+        };
+        let profile = SshHostFields {
+            proxy_mode: Some("custom".to_owned()),
+            proxy_url: Some("socks5://10.0.0.1:1080".to_owned()),
+            ..test_profile()
+        };
+        let resolved = resolve_input(&input, Some(&profile)).expect("应合并成功");
+        assert_eq!(
+            resolved.proxy_url.as_deref(),
+            Some("socks5://10.0.0.1:1080"),
+            "custom 自带 URL 应进入执行配置"
+        );
+
+        // direct / inherit（deploy 链路无全局来源）→ 直连。
+        for mode in ["direct", "inherit"] {
+            let profile = SshHostFields {
+                proxy_mode: Some(mode.to_owned()),
+                proxy_url: Some("socks5://10.0.0.1:1080".to_owned()),
+                ..test_profile()
+            };
+            let resolved = resolve_input(&input, Some(&profile)).expect("应合并成功");
+            assert_eq!(resolved.proxy_url, None, "{mode} 应直连");
+        }
+    }
+
+    fn test_profile() -> SshHostFields {
+        SshHostFields {
+            host: "target.example.com".to_owned(),
+            port: 22,
+            user: "deploy".to_owned(),
+            private_key: None,
+            password: Some("secret".to_owned()),
+            cert_mode: None,
+            key_mode: None,
+            proxy_mode: None,
+            proxy_url: None,
+        }
+    }
+
     #[test]
     fn both_auth_kinds_carry_only_a_credential_id() {
         let key = serde_json::from_value::<SshAuth>(serde_json::json!({
@@ -729,6 +1093,8 @@ mod tests {
             password: None,
             cert_mode: Some("0644".to_owned()),
             key_mode: None,
+            proxy_mode: None,
+            proxy_url: None,
         }
     }
 
@@ -868,6 +1234,8 @@ mod tests {
             password: None,
             cert_mode: None,
             key_mode: None,
+            proxy_mode: None,
+            proxy_url: None,
         }
     }
 
@@ -875,7 +1243,7 @@ mod tests {
     async fn a_probe_refuses_to_run_with_missing_materials() {
         let mut fields = probe_fields();
         fields.private_key = None;
-        let err = probe_host(&fields)
+        let err = probe_host(&fields, None)
             .await
             .expect_err("缺认证材料的探测应立即失败");
 
@@ -887,7 +1255,7 @@ mod tests {
     #[tokio::test]
     async fn an_unreachable_host_reports_the_target() {
         // 本地保留端口：连接被立即拒绝，测试不依赖网络与超时。
-        let err = probe_host(&probe_fields())
+        let err = probe_host(&probe_fields(), None)
             .await
             .expect_err("保留端口应连接失败");
         let text = err.to_string();
@@ -897,7 +1265,7 @@ mod tests {
     #[tokio::test]
     async fn probe_errors_never_carry_the_materials() {
         // 连接失败路径：错误文本来自连接器本身，材料只进过字段结构体。
-        let text = probe_host(&probe_fields())
+        let text = probe_host(&probe_fields(), None)
             .await
             .expect_err("应连接失败")
             .to_string();

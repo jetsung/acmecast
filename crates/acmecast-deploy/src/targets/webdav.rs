@@ -145,16 +145,37 @@ impl DeploymentTarget for WebdavTarget {
             return Err(Error::invalid_input("credential_id", "凭据缺少 username/password"));
         }
 
-        // 真实 WebDAV PUT
-        webdav_put(&cert_url, &username, &password, &materials.chain_pem, input.insecure_skip_verify).await?;
-        webdav_put(&key_url, &username, &password, &materials.key_pem, input.insecure_skip_verify).await?;
+        // 真实 WebDAV PUT：凭据 proxy_mode=custom 时经代理出网（deploy 链路
+        // 无全局代理来源，inherit 在此处等同直连）。
+        let proxy_url = credential_proxy(&fields);
+        webdav_put(&cert_url, &username, &password, &materials.chain_pem, input.insecure_skip_verify, proxy_url.as_deref()).await?;
+        webdav_put(&key_url, &username, &password, &materials.key_pem, input.insecure_skip_verify, proxy_url.as_deref()).await?;
         Ok(DeployOutcome::written(paths))
     }
 }
 
 
-async fn webdav_put(url: &str, username: &str, password: &str, content: &str, _insecure_skip_verify: bool) -> Result<()> {
-    let client = reqwest::Client::builder()
+/// 从部署凭据字段取真实生效的代理 URL：`custom` 自带 URL 生效；
+/// `direct`/`inherit`（deploy 链路无全局代理来源）返回 `None` 直连。
+fn credential_proxy(fields: &Value) -> Option<String> {
+    if acmecast_core::ProxyMode::from_credentials(fields) != acmecast_core::ProxyMode::Custom {
+        return None;
+    }
+    acmecast_core::proxy_url_from_credentials(fields)
+}
+
+async fn webdav_put(url: &str, username: &str, password: &str, content: &str, _insecure_skip_verify: bool, proxy_url: Option<&str>) -> Result<()> {
+    let mut builder = reqwest::Client::builder();
+    if let Some(proxy_url) = proxy_url {
+        // 统一口径校验 scheme（reqwest 的 Proxy::all 不查 scheme 支持度）。
+        if let Err(e) = acmecast_core::validate_proxy_url(proxy_url) {
+            return Err(Error::invalid_input("proxy_url", e.to_string()));
+        }
+        let proxy = reqwest::Proxy::all(proxy_url)
+            .map_err(|e| Error::invalid_input("proxy_url", format!("代理 URL 非法: {e}")))?;
+        builder = builder.proxy(proxy);
+    }
+    let client = builder
         .build()
         .map_err(|e| Error::Remote(format!("构造 HTTP 客户端失败: {e}")))?;
     // Ensure parent collection exists (MKCOL)
@@ -186,4 +207,26 @@ async fn webdav_put(url: &str, username: &str, password: &str, content: &str, _i
 fn primary_domain_of(materials: &CertMaterials) -> Result<String> {
     let leaf = parse_pem_leaf(&materials.chain_pem).map_err(|e| Error::invalid_input("materials", format!("证书链解析失败: {e}")))?;
     leaf.primary_domain().map(str::to_owned).ok_or_else(|| Error::invalid_input("materials", "证书没有主域名"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 部署侧代理派生：仅 `custom` 自带 URL 生效，其余直连。
+    #[test]
+    fn credential_proxy_only_custom_applies() {
+        let custom = json!({"proxy_mode": "custom", "proxy_url": "socks5://10.0.0.1:1080"});
+        assert_eq!(
+            credential_proxy(&custom).as_deref(),
+            Some("socks5://10.0.0.1:1080")
+        );
+        assert_eq!(credential_proxy(&json!({"proxy_mode": "direct", "proxy_url": "socks5://1.2.3.4:7890"})), None);
+        assert_eq!(credential_proxy(&json!({"proxy_mode": "inherit"})), None);
+        // 存量兼容：无 proxy_mode 但旧 proxy_url 有值 → custom。
+        assert_eq!(
+            credential_proxy(&json!({"proxy_url": "http://10.0.0.2:8080"})).as_deref(),
+            Some("http://10.0.0.2:8080")
+        );
+    }
 }

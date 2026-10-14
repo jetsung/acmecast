@@ -36,18 +36,8 @@ const CERT_PEM_SUFFIX: &str = "cert.pem";
 /// 私钥文件的固定后缀（旧布局，兼容读取）：`<主域名>.key.pem`。
 const KEY_PEM_SUFFIX: &str = "key.pem";
 
-/// 主域名 → 文件名前缀。
-///
-/// `*` 显式映射为 `_wildcard`（`*.hello.example.com` → `_wildcard.hello.example.com`），
-/// 而非模糊的 `_`；字母数字与 `.`、`-`、`_` 原样保留。空域名兜底为 `certificate`。
-fn domain_file_prefix(domain: &str) -> String {
-    let normalized = if let Some(stripped) = domain.strip_prefix("*.") {
-        format!("_wildcard.{stripped}")
-    } else if domain == "*" {
-        "_wildcard".to_owned()
-    } else {
-        domain.to_owned()
-    };
+/// 文件名前缀的清洗规则：字母数字与 `.`、`-`、`_` 原样保留，其余替换为 `_`。
+fn sanitize_file_prefix(normalized: String) -> String {
     let cleaned: String = normalized
         .chars()
         .map(|c| match c {
@@ -60,6 +50,34 @@ fn domain_file_prefix(domain: &str) -> String {
     } else {
         cleaned
     }
+}
+
+/// 主域名 → 文件名前缀。
+///
+/// `*` 显式映射为 `_wildcard`（`*.hello.example.com` → `_wildcard.hello.example.com`），
+/// 而非模糊的 `_`；字母数字与 `.`、`-`、`_` 原样保留。空域名兜底为 `certificate`。
+fn domain_file_prefix(domain: &str) -> String {
+    let normalized = if let Some(stripped) = domain.strip_prefix("*.") {
+        format!("_wildcard.{stripped}")
+    } else if domain == "*" {
+        "_wildcard".to_owned()
+    } else {
+        domain.to_owned()
+    };
+    sanitize_file_prefix(normalized)
+}
+
+/// 旧布局文件名前缀：通配 `*.` → `_`（历史约定，`*.example.com` → `_.example.com`）；
+/// 其余清洗规则与 [`domain_file_prefix`] 一致。供兼容回退读取推导旧布局候选路径。
+fn legacy_domain_file_prefix(domain: &str) -> String {
+    let normalized = if let Some(stripped) = domain.strip_prefix("*.") {
+        format!("_.{stripped}")
+    } else if domain == "*" {
+        "_".to_owned()
+    } else {
+        domain.to_owned()
+    };
+    sanitize_file_prefix(normalized)
 }
 
 /// 复刻 `acme.sh _split_cert_chain` 的拆链：首个 `END CERTIFICATE` 为界。
@@ -512,6 +530,62 @@ impl FileStore {
     pub async fn read(&self, relative: &str) -> Result<String> {
         let path = self.resolve(relative)?;
         Ok(tokio::fs::read_to_string(path).await?)
+    }
+
+    /// 兼容回退读取的候选相对路径（有序、去重）。
+    ///
+    /// 顺序：库中记录的路径（跳过空值）→ 活跃目录 `certs/ssl/` 下新旧前缀
+    /// × 新旧后缀的推导路径 → `certs/archived/<指纹>/` 下与前序候选同名的
+    /// 归档副本。候选只作尝试清单，逐一经 [`Self::read`] 的 `resolve`
+    /// 防逃逸校验，非法路径计入尝试清单，不会逃出数据目录。
+    #[must_use]
+    pub fn cert_read_candidates(
+        record_paths: &[&str],
+        primary_domain: &str,
+        fingerprint: &str,
+        suffixes: &[&str],
+    ) -> Vec<String> {
+        let mut candidates: Vec<String> = record_paths
+            .iter()
+            .filter(|p| !p.is_empty())
+            .map(|p| (*p).to_owned())
+            .collect();
+        let mut prefixes = vec![domain_file_prefix(primary_domain)];
+        let legacy = legacy_domain_file_prefix(primary_domain);
+        if legacy != prefixes[0] {
+            prefixes.push(legacy);
+        }
+        for prefix in &prefixes {
+            for suffix in suffixes {
+                candidates.push(format!("{ACTIVE_CERT_DIR}/{prefix}.{suffix}"));
+            }
+        }
+        let archived_dir = Self::archived_cert_dir(fingerprint);
+        candidates.extend(
+            candidates
+                .iter()
+                .map(|c| format!("{archived_dir}/{}", base_name_of(c)))
+                .collect::<Vec<_>>(),
+        );
+        let mut seen = std::collections::HashSet::new();
+        candidates.retain(|c| seen.insert(c.clone()));
+        candidates
+    }
+
+    /// 兼容回退读取：按候选顺序尝试，返回 `(内容, 命中路径)`；
+    /// 全部失败时返回按序的 `(路径, 错误)` 尝试清单，由调用方决定如何呈现。
+    pub async fn read_with_fallback(
+        &self,
+        candidates: &[String],
+    ) -> std::result::Result<(String, String), Vec<(String, Error)>> {
+        let mut attempts = Vec::new();
+        for candidate in candidates {
+            match self.read(candidate).await {
+                Ok(content) => return Ok((content, candidate.clone())),
+                Err(error) => attempts.push((candidate.clone(), error)),
+            }
+        }
+        Err(attempts)
     }
 
     /// 写入一个文件；缺失的中间目录会被自动创建，权限同样受限。

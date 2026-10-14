@@ -13,6 +13,7 @@
 //! 会在「写入→删除→重试」的循环里稳定地查不到新记录，等待永远超时。
 //! `ACMECAST_DOH_RESOLVERS` 可显式改回公共解析器集合（或 `none` 跳过等待）。
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -22,7 +23,7 @@ use tokio::time::sleep;
 use tracing::{debug, info, warn};
 
 use crate::error::{Error, Result};
-use crate::http::{HttpRequest, HttpTransport, encode};
+use crate::http::{HttpRequest, HttpTransport, ReqwestTransport, encode};
 use crate::provider::{DnsProvider, TxtRecord};
 
 /// TXT 记录的 DNS 类型号。
@@ -36,6 +37,22 @@ pub trait DnsResolver: Send + Sync + std::fmt::Debug {
 
     /// 查询某个名字下的 TXT 记录值。
     async fn lookup_txt(&self, name: &str) -> Result<Vec<String>>;
+
+    /// DoH 熔断计数的键：默认用名称；DoH 解析器覆盖为归一化端点 host，
+    /// 与 `resolvers.rs` 的去重键同口径——同一端点不同 name 也能合并计数。
+    fn breaker_key(&self) -> &str {
+        self.name()
+    }
+
+    /// DoH 端点的完整 URL。
+    ///
+    /// 代理自动回退靠它重建「同端点 + 代理传输层」的解析器：直连失败时
+    /// 经代理重试、已缓存代理偏好时直接经代理查询，都要按原端点再发一次。
+    /// 非 DoH 解析器（权威 NS 直查等）返回 `None`——它们不走代理回退，
+    /// 传输层保持直连。
+    fn endpoint(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// 走 DNS-over-HTTPS 的解析器。
@@ -110,6 +127,14 @@ impl DohResolver {
 impl DnsResolver for DohResolver {
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn breaker_key(&self) -> &str {
+        host_of(&self.endpoint)
+    }
+
+    fn endpoint(&self) -> Option<&str> {
+        Some(&self.endpoint)
     }
 
     async fn lookup_txt(&self, name: &str) -> Result<Vec<String>> {
@@ -399,12 +424,18 @@ const LOOKUP_TIMEOUT: Duration = Duration::from_secs(5);
 ///
 /// `resolvers` 为空（`ACMECAST_DOH_RESOLVERS=none`）时跳过解析器阶段，
 /// 提供商侧确认后立即返回。
+///
+/// `proxy_url` 是全局出网代理（`config.toml` 的 `[proxy] url` 或
+/// `ACMECAST_PROXY_URL`）：已配置时 DoH 端点直连失败会自动经代理重试
+/// 一次（成功则缓存偏好，见 [`DohProxyFallback`]）；未配置/留空即完全
+/// 直连，不做回退。本函数的 `resolvers` 全是 DoH，故回退对整组生效。
 pub async fn wait_until_visible<F>(
     provider: &dyn DnsProvider,
     credentials: &Value,
     record: &TxtRecord,
     resolvers: &[&dyn DnsResolver],
     policy: &PropagationPolicy,
+    proxy_url: Option<&str>,
     mut on_progress: F,
 ) -> Result<()>
 where
@@ -415,6 +446,12 @@ where
     let mut round = 0_u32;
     let mut missing: Vec<String> = Vec::new();
     let mut unreachable: Vec<String> = Vec::new();
+    // DoH 熔断：仅本轮传播会话内有效，函数返回即重置。
+    let mut active: Vec<&dyn DnsResolver> = resolvers.to_vec();
+    let mut breaker = CircuitBreaker::default();
+    // DoH 代理自动回退：与熔断平行，跨轮保留偏好，函数返回即丢弃。
+    let mut fallback = DohProxyFallback::new(proxy_url);
+    let mut probes: Vec<ResolverProbe> = Vec::new();
 
     on_progress(&format!(
         "propagation start timeout={} interval={} (record: {})",
@@ -429,6 +466,9 @@ where
     } else {
         on_progress("provider dns: (none)");
     }
+
+    // `proxy: ` 行每会话只报一次：首次回退成功后置位，不再重复。
+    let mut proxy_reported = false;
 
     loop {
         round += 1;
@@ -446,17 +486,41 @@ where
 
         if published {
             match probe_resolvers(
-                resolvers, record, round, &mut missing, &mut unreachable,
+                &active, record, round, &mut missing, &mut unreachable, &mut probes,
+                Some(&mut fallback),
             )
             .await
             {
                 ProbeOutcome::Visible(hit) => {
                     on_progress(&format!("round {round} hit (resolver: {hit})"));
+                    report_proxy_fallback(&fallback, &mut proxy_reported, &mut on_progress);
+                    report_evicted(&breaker, &mut on_progress);
                     on_progress(&format!("propagation succeeded after {round} rounds"));
                     return Ok(());
                 }
                 ProbeOutcome::NotVisible => {
                     on_progress(&format!("round {round} miss (resolvers: {})", missing.join(", ")));
+                    report_proxy_fallback(&fallback, &mut proxy_reported, &mut on_progress);
+                    apply_breaker(&mut breaker, &mut active, &probes, &mut on_progress);
+                    if active.is_empty() {
+                        warn!(
+                            name = %record.ca_name,
+                            evicted = %breaker.evicted_list(),
+                            "DoH 全部不可用，跳过 DoH 验证"
+                        );
+                        on_progress(&format!(
+                            "DoH 全部不可用（已剔除：{}），跳过后续 DoH 验证",
+                            breaker.evicted_list()
+                        ));
+                        return Err(timeout_error(
+                            published,
+                            record,
+                            &missing,
+                            &unreachable,
+                            &breaker.evicted,
+                            policy,
+                        ));
+                    }
                 }
             }
         }
@@ -467,7 +531,12 @@ where
                 policy.timeout.as_secs(),
             ));
             return Err(timeout_error(
-                published, record, &missing, &unreachable, policy,
+                published,
+                record,
+                &missing,
+                &unreachable,
+                &breaker.evicted,
+                policy,
             ));
         }
         sleep(policy.interval).await;
@@ -494,6 +563,12 @@ where
 ///    同 1/4 内顺序探测，任一家可见即就绪，兜底公共网络可达性。
 ///
 /// `ACMECAST_DOH_RESOLVERS=none` 时全部解析器组为空，跳过解析器阶段。
+///
+/// `proxy_url` 是全局出网代理（`config.toml` 的 `[proxy] url` 或
+/// `ACMECAST_PROXY_URL`）：仅对 DoH 段（`doh_single` 与 `doh_full`）生效——
+/// 直连失败自动经代理重试一次，成功则缓存偏好、后续段直接用代理传输层；
+/// 权威 NS 直查与 `all_dns` 阶段的传输层不受影响，保持直连。未配置即
+/// 完全直连，不做回退。
 pub async fn wait_until_visible_phased<F>(
     provider: &dyn DnsProvider,
     credentials: &Value,
@@ -502,6 +577,7 @@ pub async fn wait_until_visible_phased<F>(
     all_dns: &[&dyn DnsResolver],
     doh: &[&dyn DnsResolver],
     policy: &PropagationPolicy,
+    proxy_url: Option<&str>,
     mut on_progress: F,
 ) -> Result<()>
 where
@@ -521,6 +597,14 @@ where
     let mut round = 0_u32;
     let mut missing: Vec<String> = Vec::new();
     let mut unreachable: Vec<String> = Vec::new();
+    // DoH 熔断：仅对 doh 段生效，authoritative/all_dns 保持全量探测；
+    // 剔除状态跨段保留（doh_single → doh_full 不重置），本轮结束即丢弃。
+    let mut doh_active: Vec<&dyn DnsResolver> = doh.to_vec();
+    let mut breaker = CircuitBreaker::default();
+    // DoH 代理自动回退：仅 doh 段启用；偏好缓存跨 doh_single/doh_full
+    // 保留（与熔断同一会话），本轮结束即丢弃。
+    let mut fallback = DohProxyFallback::new(proxy_url);
+    let mut probes: Vec<ResolverProbe> = Vec::new();
 
     on_progress(&format!(
         "propagation start timeout={} interval={} (record: {})",
@@ -528,6 +612,8 @@ where
         policy.interval.as_secs(),
         record.ca_name,
     ));
+    // `proxy: ` 行每会话只报一次：首次回退成功后置位，不再重复。
+    let mut proxy_reported = false;
     // 命中单家 DNS：取 doh（已按 provider 感知排序的 ext_refs）首位，all_dns 与 doh 为同一 ext_refs 的两次引用时以 doh 为准
     // provider 未知/空时首位仍为固定兜底序首位（Cloudflare），保证在 round 1 miss 前可见且与后续 round x miss 同源。
     {
@@ -560,8 +646,8 @@ where
         if published {
             let now = Instant::now();
             // 命中单家集合：取 doh（已按 provider 感知排序的 ext_refs）首位，all_dns 与 doh 为同一 ext_refs 时以 doh 为准
-            let hit_single: &[&dyn DnsResolver] = if !doh.is_empty() {
-                &doh[0..1]
+            let hit_single: &[&dyn DnsResolver] = if !doh_active.is_empty() {
+                &doh_active[0..1]
             } else if !all_dns.is_empty() {
                 &all_dns[0..1]
             } else {
@@ -574,20 +660,25 @@ where
             let in_doh = now >= phase3_end;
 
             if in_hit && hit {
-                match probe_resolvers(hit_single, record, round, &mut missing, &mut unreachable).await {
+                match probe_resolvers(hit_single, record, round, &mut missing, &mut unreachable, &mut probes, Some(&mut fallback)).await {
                     ProbeOutcome::Visible(hit_name) => {
                         on_progress(&format!("round {round} hit (resolver: {hit_name})"));
+                        report_proxy_fallback(&fallback, &mut proxy_reported, &mut on_progress);
+                        report_evicted(&breaker, &mut on_progress);
                         on_progress(&format!("propagation succeeded after {round} rounds"));
                         return Ok(());
                     }
                     ProbeOutcome::NotVisible => {
                         on_progress(&format!("round {round} miss (resolvers: {})", missing.join(", ")));
+                        report_proxy_fallback(&fallback, &mut proxy_reported, &mut on_progress);
+                        apply_breaker(&mut breaker, &mut doh_active, &probes, &mut on_progress);
                     }
                 }
             } else if in_auth && !authoritative.is_empty() {
-                match probe_resolvers(authoritative, record, round, &mut missing, &mut unreachable).await {
+                match probe_resolvers(authoritative, record, round, &mut missing, &mut unreachable, &mut probes, None).await {
                     ProbeOutcome::Visible(hit_name) => {
                         on_progress(&format!("round {round} hit (resolver: {hit_name})"));
+                        report_evicted(&breaker, &mut on_progress);
                         on_progress(&format!("propagation succeeded after {round} rounds"));
                         return Ok(());
                     }
@@ -596,9 +687,10 @@ where
                     }
                 }
             } else if in_all && !all_dns.is_empty() {
-                match probe_resolvers(all_dns, record, round, &mut missing, &mut unreachable).await {
+                match probe_resolvers(all_dns, record, round, &mut missing, &mut unreachable, &mut probes, None).await {
                     ProbeOutcome::Visible(hit_name) => {
                         on_progress(&format!("round {round} hit (resolver: {hit_name})"));
+                        report_evicted(&breaker, &mut on_progress);
                         on_progress(&format!("propagation succeeded after {round} rounds"));
                         return Ok(());
                     }
@@ -610,27 +702,46 @@ where
                 // 末段 DoH 的 1/4 内再拆半：前 1/8 仅命中单家，后 1/8 整组
                 let in_doh_single = now < phase4_mid;
                 if in_doh_single && hit {
-                    match probe_resolvers(hit_single, record, round, &mut missing, &mut unreachable).await {
+                    match probe_resolvers(hit_single, record, round, &mut missing, &mut unreachable, &mut probes, Some(&mut fallback)).await {
                         ProbeOutcome::Visible(hit_name) => {
                             on_progress(&format!("round {round} hit (resolver: {hit_name})"));
+                            report_proxy_fallback(&fallback, &mut proxy_reported, &mut on_progress);
+                            report_evicted(&breaker, &mut on_progress);
                             on_progress(&format!("propagation succeeded after {round} rounds"));
                             return Ok(());
                         }
                         ProbeOutcome::NotVisible => {
                             on_progress(&format!("round {round} miss (resolvers: {})", missing.join(", ")));
+                            report_proxy_fallback(&fallback, &mut proxy_reported, &mut on_progress);
+                            apply_breaker(&mut breaker, &mut doh_active, &probes, &mut on_progress);
                         }
                     }
+                } else if !doh.is_empty() && doh_active.is_empty() {
+                    // doh 集合原本非空但已被熔断剔空：跳过 DoH 轮询（不回退 all_dns），
+                    // 留给权威/全量段或超时判定。
+                    warn!(
+                        name = %record.ca_name,
+                        evicted = %breaker.evicted_list(),
+                        "DoH 全部不可用，跳过 DoH 验证"
+                    );
                 } else {
-                    let doh_full: &[&dyn DnsResolver] = if !doh.is_empty() { doh } else { all_dns };
+                    // doh 段仅探测熔断后存活子集；doh 原本为空时回退 all_dns（不参与熔断）。
+                    // 回退 all_dns 的传输层保持直连（不走代理回退）——只有真正的 doh
+                    // 集合才启用 fallback。
+                    let doh_full: &[&dyn DnsResolver] = if !doh.is_empty() { &doh_active } else { all_dns };
                     if !doh_full.is_empty() {
-                        match probe_resolvers(doh_full, record, round, &mut missing, &mut unreachable).await {
+                        match probe_resolvers(doh_full, record, round, &mut missing, &mut unreachable, &mut probes, if !doh.is_empty() { Some(&mut fallback) } else { None }).await {
                             ProbeOutcome::Visible(hit_name) => {
                                 on_progress(&format!("round {round} hit (resolver: {hit_name})"));
+                                report_proxy_fallback(&fallback, &mut proxy_reported, &mut on_progress);
+                                report_evicted(&breaker, &mut on_progress);
                                 on_progress(&format!("propagation succeeded after {round} rounds"));
                                 return Ok(());
                             }
                             ProbeOutcome::NotVisible => {
                                 on_progress(&format!("round {round} miss (resolvers: {})", missing.join(", ")));
+                                report_proxy_fallback(&fallback, &mut proxy_reported, &mut on_progress);
+                                apply_breaker(&mut breaker, &mut doh_active, &probes, &mut on_progress);
                             }
                         }
                     }
@@ -644,7 +755,12 @@ where
                 policy.timeout.as_secs(),
             ));
             return Err(timeout_error(
-                published, record, &missing, &unreachable, policy,
+                published,
+                record,
+                &missing,
+                &unreachable,
+                &breaker.evicted,
+                policy,
             ));
         }
         sleep(policy.interval).await;
@@ -652,11 +768,320 @@ where
 }
 
 /// 单轮解析器探测的结果。
+#[derive(Debug)]
 enum ProbeOutcome {
     /// 任一家解析器看到了期望值（携带看到该记录的解析器名称）。
     Visible(String),
     /// 全部没看到（调用方继续等下一轮）。
     NotVisible,
+}
+
+/// 单次探测中一个解析器的结果分类：网络失败计熔断，未命中（Ok 但无期望值）清零。
+struct ResolverProbe {
+    key: String,
+    /// 本轮该端点的「网络不可用」失败次数：
+    ///
+    /// - `0`：查询成功（命中或未命中）——清零连续失败计数；
+    /// - `1`：直连失败且未发生代理回退（全局代理未配 / 非 DoH 端点），
+    ///   或已缓存代理偏好的端点经代理查询失败；
+    /// - `2`：直连失败且经代理重试仍失败——直连与代理各计一次。
+    failures: u8,
+}
+
+/// DoH 熔断剔除的连续网络失败阈值（写死，不做配置项）。
+const BREAKER_THRESHOLD: u8 = 3;
+
+/// 单次传播会话内的 DoH 熔断器：按端点累计连续网络失败次数，达阈值剔除；
+/// 函数返回即丢弃，下次运行重置。`evicted` 供终态日志附剔除列表。
+#[derive(Default)]
+struct CircuitBreaker {
+    counts: HashMap<String, u8>,
+    evicted: Vec<String>,
+}
+
+impl CircuitBreaker {
+    /// 按本轮探测结果更新计数，返回本轮新剔除的端点键。
+    /// 网络失败按 `failures` 计次（直连失败 + 代理回退失败 = 2 次）；
+    /// Ok（命中或未命中）清零。
+    fn update(&mut self, probes: &[ResolverProbe]) -> Vec<String> {
+        let mut newly: Vec<String> = Vec::new();
+        for probe in probes {
+            if probe.failures > 0 {
+                let count = self.counts.entry(probe.key.clone()).or_insert(0);
+                *count = count.saturating_add(probe.failures);
+                // 达阈值即剔除：代理回退失败的一轮计 2 次，计数可能跳过 3，
+                // 用 >= 而非 ==；同轮重复键（同端点不同 name）只剔除一次。
+                if *count >= BREAKER_THRESHOLD
+                    && !newly.contains(&probe.key)
+                    && !self.evicted.contains(&probe.key)
+                {
+                    newly.push(probe.key.clone());
+                }
+            } else {
+                self.counts.remove(&probe.key);
+            }
+        }
+        self.evicted.extend(newly.iter().cloned());
+        newly
+    }
+
+    fn evicted_list(&self) -> String {
+        self.evicted.join("、")
+    }
+}
+
+/// 剔除可观测性：warn 与进度回调都带端点标识与连续失败次数。
+fn apply_breaker<F>(
+    breaker: &mut CircuitBreaker,
+    active: &mut Vec<&dyn DnsResolver>,
+    probes: &[ResolverProbe],
+    on_progress: &mut F,
+) where
+    F: FnMut(&str) + Send,
+{
+    for key in breaker.update(probes) {
+        warn!(
+            resolver = %key,
+            failures = BREAKER_THRESHOLD,
+            "DoH 端点连续网络失败，本轮熔断剔除"
+        );
+        on_progress(&format!(
+            "DoH 端点 {key} 连续 {BREAKER_THRESHOLD} 次网络失败，本轮熔断剔除"
+        ));
+        active.retain(|resolver| resolver.breaker_key() != key);
+    }
+}
+
+/// 终态成功时附带剔除列表，便于排障。
+fn report_evicted<F: FnMut(&str)>(breaker: &CircuitBreaker, on_progress: &mut F) {
+    if !breaker.evicted.is_empty() {
+        on_progress(&format!(
+            "已熔断剔除（不再查询）：{}",
+            breaker.evicted_list()
+        ));
+    }
+}
+
+/// DoH 代理回退成功后经 `on_progress` 上报一行 `proxy: via <host>`。
+///
+/// 与凭据代理行互不覆盖（SSE 实时多行独立可视；落库前由服务端
+/// `compact_proxy_logs` 仅保留最后一条）。每个会话只报一次：
+/// 直连探测成功不报，回退成功后的后续段（已缓存偏好直接走代理）也不重复报。
+fn report_proxy_fallback<F: FnMut(&str)>(
+    fallback: &DohProxyFallback,
+    reported: &mut bool,
+    on_progress: &mut F,
+) {
+    if *reported || !fallback.activated() {
+        return;
+    }
+    *reported = true;
+    if let Some(display) = fallback.proxy_display() {
+        on_progress(&format!("proxy: via {display}"));
+    }
+}
+
+/// DoH 端点的传输偏好：直连，或经全局代理。
+///
+/// 由代理自动回退产生：直连查询网络失败、经代理重试成功后缓存 `Proxy`，
+/// 后续轮次与后续阶段（`doh_single` → `doh_full`）直接用代理传输层查询，
+/// 不再每轮重复直连探测。仅本轮传播会话内有效——随等待函数返回丢弃，
+/// 下次运行重新学习。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ProxyPreference {
+    /// 直连（缺省）：未发生过成功的代理回退。
+    #[default]
+    Direct,
+    /// 经全局代理：该端点已确认直连不可达、代理可达。
+    Proxy,
+}
+
+/// DoH 代理自动回退的会话状态：全局代理 URL（已配置时）、懒构建的代理
+/// 传输层、每端点的传输偏好缓存。
+///
+/// 与 [`CircuitBreaker`] 平行创建于传播会话开头，跨 `doh_single`/`doh_full`
+/// 段保留，本轮结束即丢弃。全局代理未配置时整体退化为「无回退」：
+/// 直连失败直接计次，行为与本机制引入前完全一致。
+struct DohProxyFallback {
+    /// 归一化后的全局代理 URL（非空）；未配置为 `None`。
+    proxy_url: Option<String>,
+    /// 懒构建的代理传输层：首次需要回退时按 `proxy_url` 现建，之后复用。
+    /// 构建失败（URL 非法等，生产上已被启动校验拦下）保持 `None`，
+    /// 回退静默跳过，不让流水线崩在传输层。
+    transport: Option<Arc<dyn HttpTransport>>,
+    /// 端点（与熔断计数同口径的 key）→ 传输偏好。
+    preferences: HashMap<String, ProxyPreference>,
+    /// 本会话是否发生过成功的代理回退（供运行历史 `proxy: ` 日志行上报）。
+    activated: bool,
+}
+
+impl DohProxyFallback {
+    /// 按全局代理 URL 构建；空串/未配置时回退功能关闭。
+    fn new(proxy_url: Option<&str>) -> Self {
+        let proxy_url = proxy_url
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned);
+        Self {
+            proxy_url,
+            transport: None,
+            preferences: HashMap::new(),
+            activated: false,
+        }
+    }
+
+    /// 注入代理传输层替身：测试免去真代理进程。生产走 [`Self::new`] 的懒构建。
+    #[cfg(test)]
+    fn with_transport(proxy_url: &str, transport: Arc<dyn HttpTransport>) -> Self {
+        Self {
+            proxy_url: Some(proxy_url.to_owned()),
+            transport: Some(transport),
+            preferences: HashMap::new(),
+            activated: false,
+        }
+    }
+
+    /// 本会话是否发生过成功的代理回退。
+    fn activated(&self) -> bool {
+        self.activated
+    }
+
+    /// 代理 URL 的日志展示形态（scheme://host，剥掉 userinfo）。
+    fn proxy_display(&self) -> Option<String> {
+        self.proxy_url.as_deref().map(super::proxy_log_target)
+    }
+
+    /// 该端点当前的传输偏好；未缓存过即 [`ProxyPreference::Direct`]。
+    fn preference(&self, key: &str) -> ProxyPreference {
+        self.preferences
+            .get(key)
+            .copied()
+            .unwrap_or(ProxyPreference::Direct)
+    }
+
+    /// 是否已缓存「需经代理」偏好。
+    fn prefers_proxy(&self, key: &str) -> bool {
+        self.preference(key) == ProxyPreference::Proxy
+    }
+
+    /// 缓存「需经代理」偏好（代理重试成功时），并标记会话已激活回退。
+    fn mark_proxy(&mut self, key: &str) {
+        self.activated = true;
+        self.preferences
+            .insert(key.to_owned(), ProxyPreference::Proxy);
+    }
+
+    /// 经代理传输层查询：重建「同端点 + 代理客户端」的 DoH 解析器。
+    ///
+    /// 返回 `None` 表示这次走不了代理：全局代理未配置、代理传输层构建失败，
+    /// 或目标不是 DoH 端点（权威 NS 直查等）。单次查询同样受
+    /// [`LOOKUP_TIMEOUT`] 约束——挂起的代理连接不该吃掉整轮预算。
+    async fn query_via_proxy(
+        &mut self,
+        resolver: &dyn DnsResolver,
+        name: &str,
+    ) -> Option<Result<Vec<String>>> {
+        let transport = self.proxy_transport()?;
+        let endpoint = resolver.endpoint()?;
+        let proxied = DohResolver::custom(
+            Arc::clone(&transport),
+            resolver.name().to_owned(),
+            endpoint.to_owned(),
+        );
+        Some(lookup_with_timeout(&proxied, name).await)
+    }
+
+    /// 懒构建（并缓存）代理传输层。
+    fn proxy_transport(&mut self) -> Option<Arc<dyn HttpTransport>> {
+        let url = self.proxy_url.as_deref()?;
+        if self.transport.is_none() {
+            // 生产 URL 已在启动时经 `validate_proxy_url` 校验；这里再失败
+            // 只可能是 reqwest 拒绝该代理配置——退化为无回退。
+            self.transport = ReqwestTransport::with_proxy(url)
+                .ok()
+                .map(|transport| Arc::new(transport) as Arc<dyn HttpTransport>);
+        }
+        self.transport.clone()
+    }
+}
+
+/// 单次解析器查询，带 [`LOOKUP_TIMEOUT`] 约束。
+///
+/// 不可达的端点（被墙的 DoH、挂起的连接）要**快速**失败：查询本身没有
+/// 超时的话，一次 TCP 连接挂起到内核超时要一分多钟——整轮预算里只跑得动
+/// 两轮，熔断与代理回退都没机会生效。
+async fn lookup_with_timeout(resolver: &dyn DnsResolver, name: &str) -> Result<Vec<String>> {
+    match tokio::time::timeout(LOOKUP_TIMEOUT, resolver.lookup_txt(name)).await {
+        Ok(result) => result,
+        Err(_elapsed) => Err(Error::provider(format!(
+            "{} 查询 `{}` 超时（{} 秒）",
+            resolver.name(),
+            name,
+            LOOKUP_TIMEOUT.as_secs()
+        ))),
+    }
+}
+
+/// 单端点一轮查询：直连（或已缓存代理偏好时经代理），网络失败时按需
+/// 经代理回退一次。返回（查询结果, 本轮网络失败次数）。
+///
+/// `fallback` 为 `None` 时是完全的直连语义（权威 NS 直查与 `all_dns`
+/// 阶段走这条）；为 `Some` 时启用代理自动回退：
+///
+/// - 直连成功 → 原样返回；
+/// - 直连网络失败且全局代理已配 → 经代理重试一次：成功则清零计数、
+///   缓存「需经代理」偏好并用结果参与判定；仍失败则直连 + 代理 = 2 次；
+/// - 已缓存代理偏好 → 直接经代理查询，不再重复直连探测。
+async fn probe_one(
+    resolver: &dyn DnsResolver,
+    name: &str,
+    fallback: Option<&mut DohProxyFallback>,
+) -> (Result<Vec<String>>, u8) {
+    let Some(fallback) = fallback else {
+        let result = lookup_with_timeout(resolver, name).await;
+        let failures = u8::from(result.is_err());
+        return (result, failures);
+    };
+    let key = resolver.breaker_key();
+    if fallback.prefers_proxy(key) {
+        // 已缓存「需经代理」：直接经代理传输层查询。代理传输层不可用
+        // （构建失败等）时退回直连，两种情况失败都只计 1 次。
+        return match fallback.query_via_proxy(resolver, name).await {
+            Some(result) => {
+                let failures = u8::from(result.is_err());
+                (result, failures)
+            }
+            None => {
+                let result = lookup_with_timeout(resolver, name).await;
+                let failures = u8::from(result.is_err());
+                (result, failures)
+            }
+        };
+    }
+    let direct = lookup_with_timeout(resolver, name).await;
+    if direct.is_ok() {
+        return (direct, 0);
+    }
+    match fallback.query_via_proxy(resolver, name).await {
+        // 重试成功：清零计数（failures=0）+ 用结果参与判定 + 缓存偏好。
+        Some(Ok(values)) => {
+            fallback.mark_proxy(key);
+            (Ok(values), 0)
+        }
+        Some(Err(proxy_error)) => {
+            // 重试仍网络失败：直连 + 代理 = 2 次；代理错误进 warn 便于排障，
+            // 上报的错误保留直连的原始原因。
+            warn!(
+                resolver = resolver.name(),
+                error = %proxy_error,
+                "DoH 端点经代理回退仍失败"
+            );
+            (direct, 2)
+        }
+        // 走不了代理（未配全局代理 / 非 DoH 端点 / 传输层构建失败）：
+        // 只有直连这一次失败。
+        None => (direct, 1),
+    }
 }
 
 /// 对一组解析器执行一轮查询：任一家看到期望值即返回 `Visible`，
@@ -665,28 +1090,27 @@ enum ProbeOutcome {
 /// 查询**失败**（含超时）与「查到了但值不对」是两回事：前者多半是
 /// 解析器本身出了问题（端点不可达、被墙），按「不可达」归类，
 /// 不参与判定——任一家看到即可放行，所以失败只会让自己出局。
+///
+/// `fallback` 为 `Some` 时对该组启用 DoH 代理自动回退（仅 DoH 段传入，
+/// 见 [`probe_one`]）；权威 NS 直查与 `all_dns` 阶段传 `None`，
+/// 传输层保持直连，不受代理回退影响。
 async fn probe_resolvers(
     resolvers: &[&dyn DnsResolver],
     record: &TxtRecord,
     round: u32,
     missing: &mut Vec<String>,
     unreachable: &mut Vec<String>,
+    probes: &mut Vec<ResolverProbe>,
+    mut fallback: Option<&mut DohProxyFallback>,
 ) -> ProbeOutcome {
     missing.clear();
     unreachable.clear();
+    probes.clear();
     // 查 CA 查询名而非写入名：CA 是按订单标识符查找的，跨 zone CNAME 委派时
     // 它俩不是同一个名字，只有从 ca_name 出发跟随 CNAME 链才等于 CA 的视角。
     let name = &record.ca_name;
-    for resolver in resolvers {
-        let outcome = match tokio::time::timeout(LOOKUP_TIMEOUT, resolver.lookup_txt(name)).await {
-            Ok(result) => result,
-            Err(_elapsed) => Err(Error::provider(format!(
-                "{} 查询 `{}` 超时（{} 秒）",
-                resolver.name(),
-                name,
-                LOOKUP_TIMEOUT.as_secs()
-            ))),
-        };
+    for &resolver in resolvers {
+        let (outcome, failures) = probe_one(resolver, name, fallback.as_deref_mut()).await;
         match outcome {
             Ok(values) => {
                 if values.iter().any(|value| value == &record.value) {
@@ -698,9 +1122,17 @@ async fn probe_resolvers(
                     );
                     return ProbeOutcome::Visible(resolver.name().to_owned());
                 }
+                probes.push(ResolverProbe {
+                    key: resolver.breaker_key().to_owned(),
+                    failures: 0,
+                });
                 missing.push(resolver.name().to_owned());
             }
             Err(err) => {
+                probes.push(ResolverProbe {
+                    key: resolver.breaker_key().to_owned(),
+                    failures,
+                });
                 warn!(resolver = resolver.name(), error = %err, "解析器查询失败，按不可达处理");
                 unreachable.push(resolver.name().to_owned());
             }
@@ -724,6 +1156,7 @@ fn timeout_error(
     record: &TxtRecord,
     missing: &[String],
     unreachable: &[String],
+    evicted: &[String],
     policy: &PropagationPolicy,
 ) -> Error {
     let waited = humanize(policy.timeout);
@@ -756,6 +1189,12 @@ fn timeout_error(
             unreachable.join("、")
         ));
     }
+    if !evicted.is_empty() {
+        parts.push(format!(
+            "{} 连续网络失败已熔断剔除（不再查询）",
+            evicted.join("、")
+        ));
+    }
     if parts.is_empty() {
         parts.push("全部解析器查询均失败".to_owned());
     }
@@ -785,6 +1224,7 @@ fn humanize(duration: Duration) -> String {
 mod tests {
     use parking_lot::Mutex;
 
+    use crate::http::HttpResponse;
     use super::*;
 
     /// 环境变量会跨测试共享进程状态，解析配置的测试统一串行。
@@ -907,6 +1347,51 @@ mod tests {
         }
     }
 
+    /// 按脚本应答（可含网络错误）的解析器：每调一次前进一格，用完后一直返回最后一个。
+    /// 用于熔断测试：`Err` 归网络失败计熔断，`Ok` 归未命中清零。
+    #[derive(Debug)]
+    struct FailScriptResolver {
+        name: String,
+        script: Mutex<Vec<std::result::Result<Vec<String>, String>>>,
+        calls: Mutex<usize>,
+    }
+
+    impl FailScriptResolver {
+        fn new(name: &str, script: Vec<std::result::Result<Vec<String>, String>>) -> Self {
+            Self {
+                name: name.to_owned(),
+                script: Mutex::new(script),
+                calls: Mutex::new(0),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            *self.calls.lock()
+        }
+    }
+
+    #[async_trait]
+    impl DnsResolver for FailScriptResolver {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        async fn lookup_txt(&self, _name: &str) -> Result<Vec<String>> {
+            let mut calls = self.calls.lock();
+            let index = *calls;
+            *calls += 1;
+            drop(calls);
+
+            let script = self.script.lock();
+            script
+                .get(index)
+                .or_else(|| script.last())
+                .cloned()
+                .unwrap_or_else(|| -> std::result::Result<Vec<String>, String> { Err("连接超时".to_owned()) })
+                .map_err(Error::provider)
+        }
+    }
+
     /// 只对特定名字有值的解析器：用于验证传播等待查的是 CA 查询名，
     /// 而不是写入到 zone 下的那个名字。
     #[derive(Debug)]
@@ -962,6 +1447,7 @@ mod tests {
             &record,
             &[&resolver],
             &fast_policy(),
+            None,
             |_| {},
         )
         .await
@@ -991,6 +1477,7 @@ mod tests {
             &record,
             &[&resolver],
             &fast_policy(),
+            None,
             |_| {},
         )
         .await
@@ -1028,6 +1515,7 @@ mod tests {
             &record,
             &[&resolver],
             &fast_policy(),
+            None,
             |_| {},
         )
         .await
@@ -1108,6 +1596,7 @@ mod tests {
                 &record(),
                 &[&resolver],
                 &fast_policy(),
+                None,
                 |_| {},
             ),
         )
@@ -1145,6 +1634,7 @@ mod tests {
             &record(),
             &[&resolver],
             &fast_policy(),
+            None,
             |_| {},
         )
         .await
@@ -1171,6 +1661,7 @@ mod tests {
             &record(),
             &[&resolver],
             &fast_policy(),
+            None,
             |_| {},
         )
         .await
@@ -1191,6 +1682,7 @@ mod tests {
             &record(),
             &[&lagging, &ready],
             &fast_policy(),
+            None,
             |_| {},
         )
         .await
@@ -1209,6 +1701,7 @@ mod tests {
             &record(),
             &[],
             &fast_policy(),
+            None,
             |_| {},
         )
         .await
@@ -1253,6 +1746,7 @@ mod tests {
             &record(),
             &[&resolver],
             &fast_policy(),
+            None,
             |_| {},
         )
         .await
@@ -1276,6 +1770,7 @@ mod tests {
             &record(),
             &[&stale, &stuck],
             &fast_policy(),
+            None,
             |_| {},
         )
         .await
@@ -1313,6 +1808,7 @@ mod tests {
             &record(),
             &[&resolver],
             &fast_policy(),
+            None,
             |_| {},
         )
         .await
@@ -1351,6 +1847,7 @@ mod tests {
             &record(),
             &[&AlwaysFails],
             &fast_policy(),
+            None,
             |_| {},
         )
         .await
@@ -1387,6 +1884,7 @@ mod tests {
             &record(),
             &[&failing, &seeing],
             &fast_policy(),
+            None,
             |_| {},
         )
         .await
@@ -1630,6 +2128,7 @@ mod tests {
                 interval: Duration::from_millis(5),
                 timeout: Duration::from_millis(400),
             },
+            None,
             |_| {},
         )
         .await
@@ -1655,6 +2154,7 @@ mod tests {
             &[&all],
             &[&doh],
             &fast_policy(),
+            None,
             |_| {},
         )
         .await
@@ -1685,6 +2185,7 @@ mod tests {
                 interval: Duration::from_millis(5),
                 timeout: Duration::from_millis(400),
             },
+            None,
             |_| {},
         )
         .await
@@ -1707,6 +2208,7 @@ mod tests {
             &[],
             &[],
             &fast_policy(),
+            None,
             |_| {},
         )
         .await
@@ -1733,6 +2235,7 @@ mod tests {
                 interval: Duration::from_millis(5),
                 timeout: Duration::from_millis(400),
             },
+            None,
             |_| {},
         )
         .await
@@ -1757,6 +2260,7 @@ mod tests {
             &[&all_dns],
             &[&doh],
             &fast_policy(),
+            None,
             |_| {},
         )
         .await
@@ -1787,6 +2291,7 @@ mod tests {
                 interval: Duration::from_millis(5),
                 timeout: Duration::from_secs(300),
             },
+            None,
             move |msg| {
                 events_clone.lock().push(msg.to_owned());
             },
@@ -1851,6 +2356,7 @@ mod tests {
                 interval: Duration::from_millis(5),
                 timeout: Duration::from_secs(300),
             },
+            None,
             move |msg| {
                 events_clone.lock().push(msg.to_owned());
             },
@@ -1891,6 +2397,7 @@ mod tests {
                 interval: Duration::from_millis(5),
                 timeout: Duration::from_secs(300),
             },
+            None,
             move |msg| {
                 events_clone.lock().push(msg.to_owned());
             },
@@ -1912,5 +2419,414 @@ mod tests {
         let hit_pos = logs.iter().position(|l| l.contains("provider dns:")).unwrap();
         let done_pos = logs.iter().position(|l| l.contains("propagation succeeded")).unwrap();
         assert!(start_pos < hit_pos && hit_pos < done_pos, "start → 命中行 → succeeded 顺序: {logs:?}");
+    }
+
+    // ---- DoH 熔断剔除 ----
+
+    #[tokio::test]
+    async fn continuous_3_network_failures_evicts_endpoint() {
+        // 连续 3 次网络失败后端点被剔除，后续轮次不再查询；
+        // 同集合的未命中端点不受影响，等待照常走到超时。
+        let provider = Publishes::always("value-1");
+        let failing = FailScriptResolver::new(
+            "总连不上",
+            vec![Err("连接超时".to_owned())],
+        );
+        let missing = ScriptedResolver::new("未命中的", vec![vec![]]);
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let events_clone = Arc::clone(&events);
+
+        let err = wait_until_visible(
+            &provider,
+            &serde_json::json!({}),
+            &record(),
+            &[&failing, &missing],
+            &fast_policy(),
+            None,
+            move |msg| events_clone.lock().push(msg.to_owned()),
+        )
+        .await
+        .expect_err("熔断剔除后无 DoH 可用应超时");
+
+        assert_eq!(failing.calls(), 3, "3 次失败后应被剔除，不再查询: {}", failing.calls());
+        assert!(missing.calls() > 3, "未命中端点不应受熔断影响");
+
+        let logs = events.lock().clone();
+        assert!(
+            logs.iter().any(|l| l.contains("总连不上") && l.contains("熔断剔除")),
+            "剔除时进度日志应含端点标识: {logs:?}"
+        );
+        let text = err.to_string();
+        assert!(text.contains("已熔断剔除"), "超时终态应附剔除列表: {text}");
+        assert!(text.contains("总连不上"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn phased_doh_circuit_breaker_across_segments() {
+        // 命中单家段（doh_single）与末段整组（doh_full）共享剔除状态：
+        // 连续 3 次网络失败即剔除，跨段不再查询，等待超时且权威/全量照常。
+        let provider = Publishes::always("value-1");
+        let failing = FailScriptResolver::new(
+            "DoH-总失败",
+            vec![Err("连接拒绝".to_owned())],
+        );
+        let all_dns = ScriptedResolver::new("全量", vec![vec![]]);
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let events_clone = Arc::clone(&events);
+
+        let err = wait_until_visible_phased(
+            &provider,
+            &serde_json::json!({}),
+            &record(),
+            &[],
+            &[&all_dns],
+            &[&failing],
+            &fast_policy(),
+            None,
+            move |msg| events_clone.lock().push(msg.to_owned()),
+        )
+        .await
+        .expect_err("DoH 剔空后应超时");
+
+        assert_eq!(
+            failing.calls(),
+            3,
+            "跨段累计 3 次失败即剔除，不再查询: {}",
+            failing.calls()
+        );
+        assert!(all_dns.calls() > 0, "all_dns 段不受熔断影响，保持全量探测");
+
+        let logs = events.lock().clone();
+        assert!(
+            logs.iter().any(|l| l.contains("DoH-总失败") && l.contains("熔断剔除")),
+            "剔除日志应含端点标识: {logs:?}"
+        );
+        assert!(err.to_string().contains("DoH-总失败"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn ok_empty_does_not_count_toward_breaker() {
+        // 失败分类：Err（网络不可用）计熔断，Ok（空集/非期望值）为未命中清零——
+        // 「失败、失败、未命中」的序列不应累计到 3，端点持续被查询。
+        let provider = Publishes::always("value-1");
+        let flaky = FailScriptResolver::new(
+            "抖动的",
+            vec![
+                Err("连接超时".to_owned()),
+                Err("连接拒绝".to_owned()),
+                Ok(vec![]),
+                Err("连接超时".to_owned()),
+                Err("连接拒绝".to_owned()),
+                Ok(vec![]),
+            ],
+        );
+
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let events_clone = Arc::clone(&events);
+
+        let err = wait_until_visible(
+            &provider,
+            &serde_json::json!({}),
+            &record(),
+            &[&flaky],
+            &fast_policy(),
+            None,
+            move |msg| events_clone.lock().push(msg.to_owned()),
+        )
+        .await
+        .expect_err("一直不可见应超时");
+
+        assert!(
+            flaky.calls() > 6,
+            "未命中清零后不应被剔除，应持续查询到超时: {}",
+            flaky.calls()
+        );
+        let logs = events.lock().clone();
+        assert!(
+            !logs.iter().any(|l| l.contains("熔断剔除")),
+            "有未命中清零就不应触发剔除: {logs:?}"
+        );
+        assert!(err.to_string().contains("抖动的"), "{err}");
+    }
+
+    // ---- DoH 代理自动回退 ----
+
+    /// 按脚本应答的传输层替身：`Err` 变体模拟「网络不可用」；记录调用次数，
+    /// 用于断言偏好缓存后不再直连探测。
+    #[derive(Debug)]
+    struct ScriptedTransport {
+        script: Mutex<Vec<std::result::Result<HttpResponse, String>>>,
+        calls: Mutex<usize>,
+    }
+
+    impl ScriptedTransport {
+        fn new(script: Vec<std::result::Result<HttpResponse, String>>) -> Self {
+            Self {
+                script: Mutex::new(script),
+                calls: Mutex::new(0),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            *self.calls.lock()
+        }
+    }
+
+    #[async_trait]
+    impl HttpTransport for ScriptedTransport {
+        async fn send(&self, _request: HttpRequest) -> Result<HttpResponse> {
+            *self.calls.lock() += 1;
+            let mut script = self.script.lock();
+            if script.len() > 1 {
+                script.remove(0)
+            } else {
+                script.first().cloned().expect("应答脚本不应为空")
+            }
+            .map_err(Error::provider)
+        }
+    }
+
+    /// DoH JSON 应答：一条指向期望值的 TXT 记录。
+    fn doh_txt_response(value: &str) -> HttpResponse {
+        HttpResponse::new(
+            200,
+            format!(
+                r#"{{"Status":0,"Answer":[{{"name":"_acme-challenge.example.com.","type":16,"data":"\"{value}\""}}]}}"#
+            ),
+        )
+    }
+
+    /// 直连失败 → 经代理重试成功 → 重试结果参与判定、连续失败计数清零，
+    /// 并缓存「需经代理」偏好。
+    #[tokio::test]
+    async fn doh_proxy_fallback_on_network_failure() {
+        let direct_google = Arc::new(ScriptedTransport::new(vec![Err("连接超时".to_owned())]));
+        let direct_cf = Arc::new(ScriptedTransport::new(vec![Err("连接拒绝".to_owned())]));
+        let unseen = DohResolver::google(Arc::clone(&direct_google) as Arc<dyn HttpTransport>);
+        let hit = DohResolver::cloudflare(Arc::clone(&direct_cf) as Arc<dyn HttpTransport>);
+        // 代理传输层：Google 端点未命中，Cloudflare 端点返回期望值。
+        let proxy = Arc::new(ScriptedTransport::new(vec![
+            Ok(HttpResponse::new(200, r#"{"Status":0}"#)),
+            Ok(doh_txt_response("value-1")),
+        ]));
+        let mut fallback = DohProxyFallback::with_transport(
+            "socks5://127.0.0.1:7890",
+            Arc::clone(&proxy) as Arc<dyn HttpTransport>,
+        );
+
+        let mut missing = Vec::new();
+        let mut unreachable = Vec::new();
+        let mut probes = Vec::new();
+        let outcome = probe_resolvers(
+            &[&unseen, &hit],
+            &record(),
+            1,
+            &mut missing,
+            &mut unreachable,
+            &mut probes,
+            Some(&mut fallback),
+        )
+        .await;
+
+        // 重试结果参与判定：Cloudflare 经代理看到期望值 → 可见。
+        assert!(
+            matches!(&outcome, ProbeOutcome::Visible(name) if name == "Cloudflare DNS"),
+            "经代理重试命中应判可见: {outcome:?}"
+        );
+        // Google 经代理查到但未命中：记 missing，不算不可达。
+        assert!(
+            missing.contains(&"Google DNS".to_owned()),
+            "经代理成功查询不应记不可达: {missing:?} / {unreachable:?}"
+        );
+        assert!(unreachable.is_empty(), "{unreachable:?}");
+        assert_eq!(probes.len(), 1, "未命中的端点应留下探针记录");
+        assert_eq!(probes[0].failures, 0, "代理重试成功应清零连续失败计数");
+        // 两端点都发生过成功的代理回退 → 都缓存「需经代理」偏好。
+        assert!(fallback.prefers_proxy("dns.google"), "回退成功应缓存偏好");
+        assert!(fallback.prefers_proxy("cloudflare-dns.com"));
+    }
+
+    /// 回退成功后经 `on_progress` 上报一行 `proxy: via <host>`：含 scheme/host、
+    /// 不含 userinfo 认证材料；未回退（直连成功）不上报。
+    #[tokio::test]
+    async fn proxy_fallback_reports_via_progress_line() {
+        // 直连失败 → 代理重试成功：会话激活回退。
+        let direct = Arc::new(ScriptedTransport::new(vec![Err("连接超时".to_owned())]));
+        let resolver = DohResolver::google(Arc::clone(&direct) as Arc<dyn HttpTransport>);
+        let proxy = Arc::new(ScriptedTransport::new(vec![Ok(doh_txt_response("value-1"))]));
+        let mut fallback = DohProxyFallback::with_transport(
+            "socks5://user:secret@10.0.0.1:7890",
+            Arc::clone(&proxy) as Arc<dyn HttpTransport>,
+        );
+        let mut missing = Vec::new();
+        let mut unreachable = Vec::new();
+        let mut probes = Vec::new();
+        probe_resolvers(
+            &[&resolver],
+            &record(),
+            1,
+            &mut missing,
+            &mut unreachable,
+            &mut probes,
+            Some(&mut fallback),
+        )
+        .await;
+        assert!(fallback.activated(), "回退成功应激活会话");
+
+        let mut reported = false;
+        let mut messages: Vec<String> = Vec::new();
+        report_proxy_fallback(&fallback, &mut reported, &mut |m: &str| messages.push(m.to_owned()));
+        assert_eq!(messages.len(), 1, "{messages:?}");
+        assert_eq!(messages[0], "proxy: via socks5://10.0.0.1:7890", "{messages:?}");
+        assert!(!messages[0].contains("secret"), "认证材料不得进日志: {messages:?}");
+        // 已上报后不再重复。
+        let mut messages_again: Vec<String> = Vec::new();
+        report_proxy_fallback(&fallback, &mut reported, &mut |m: &str| messages_again.push(m.to_owned()));
+        assert!(messages_again.is_empty());
+
+        // 未发生回退：不上报。
+        let mut silent = DohProxyFallback::new(Some("socks5://127.0.0.1:7890"));
+        let mut reported_silent = false;
+        let mut empty: Vec<String> = Vec::new();
+        report_proxy_fallback(&silent, &mut reported_silent, &mut |m: &str| empty.push(m.to_owned()));
+        assert!(empty.is_empty(), "直连会话不应上报: {empty:?}");
+        let _ = &mut silent;
+    }
+
+    /// 代理偏好跨段保留：`doh_single` 段回退成功缓存偏好后，`doh_full` 段
+    /// （共享同一会话状态）直接用代理传输层查询，不再重复直连探测。
+    #[tokio::test]
+    async fn proxy_preference_across_segments() {
+        let direct = Arc::new(ScriptedTransport::new(vec![Err("连接超时".to_owned())]));
+        let resolver = DohResolver::google(Arc::clone(&direct) as Arc<dyn HttpTransport>);
+        // 代理传输层始终返回未命中（Ok 空应答）。
+        let proxy = Arc::new(ScriptedTransport::new(vec![Ok(HttpResponse::new(
+            200,
+            r#"{"Status":0}"#,
+        ))]));
+        let mut fallback = DohProxyFallback::with_transport(
+            "socks5://127.0.0.1:7890",
+            Arc::clone(&proxy) as Arc<dyn HttpTransport>,
+        );
+
+        let mut missing = Vec::new();
+        let mut unreachable = Vec::new();
+        let mut probes = Vec::new();
+
+        // doh_single 段：直连失败 → 经代理重试成功（未命中）→ 缓存偏好。
+        let single = probe_resolvers(
+            &[&resolver],
+            &record(),
+            1,
+            &mut missing,
+            &mut unreachable,
+            &mut probes,
+            Some(&mut fallback),
+        )
+        .await;
+        assert!(matches!(single, ProbeOutcome::NotVisible), "{single:?}");
+        assert_eq!(direct.calls(), 1, "单家段应先直连探测一次");
+        assert_eq!(proxy.calls(), 1, "直连失败应经代理重试一次");
+        assert!(
+            fallback.prefers_proxy("dns.google"),
+            "单家段回退成功应缓存偏好"
+        );
+
+        // doh_full 段：偏好为 Proxy → 直接经代理查询，不再直连探测。
+        let full = probe_resolvers(
+            &[&resolver],
+            &record(),
+            2,
+            &mut missing,
+            &mut unreachable,
+            &mut probes,
+            Some(&mut fallback),
+        )
+        .await;
+        assert!(matches!(full, ProbeOutcome::NotVisible), "{full:?}");
+        assert_eq!(
+            direct.calls(),
+            1,
+            "整组段不应再直连探测已缓存代理偏好的端点"
+        );
+        assert_eq!(proxy.calls(), 2, "整组段应经代理传输层查询");
+    }
+
+    /// 全局代理未配置：不做回退，直连失败直接计 1 次。
+    #[tokio::test]
+    async fn no_global_proxy_means_no_fallback() {
+        let direct = Arc::new(ScriptedTransport::new(vec![Err("连接超时".to_owned())]));
+        let resolver = DohResolver::google(Arc::clone(&direct) as Arc<dyn HttpTransport>);
+        let mut fallback = DohProxyFallback::new(None);
+
+        let mut missing = Vec::new();
+        let mut unreachable = Vec::new();
+        let mut probes = Vec::new();
+        let outcome = probe_resolvers(
+            &[&resolver],
+            &record(),
+            1,
+            &mut missing,
+            &mut unreachable,
+            &mut probes,
+            Some(&mut fallback),
+        )
+        .await;
+
+        assert!(matches!(outcome, ProbeOutcome::NotVisible), "{outcome:?}");
+        assert_eq!(probes[0].failures, 1, "未配代理时直连失败只计 1 次");
+        assert_eq!(direct.calls(), 1, "没有代理可回退，不应再查一次");
+        assert!(
+            !fallback.prefers_proxy("dns.google"),
+            "未配代理不应缓存偏好"
+        );
+    }
+
+    /// 直连失败且经代理重试仍失败：直连 + 代理 = 2 次；与熔断叠加时
+    /// 两轮即达阈值，不会无限重试。
+    #[tokio::test]
+    async fn a_failed_proxy_retry_counts_twice_toward_the_breaker() {
+        let direct = Arc::new(ScriptedTransport::new(vec![Err("连接超时".to_owned())]));
+        let resolver = DohResolver::google(Arc::clone(&direct) as Arc<dyn HttpTransport>);
+        let proxy = Arc::new(ScriptedTransport::new(vec![Err("代理不可达".to_owned())]));
+        let mut fallback = DohProxyFallback::with_transport(
+            "socks5://127.0.0.1:7890",
+            Arc::clone(&proxy) as Arc<dyn HttpTransport>,
+        );
+
+        let mut missing = Vec::new();
+        let mut unreachable = Vec::new();
+        let mut probes = Vec::new();
+        let outcome = probe_resolvers(
+            &[&resolver],
+            &record(),
+            1,
+            &mut missing,
+            &mut unreachable,
+            &mut probes,
+            Some(&mut fallback),
+        )
+        .await;
+
+        assert!(matches!(outcome, ProbeOutcome::NotVisible), "{outcome:?}");
+        assert_eq!(probes[0].failures, 2, "直连失败 + 代理回退失败 = 2 次");
+        assert_eq!(direct.calls(), 1);
+        assert_eq!(proxy.calls(), 1, "回退仍失败也不缓存偏好");
+        assert!(!fallback.prefers_proxy("dns.google"));
+
+        // 累计两轮即达阈值（2 + 2 = 4 ≥ 3）。
+        let mut breaker = CircuitBreaker::default();
+        assert!(
+            breaker.update(&probes).is_empty(),
+            "第一轮 2 次未达阈值"
+        );
+        let newly = breaker.update(&probes);
+        assert_eq!(
+            newly,
+            vec!["dns.google".to_owned()],
+            "累计 4 次应剔除，计数跳过 3 也不漏"
+        );
     }
 }

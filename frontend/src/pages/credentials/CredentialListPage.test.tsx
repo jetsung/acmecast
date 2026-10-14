@@ -11,8 +11,22 @@ const CLOUDFLARE_TYPE = {
   display_name: "Cloudflare",
   schema: {
     type: "object",
+    // 从运行中的 8080 抓取的真实注入形态：schemars 对 Option<String> 不产
+    // enum 数组，enum 与 x-enum-labels/x-visible-when 均由后端手动注入。
+    "x-field-order": ["api_token", "proxy_mode", "proxy_url"],
     properties: {
       api_token: { type: "string", description: "API Token" },
+      proxy_mode: {
+        type: "string",
+        description: "出网代理模式。",
+        enum: ["direct", "inherit", "custom"],
+        "x-enum-labels": { direct: "直连", inherit: "继承全局", custom: "自定义" },
+      },
+      proxy_url: {
+        type: "string",
+        description: "自定义出网代理。",
+        "x-visible-when": { Equals: { field: "proxy_mode", values: ["custom"] } },
+      },
     },
     required: ["api_token"],
   },
@@ -279,6 +293,41 @@ describe("凭据编辑弹窗", () => {
       expect(
         document.querySelector("#fields_directory_url[aria-required='true']"),
       ).toBeNull();
+    });
+  });
+
+  it("Cloudflare：proxy_mode 渲染为中文下拉，custom 时才显示 proxy_url", async () => {
+    await openEditorForRow(0);
+
+    // proxy_mode 是枚举下拉（存量记录未选模式时回填为空）。
+    const modeInput = await waitFor(() => {
+      const el = document.querySelector<HTMLInputElement>("#fields_proxy_mode");
+      expect(el?.getAttribute("role")).toBe("combobox");
+      return el!;
+    });
+
+    // 打开下拉：三个候选项展示后端注入的中文标签。
+    fireEvent.mouseDown(modeInput);
+    const dropdown = document.querySelector(
+      ".ant-select-dropdown:not(.ant-select-dropdown-hidden)",
+    )!;
+    const optionTitles = [
+      ...dropdown.querySelectorAll(".ant-select-item-option-content"),
+    ].map((el) => el.textContent);
+    for (const label of ["直连", "继承全局", "自定义"]) {
+      expect(optionTitles).toContain(label);
+    }
+
+    // proxy_mode=custom 之前 proxy_url 隐藏（x-visible-when 联动）。
+    expect(document.querySelector("#fields_proxy_url")).toBeNull();
+
+    // 选中「自定义」（候选项 title 为中文 label）：proxy_url 输入框出现。
+    const customOption = [
+      ...dropdown.querySelectorAll(".ant-select-item-option"),
+    ].find((el) => el.textContent === "自定义");
+    fireEvent.click(customOption!);
+    await waitFor(() => {
+      expect(document.querySelector("#fields_proxy_url")).toBeTruthy();
     });
   });
 

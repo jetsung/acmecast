@@ -183,6 +183,12 @@ async fn s3_put(fields: &serde_json::Value, bucket: &str, key: &str, content: &s
     if !endpoint.is_empty() {
         builder = builder.endpoint_url(endpoint).force_path_style(true);
     }
+    // 出网代理：仅 custom 自带 URL 生效（deploy 链路无全局代理来源）。
+    if let Some(proxy) = acmecast_access::credential::s3_http::s3_http_client(
+        acmecast_core::effective_proxy_url(fields, None).as_deref(),
+    ) {
+        builder = builder.http_client(proxy);
+    }
     let config = builder.build();
     let client = Client::from_conf(config);
     let body = SdkBody::from(content.to_owned());

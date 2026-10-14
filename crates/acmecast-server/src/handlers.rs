@@ -461,12 +461,8 @@ async fn revoke_certificate(
                 ),
             )
         })?;
-    let transport = acmecast_acme::ProxyConfig {
-        accept_invalid_certs: state.app.config.accept_invalid_acme_certs,
-        http: None,
-        https: None,
-        socks5: None,
-    };
+    let mut transport = AcmeAccountType::acme_proxy_config(&fields, state.app.config.proxy_url.as_deref());
+    transport.accept_invalid_certs = state.app.config.accept_invalid_acme_certs;
     let service = AcmeService::from_credentials(&account, Some(&transport))
         .await
         .map_err(|e| ApiError::from(acmecast_core::Error::External(e.to_string())))?;
@@ -2607,36 +2603,41 @@ impl From<acmecast_store::entity::credential::Model> for CredentialResponse {
 }
 
 /// 构造默认凭据注册表，供没有自定义装配的服务使用。
+///
+/// `proxy_url` 是全局出网代理（`[proxy] url` / `ACMECAST_PROXY_URL`）：
+/// 注入 DNS 提供商凭据类型，供 `proxy_mode=inherit` 的凭据在连通性
+/// 测试里继承——与正式挑战调用走同一份全局代理（spec：连通性测试
+/// MUST 走与正式调用相同的 transport）。留空即直连。
 #[must_use]
-pub(crate) fn default_credential_registry() -> Arc<CredentialRegistry> {
+pub(crate) fn default_credential_registry(proxy_url: Option<&str>) -> Arc<CredentialRegistry> {
     let mut registry = CredentialRegistry::new();
     registry
-        .register(AcmeAccountType::new())
+        .register(AcmeAccountType::new().with_global_proxy(proxy_url))
         .expect("默认 ACME 凭据类型不应重复注册");
     // DNS 提供商凭据：cert.apply 的 DNS-01 需要按类型创建它们，注册后
     // 前端凭据页与流水线的 dns_credential_id 下拉才有来源。
     registry
-        .register(CloudflareCredentialType::default())
+        .register(CloudflareCredentialType::default().with_global_proxy(proxy_url))
         .expect("内置 Cloudflare 凭据类型不应重复注册");
     registry
-        .register(AliyunCredentialType::default())
+        .register(AliyunCredentialType::default().with_global_proxy(proxy_url))
         .expect("内置阿里云凭据类型不应重复注册");
     registry
-        .register(TencentCredentialType::default())
+        .register(TencentCredentialType::default().with_global_proxy(proxy_url))
         .expect("内置腾讯云凭据类型不应重复注册");
     registry
-        .register(TencentEoCredentialType::default())
+        .register(TencentEoCredentialType::default().with_global_proxy(proxy_url))
         .expect("内置腾讯云 EdgeOne 凭据类型不应重复注册");
     // SSH 主机档案：cert.deploy 的 SSH 配置引用它，注册后凭据页才能
     // 创建/测试档案，部署配置也才能从「每次手抄」变成「选一份档案」。
     registry
-        .register(SshHostCredentialType)
+        .register(SshHostCredentialType::default().with_global_proxy(proxy_url))
         .expect("内置 SSH 主机凭据类型不应重复注册");
     registry
-        .register(acmecast_access::S3CredentialType)
+        .register(acmecast_access::S3CredentialType::default().with_global_proxy(proxy_url))
         .expect("内置 S3 凭据类型不应重复注册");
     registry
-        .register(acmecast_access::WebdavCredentialType)
+        .register(acmecast_access::WebdavCredentialType::default().with_global_proxy(proxy_url))
         .expect("内置 WebDAV 凭据类型不应重复注册");
     Arc::new(registry)
 }

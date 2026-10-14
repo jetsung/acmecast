@@ -251,6 +251,8 @@ export function HistoryDetailPage() {
           type="error"
           showIcon
           message="失败原因"
+          // 步骤错误（如 cert.apply 跳过注入失败）由后端产出领域文案：
+          // 含证书标识、已尝试路径与可操作指引，不含裸 OS 错误，前端原样展示即可。
           description={history.error_message}
           style={{ marginBottom: 24 }}
         />

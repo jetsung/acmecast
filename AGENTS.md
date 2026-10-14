@@ -131,6 +131,13 @@ secret_id (1/2 列)  secret_key (1/2 列)
    脱敏,探测动作是提供商的固有方法(`verify_credentials`,不进 `DnsProvider` trait);
    用轻量身份接口(Cloudflare `/user/tokens/verify`、各家 STS `GetCallerIdentity`),
    不要求业务权限;错误先过 `redact` 再呈现。
+8. **凭据级出网代理的作用域**:DNS 提供商凭据的可选 `proxy_url` 字段**仅作用于
+   持有该凭据的提供商 API 调用**(DNS 挑战 + 凭据页连通性测试),ACME 申请、
+   通知渠道、部署目标不覆盖——表单描述与用户文档(docs/04-credentials.md)均已写明,
+   后续给其他出网路径加代理时应另立项,不要复用该字段。
+   校验口径单一来源:`acmecast_dns::validate_proxy_url`(保存校验与
+   `ReqwestTransport::with_proxy` 共用);传输层选择入口:各提供商 `http_for`
+   (`transport_for_credentials`,带代理现建、空/缺失沿用注入层,测试替身不受影响)。
 
 ## 验证路径
 

@@ -1,6 +1,6 @@
 # AcmeCast 项目规范（SPEC）
 
-本文件为全局规范，涵盖 ACME 账号、DNS 校验与证书生命周期等产品行为，`docs/SPEC.md` 为唯一真实来源。下文首节为 DNS Zone 推导，其余为内建 CA 等全局约定。
+本文件为全局规范，涵盖 ACME 账号、DNS 校验与证书生命周期、凭据出网代理与全局代理配置、运行历史可观测性等产品行为，`docs/SPEC.md` 为唯一真实来源。下文首节为 DNS Zone 推导，其余为内建 CA、凭据代理、日志规范等全局约定。
 
 ## DNS Zone 自动推导
 
@@ -147,6 +147,52 @@ SSE 实时推送与终态持久化遵循双轨：
 - `crates/acmecast-server/src/steps/apply.rs: complete_challenge` — 提供整组 `ext_refs`（provider 优先）给 phased 的 hit/doh_full 阶段
 - `crates/acmecast-server/src/run.rs: execute_run` — `compact_propagation_miss_logs` 切入点（落库前压缩）
 - `crates/acmecast-pipeline/src/runner.rs` — `mpsc → EventSink::emit(Log)` 增量分流（SSE 全量）
+## DoH 解析器熔断剔除与代理自动回退
+
+传播等待的 DoH 解析器集合在单次运行内支持连续网络失败熔断剔除，避免对确定不可达端点（如国内不可达的 `cloudflare-dns.com` / `dns.google`）的无效轮询（`#154` 实测每轮每端点 `LOOKUP_TIMEOUT=5s` 超时）。熔断仅裁剪本轮 DoH 查询子集，不改变"任一家可见即就绪"与四段等分超时语义。同时，DoH 解析器无凭据关联，无法通过凭据 `proxy_mode` 配置代理；当全局 `ACMECAST_PROXY_URL` 已配且 DoH 直连网络失败时，MUST 自动经代理回退重试，使国内不可达的 DoH 端点也能经代理完成传播确认。
+
+### DoH 代理自动回退
+
+- DoH 解析器的传输层初始为直连（`ReqwestTransport::new()`），不因全局 `ACMECAST_PROXY_URL` 已配而默认走代理——避免代理不可用导致全部 DoH 端点首轮即失败。
+- DoH 端点直连查询发生"网络不可用"失败（见下节失败分类）且全局 `ACMECAST_PROXY_URL` 已配置时，MUST 自动用 `ReqwestTransport::with_proxy(global_proxy_url)` 构建代理传输层并重试该端点查询一次：
+  - 重试成功（命中期望 TXT 或未命中 `Ok(_)`）→ 该端点视为可达，结果参与传播判定，并缓存该端点"需经代理"的传输偏好，后续轮次与后续阶段（`doh_single`/`doh_full`）直接用代理传输层查询，不再每轮重复直连探测。
+  - 重试仍网络失败 → 计入该端点的连续失败计数（即直连失败 + 代理回退失败 = 2 次连续失败，下一轮再失败即第 3 次触发熔断剔除）。
+  - 全局 `ACMECAST_PROXY_URL` 未配置 → 不做代理回退，直连失败直接计次。
+- 传输偏好缓存（`HashMap<endpoint, ProxyPreference>`：`Direct` / `Proxy`）仅本轮传播会话内有效，下次运行 MUST 重置；`doh_single → doh_full` 切段时跨段保留。
+- 代理回退仅影响 DoH 解析器，MUST NOT 改变权威 NS 直查与 `all_dns` 阶段的传输层；MUST NOT 改变凭据出网行为（凭据按自身 `proxy_mode` 独立构建传输层）。
+
+### 触发与计数
+
+- 同一 DoH 端点连续 3 次"网络不可用"失败 MUST 从本轮 `active_resolvers` 剔除，后续轮次不再查询该端点，仅查询剩余 `active`；阈值 3 写死，不做配置项。
+- 每端点独立维护连续失败计数（`HashMap<endpoint, u8>`）与 `active: Vec<&dyn DnsResolver>` 子集，维护落在 `crates/acmecast-dns/src/propagation.rs` 的等待循环内（`wait_until_visible` 与 `wait_until_visible_phased` 的 `doh` 段），不下沉至 `HttpTransport` / `ReqwestTransport` 层；`probe_resolvers` 返回后按端点更新，`doh_single → doh_full` 切段时剔除状态跨段保留；Key 取端点归一化 endpoint 字符串，与 `resolvers.rs` 去重键一致。
+- 成功（命中期望 TXT）或"未命中" MUST 清零该端点的连续失败计数，下一次网络失败重新从 1 开始计数，避免"2 次失败 + 1 次未命中"被误剔除。
+- 熔断仅本轮传播会话内有效，下次流水线运行 MUST 重置，所有端点重新参与查询。
+
+### 失败分类
+
+- MUST 将连接超时（含 `LOOKUP_TIMEOUT=5s` 的 `tokio::time::timeout` 超时，已包装为 `Error::provider("…超时…")`）、连接拒绝、TLS 握手失败、代理不可达（全局 `ACMECAST_PROXY_URL` 指向的代理连不上）、DoH 端点域名解析失败等传输层 `Err` 归为"网络不可用"并计数；`reqwest::Error::is_connect` / `is_timeout` 与代理连接失败同口径，与凭据级代理的错误分类一致。
+- MUST 将 HTTP 200 但无期望 TXT（含 `Ok([])` 空集或 `Ok(非期望值)`）视为"未命中"，MUST NOT 计入熔断、计数清零；`Ok` 一律不剔除可达端点。
+- 代理回退重试的结果同样按上述分类：重试 `Ok` → 清零计数 + 缓存代理偏好；重试 `Err(网络不可用)` → 计入连续失败。
+
+### 剔除与降级
+
+- 计数达到 3 时 MUST `retain` 剔除并记 `warn`，含端点标识与连续失败次数。
+- `active` 被剔空（全部 DoH 均被熔断）时 MUST 记 `warn "DoH全部不可用，跳过DoH验证"` 并跳过 DoH 阶段等待，不再轮询 DoH，直接按既有超时策略进入下一阶段或返回，避免卡死。
+- 传播成功/超时的终态日志 MUST 附带剔除列表以便排障；`on_progress` / 日志中可观测到剔除端点。
+
+### 作用域
+
+- 仅影响 DoH 解析器：`wait_until_visible` 的 `resolvers` 全量 DoH 与 `wait_until_visible_phased` 的 `doh` 段；权威 NS 直查与 `all_dns` 阶段 MUST 保持全量探测，不受熔断裁剪、不受代理回退影响。
+- `ACMECAST_DOH_RESOLVERS=none` 或解析器集合为空（短路成功）时本机制不生效。
+- `probe_resolvers` 串行遍历 `active` 子集，剔除后遍历变短，无并发竞态；日志除剔除 `warn` 与终态列表外不额外刷屏。
+
+### 实现索引
+
+- `crates/acmecast-dns/src/propagation.rs: wait_until_visible` — DoH 全量熔断（计数/`active`/`probe_resolvers` 后更新/剔空降级）+ 代理回退（直连失败 → 读全局 `ACMECAST_PROXY_URL` → `with_proxy` 重试 → 缓存偏好）
+- `crates/acmecast-dns/src/propagation.rs: wait_until_visible_phased` — 仅 `doh` 段熔断与代理回退，跨 `doh_single`/`doh_full` 保留状态与偏好
+- `crates/acmecast-dns/src/propagation.rs: probe_resolvers` — 返回 `Ok`/`Err` 供分类（`Ok` 清零，`Err(网络不可用)` 计次/触发回退）
+- `crates/acmecast-dns/src/resolvers.rs: doh_transport_from / doh_transport` — DoH 传输层构建（初始直连，代理回退时按全局 `ACMECAST_PROXY_URL` 构建）
+
 
 ## 内建 ACME CA（凭据 `acme.account` 的 `ca`）
 
@@ -328,6 +374,122 @@ SSE 实时推送与终态持久化遵循双轨：
 - `crates/acmecast-access/src/credential/s3.rs: s3_fields_schema` — 注入 `x-field-order: ["access_key","secret_key","endpoint","bucket","region","prefix","session_token"]`
 - `crates/acmecast-server/src/credentials.rs: tencent_credentials_schema` — 参考既有注入模式
 - `frontend/src/components/SchemaForm.tsx: orderedEntries` — `x-field-order` 定序渲染
+
+## 凭据出网代理与全局代理配置
+
+**全部凭据类型**（`cloud.tencent` / `dns.tencent-eo` / `cloud.cloudflare` / `cloud.aliyun` / `deploy.ssh` / `deploy.s3` / `deploy.webdav` / `acme.account`）支持凭据级代理模式（`proxy_mode` 下拉 + `proxy_url` 条件输入），全局代理经 `config.toml` 的 `[proxy]` 段或环境变量 `ACMECAST_PROXY_URL` 设一次，供凭据 `inherit` 继承与 DoH 代理回退共用。存量凭据缺字段视为 `direct`（直连），无需数据库迁移。
+
+### 全局代理（`ACMECAST_PROXY_URL` / `[proxy]` 段）
+
+- 全局代理 URL 支持三种配置方式，合并优先级与项目一致为 **`builtin < config.toml < env`**：
+
+| 优先级 | 来源 | 键 | 说明 |
+|---|---|---|---|
+| 1（内置） | — | — | 未配置时直连 |
+| 2（文件） | `config.toml` | `[proxy]` 段 `url` | 可选 `String`，留空 / 缺段即直连 |
+| 3（env） | 环境变量 | `ACMECAST_PROXY_URL` | 覆盖文件值 |
+
+- `config.toml` 新增 `[proxy]` 段（`deny_unknown_fields`）：
+
++```toml
++[proxy]
++# 全局出网代理：凭据 proxy_mode=inherit 继承此值，DoH 解析器代理回退也读此值。
++# 支持 socks5://、http://、https://；留空或省略此段即直连。
++# 环境变量 ACMECAST_PROXY_URL 可覆盖此值。
++url = "socks5://127.0.0.1:7890"
++```
+
+- `ServerConfig` 新增 `proxy_url: Option<String>` 字段，`apply_file` 从 `[proxy]` 段读取、`apply_env` 从 `ACMECAST_PROXY_URL` 覆盖，传递给 `doh_transport()` 与 `transport_for_credentials` 的 `inherit` 分支。
+- 取值 MUST 经 `validate_proxy_url` 校验（仅 `socks5://` / `http://` / `https://` + 可解析）；env 非法值在启动时被拒绝并提示支持的 scheme，文件非法值在 `apply_file` 校验时拒绝启动；未配置 / 空串 / 仅空白 MUST 维持直连（现状行为）。
+- 合并废弃 `ACMECAST_DOH_PROXY_URL`：原 DoH 专用代理环境变量不再独立存在，DoH 与凭据共用同一全局代理（`[proxy] url` / `ACMECAST_PROXY_URL`）。
+- 标准 `HTTPS_PROXY` 等环境变量 MUST NOT 被隐式读取而波及未配代理的凭据（凭据级 `proxy_mode=direct` 保持显式直连）。
+
+### 凭据级代理模式（`proxy_mode` + `proxy_url`）
+
+- **全部凭据类型**（`cloud.cloudflare` / `cloud.aliyun` / `cloud.tencent` / `dns.tencent-eo` / `deploy.ssh` / `deploy.s3` / `deploy.webdav` / `acme.account`）暴露 `proxy_mode` 与 `proxy_url` 字段。
+- `proxy_mode` 三态语义：
+
+| `proxy_mode` | `proxy_url` | 行为 |
+|---|---|---|
+| `direct`（默认） | 隐藏 | 直连，不继承全局代理 |
+| `inherit` | 隐藏 | 继承全局 `ACMECAST_PROXY_URL`（未配则直连） |
+| `custom` | 显示输入框 | 走该 URL，覆盖全局代理 |
+
+- `custom` 时 MUST 校验 scheme ∈ `{socks5, http, https}` 且整体可解析；其他 scheme（如 `ftp://`）或无法解析的值（如 `not-a-url`）MUST 在凭据保存时被拒绝，错误定位到 `proxy_url` 字段并提示支持的三种 scheme。
+- 校验口径单一来源：`validate_proxy_url`（凭据保存校验与带代理客户端构建共用）。
+- 前端渲染标注统一由 `inject_proxy_field_annotations(&mut RootSchema)` 注入（全部凭据类型共用，不会出现"实现改了、标注丢了"漂移）：
+  - `proxy_mode`：`enum_values: ["direct","inherit","custom"]` + `x-enum-labels: {direct:"直连", inherit:"继承全局", custom:"自定义"}`。schemars 对 `Option<String>` 不产 `enum` 数组，MUST 手动注入 `enum_values`，否则前端 `SchemaForm` 的 `node.enum.length > 0` 分支不命中、退化为普通文本输入框。
+  - `proxy_url`：`x-visible-when: Equals(field=proxy_mode, value=custom)` 联动显隐。
+  - `proxy_mode` 前一个字段（由顶层 `x-field-order` 确定）：`x-end-row: true`——使其半宽行尾补空占位列，`proxy_mode` 从新行首列开始，与 `proxy_url` 自然成对同行（左下拉、右输入框；`custom` 时右侧显示输入框，其他模式右侧空位）。
+- 凭据 schema 的展示字段顺序 MUST 经顶层 `x-field-order` 钉住，代理模式与 URL 置于既有凭据字段之后，前端由 schema 驱动自动渲染，不新增渲染器分支：
+
+| 凭据类型 | `x-field-order` 末尾追加 |
+|---|---|
+| `cloud.tencent` / `dns.tencent-eo` | `["account_site","secret_id","secret_key","proxy_mode","proxy_url"]` |
+| `cloud.cloudflare` | `["api_token","proxy_mode","proxy_url"]` |
+| `cloud.aliyun` | `["access_key_id","access_key_secret","proxy_mode","proxy_url"]` |
+| `deploy.ssh` | `[…既有字段…,"proxy_mode","proxy_url"]` |
+| `deploy.s3` | `["access_key","secret_key","endpoint","bucket","region","prefix","session_token","proxy_mode","proxy_url"]` |
+| `deploy.webdav` | `[…既有字段…,"proxy_mode","proxy_url"]` |
+| `acme.account` | `[…既有字段…,"proxy_mode","proxy_url"]` |
+
+- 存量凭据兼容：旧 `proxy_url` 有值 → 视为 `proxy_mode=custom` + 该值；无值 / 缺字段 → `proxy_mode=direct`（直连）。无数据库迁移。
+
+### 出网路径与连通性测试
+
+- 各凭据类型的出网按 `proxy_mode` 选传输层（`direct` 直连 / `inherit` 读 `ServerConfig.proxy_url` / `custom` 读凭据 `proxy_url`）：
+
+| 凭据类型 | 出网路径 | 代理接入方式 |
+|---|---|---|
+| DNS 4 类 | DNS-01 挑战查询/创建/删除 + 连通性测试 | `ReqwestTransport::with_proxy`（`reqwest::Proxy::all`，socks5/http/https） |
+| `deploy.webdav` | MKCOL/PUT 探测与部署上传 | reqwest `Proxy::all` |
+| `deploy.s3` | `PutObject`/`DeleteObject` 探测与部署上传 | `aws_smithy_http_client::proxy::ProxyConfig`（http/https；socks5 用 reqwest 包装自定义 `HttpClient`） |
+| `acme.account` | ACME 目录/下单/校验 | `acmecast_acme::ProxyConfig`（socks5/http/https） |
+| `deploy.ssh` | SSH 连接与主机探测 | SOCKS5/HTTP-CONNECT 隧道 + `russh::client::connect_stream` |
+
+- 配置了代理（`inherit` 全局非空 或 `custom`）的凭据，其对应出网 MUST 经该代理发送；代理连接失败 MUST 以可读错误呈现（HTTP 类为 `provider_api_error`，SSH 类为连接错误）且含代理主机以便排障，含凭据的代理 URL 在日志与错误呈现前经 `redact` 脱敏（`socks5://user:pass@host:port` 不明文外泄）。
+- 各类型的连通性测试（`CredentialType::test_connectivity`）MUST 走与正式调用相同的（按 `proxy_mode` 构建的）代理；错误同样经 `redact` 脱敏后呈现。
+- 代理仅作用于**持有该凭据的调用**，MUST NOT 改变其他凭据或通知渠道的出网路径；测试替身 `with_transport` 不受影响。
+- `ReqwestTransport::with_proxy(proxy_url)` 内部以 `reqwest::Proxy::all(url)` 构建（`socks` feature 已启用），`new()`/`default()` 保持直连语义不变。
+
+### 实现索引
+
+- `crates/acmecast-core/src/proxy.rs: validate_proxy_url / ProxyMode / proxy_url_from_credentials / inject_proxy_field_annotations` — 代理工具下沉共享（`acmecast-access` 不依赖 `acmecast-dns`）；`acmecast-dns` 保留 re-export
+- `crates/acmecast-dns/src/http.rs: ReqwestTransport::with_proxy / new / default` — 直连与带代理 Client 构建
+- `crates/acmecast-dns/src/http.rs: transport_for_credentials` — 按 `proxy_mode` 选传输层
+- `crates/acmecast-server/src/config.rs: ServerConfig.proxy_url / ProxySection / apply_file / apply_env / template_content` — 全局代理字段、`[proxy]` 段反序列化与模板
+- `crates/acmecast-dns/src/providers/{cloudflare,tencent,aliyun,tencent_eo}.rs: http_for` — DNS 提供商凭据代理接线（`global_proxy_url` 成员 + `with_global_proxy`）
+- `crates/acmecast-access/src/credential/{s3,webdav,acme_account}.rs: {s3,webdav}_fields_schema / fields_schema` — 非 DNS 凭据 schema 注入代理字段
+- `crates/acmecast-deploy/src/ssh_host.rs: ssh_host_fields_schema` — SSH 主机档案 schema 注入代理字段
+- `crates/acmecast-deploy/src/targets/{s3,webdav,ssh}.rs` — 部署上传/连接经代理
+- `crates/acmecast-server/src/credentials.rs: validate_proxy_url_field` — 凭据保存校验（`proxy_mode=custom` 时校验 `proxy_url`，全类型）
+- `crates/acmecast-server/src/handlers.rs` — 各凭据类型注册处 `with_global_proxy`
+- `crates/acmecast-server/src/steps/apply.rs: complete_challenge` — `doh_transport_from(proxy_url)` 注入传播等待的解析器传输层；写 `proxy: via` 日志行
+- `crates/acmecast-server/src/steps/deploy.rs: format_deploy_targets` — `deploy targets:` 日志行（`id`/`type`/`name`/`remark`，缺省 `—`）
+- `crates/acmecast-server/src/run.rs: compact_proxy_logs` — `proxy: ` 行落库前仅保留最后一条
+- `docs/04-credentials.md: 凭据的出网代理` / `docs/03-configuration.md: 全局代理` — 用户文档
+
+## 运行历史代理与部署目标日志
+
+运行历史需明示"本步骤是否走了代理"与"部署到哪些目标"，各以**独立一行** `info` 日志呈现，便于视觉判断；均经 `redact` 脱敏，不落凭据明文。
+
+### 代理使用日志（`proxy: ` 行）
+
+- `cert.apply`（DNS 挑战）或 `cert.deploy`（部署目标出网）所用凭据的代理分支真实触发出网时（`proxy_mode=inherit` 且全局代理非空、或 `proxy_mode=custom` 且 `proxy_url` 合法），以及 DoH 解析器代理回退成功时，运行历史对应步骤 MUST 新增一行 `info` `proxy: via <host>` 日志，紧随命中 DNS / 平台信息行之后。
+- 直连（`proxy_mode=direct`，或 `inherit` 但全局代理为空）时 MUST NOT 新增该行。
+- 该行 MUST 与实际出网一致：`cert.deploy` 中未接入代理的目标类型（如 `local`）MUST NOT 打该行；接入代理的目标类型在代理真实触发时打行、直连时不打。
+- 该行沿用"传播等待双轨"精简策略：SSE 实时流保持全量，落库前按 `message` 前缀 `proxy: ` 仅保留最后一条（`rposition` + `retain`）；空 / 单条 / 无代理时 no-op。
+
+### 部署目标信息日志（`deploy targets: ` 行）
+
+- `cert.deploy` 步骤进入执行时 MUST 另起一行 `info` `deploy targets: ` 日志，展示本次部署的目标信息：按目标罗列 `id` / `type` / `name` / `remark`（取自 `CredentialResponse` 的 `name` / `remark` 与部署目标注册表项，经 `redact` 脱敏）。
+- 该行仅记录本次步骤实际入库并即将执行的目标（非预览页全量清单）；多目标以 `；` 分隔，名称 / 备注缺省时记 `—`；写在"已部署到目标"平台行之前，不参与精简。
+
+### 实现索引
+
+- `crates/acmecast-server/src/steps/apply.rs` / `crates/acmecast-server/src/steps/deploy.rs` — `proxy: via <host>` 行（经 `acmecast_core::proxy_log_target` 脱敏）
+- `crates/acmecast-server/src/steps/deploy.rs: format_deploy_targets` — `deploy targets:` 行（`id`/`type`/`name`/`remark`，缺省 `—`）
+- `crates/acmecast-server/src/run.rs: compact_proxy_logs` — `proxy: ` 行落库前仅保留最后一条
 
 ## 部署平台化日志（`cert.deploy`）
 

@@ -24,6 +24,7 @@ acmecast-server 的配置合并优先级为 **内置默认 < config.toml < 环�
 | 关闭鉴权 | `server.auth_disabled` | `ACMECAST_AUTH_DISABLED` | `false` | `1/true/yes`（大小写不敏感）为真；仅限本地单机 |
 | 请求体上限 | `server.body_limit_bytes` | `ACMECAST_BODY_LIMIT_BYTES` | `2097152`（2 MiB） | 超出返回 413 `payload_too_large`；env 须 > 0 |
 | 跳过 CA 证书校验 | `server.accept_invalid_acme_certs` | `ACMECAST_INSECURE_SKIP_VERIFY` | `false` | 仅供自建测试 CA（pebble 等）使用 |
+| 全局出网代理 | `proxy.url` | `ACMECAST_PROXY_URL` | 未设置（直连） | 凭据 `proxy_mode=inherit` 与 DoH 回退共用，见下文「全局代理」 |
 
 ## 安全相关环境变量（仅环境变量，不入 config.toml）
 
@@ -76,6 +77,54 @@ name = "腾讯 DNSPod（IP 直连）"    # 同上，IP 直连避免 SNI 劫持�
 `ACMECAST_DOH_RESOLVERS="腾讯 DoH=https://doh.pub/dns-query,https://1.12.12.12/dns-query"`）；
 设为 `none` 表示跳过传播等待（不推荐）。合并顺序：内置 → config 条目 →
 环境变量，按归一化端点去重。详见[DNS 提供商与传播检查](06-dns-providers.md)。
+
+### 全局代理
+
+`[proxy]` 段配置全局出网代理。DNS 提供商凭据（`proxy_mode=inherit`）与传播检查的
+DoH 解析器共用同一份取值——改一次即全局生效，不必逐凭据重复填写：
+
+```toml
+[proxy]
+url = "socks5://127.0.0.1:7890"   # 也支持 http:// 与 https://；留空或本段缺省即直连
+```
+
+也可用环境变量 `ACMECAST_PROXY_URL` 覆盖文件值（原 DoH 专用的
+`ACMECAST_DOH_PROXY_URL` 已废弃合并到此，DoH 与凭据不再各配一遍）：
+
+```bash
+# .env 或部署环境
+ACMECAST_PROXY_URL=socks5://127.0.0.1:7890
+```
+
+合并优先级与其它配置一致：
+
+| 优先级 | 来源 | 说明 |
+|---|---|---|
+| 1（最低） | 内置默认 | 直连，不给任何渠道注入代理 |
+| 2 | `config.toml` 的 `[proxy] url` | 非空覆盖内置 |
+| 3（最高） | 环境变量 `ACMECAST_PROXY_URL` | 非空覆盖文件值 |
+
+取值校验口径与凭据级代理一致：仅 `socks5://` / `http://` / `https://` 且可解析，
+非法值在**启动时**被拒绝并提示支持的 scheme；未配置、空串或仅空白均维持直连，
+也不会隐式读取 `HTTPS_PROXY` 等标准环境变量。
+
+两个消费者：
+
+- **凭据出网（`proxy_mode=inherit`）**：所有带代理字段的凭据类型——DNS 提供商
+  （`cloud.tencent` / `dns.tencent-eo` / `cloud.cloudflare` / `cloud.aliyun`）、
+  ACME 账号（`acme.account`）与 SSH 主机 / S3 / WebDAV 档案（`deploy.ssh` /
+  `deploy.s3` / `deploy.webdav`）。继承生效的链路随类型不同：DNS 提供商 API
+  调用与 ACME 申请/探测在运行链路上继承全局代理；SSH / S3 / WebDAV 仅凭据页
+  连通性测试继承——部署执行链路没有全局代理来源，`inherit` 等同直连，只有
+  凭据自带 `custom` URL 时部署出网才经代理。`direct` 不继承、`custom` 走
+  凭据自己的 `proxy_url`，逐凭据可控，见[凭据体系](04-credentials.md)；
+- **传播检查的 DoH 解析器**：DoH 端点（如 `cloudflare-dns.com`）所在网络不可直连时，
+  传输层初始直连，直连查询失败后自动经该代理重试一次；重试成功则缓存「需经代理」
+  偏好，后续轮次直接用代理传输层，不再每轮重复直连探测。未配置代理时不做回退，
+  直连失败按既有熔断策略计次。
+
+`proxy_mode=direct` 的凭据在任何链路都保持直连；通知渠道不接代理；部署执行
+链路（`cert.deploy`）没有全局代理来源，其中 `inherit` 凭据等同直连。
 
 ## webhook 通知
 

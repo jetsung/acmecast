@@ -31,6 +31,8 @@
 | `directory_url` | 条件 | `ca=custom` 时必填；在内置 CA 上填写会**覆盖内置端点**（可走自建反代） |
 | `eab_kid` / `eab_hmac_key` | 条件 | `zerossl`/`google`/`google-test`/`freessl` 在 `credentials` 为空时必填且必须成对；已有有效 `credentials` 时由其复用，EAB 不再必填。`hmac_key` 为 base64url（兼容标准 base64） |
 | `credentials` | 否 | ACME 账号凭据 JSON（KID、账号私钥、目录端点）。**不要手填**：首次使用时自动注册并写回；有值时后续签发复用，不再使用 EAB 重新注册 |
+| `proxy_mode` | `direct` | 出网代理模式：`direct` / `inherit` / `custom`（见下文「出网代理」） |
+| `proxy_url` | 空 | `proxy_mode=custom` 时的自定义代理（见下文「出网代理」） |
 
 内置 CA 端点：
 
@@ -62,6 +64,8 @@ CA 账号，不会重复注册（也避免撞上 CA 的账号配额）。
 | `secret_id` | — | 必填，API 密钥 ID |
 | `secret_key` | — | 必填，API 密钥 Key（TC3 签名派生密钥来源） |
 | `account_site` | `cn` | 账号站点：`cn`（国内站）/ `intl`（国际站）；决定请求端点 |
+| `proxy_mode` | `direct` | 出网代理模式：`direct` / `inherit` / `custom`（见下文「出网代理」） |
+| `proxy_url` | 空 | `proxy_mode=custom` 时的自定义代理（见下文「出网代理」） |
 
 `account_site` 选错站点的表现是执行期的 `AuthFailure.*`——同一对密钥只能
 登录其中一边。SSL 证书 API 国内版与国际版同构（Action 与参数一致）。
@@ -78,12 +82,16 @@ EdgeOne（TEO）DNS 提供商凭据。字段与 `cloud.tencent` 完全一致（�
 | `secret_id` | — | 必填，API 密钥 ID |
 | `secret_key` | — | 必填，API 密钥 Key |
 | `account_site` | `cn` | 账号站点：`cn` / `intl` |
+| `proxy_mode` | `direct` | 出网代理模式：`direct` / `inherit` / `custom`（见下文「出网代理」） |
+| `proxy_url` | 空 | `proxy_mode=custom` 时的自定义代理（见下文「出网代理」） |
 
 ### `cloud.cloudflare` — Cloudflare DNS
 
 | 字段 | 说明 |
 |---|---|
 | `api_token` | API Token，需目标域名的 DNS 编辑权限 |
+| `proxy_mode` | 出网代理模式：`direct` / `inherit` / `custom`（见下文「出网代理」） |
+| `proxy_url` | `proxy_mode=custom` 时的自定义代理（见下文「出网代理」） |
 
 ### `cloud.aliyun` — 阿里云 DNS
 
@@ -91,6 +99,43 @@ EdgeOne（TEO）DNS 提供商凭据。字段与 `cloud.tencent` 完全一致（�
 |---|---|
 | `access_key_id` | AccessKey ID |
 | `access_key_secret` | AccessKey Secret |
+| `proxy_mode` | 出网代理模式：`direct` / `inherit` / `custom`（见下文「出网代理」） |
+| `proxy_url` | `proxy_mode=custom` 时的自定义代理（见下文「出网代理」） |
+
+### 出网代理（`proxy_mode`）
+
+八类凭据（DNS 提供商四类 `cloud.tencent` / `dns.tencent-eo` / `cloud.cloudflare` /
+`cloud.aliyun`、ACME 账号 `acme.account`、部署档案 `deploy.ssh` / `deploy.s3` /
+`deploy.webdav`）都用 `proxy_mode` 三态控制出网代理，用于提供商 API 不可直连的
+网络环境（如国内访问 `api.cloudflare.com` 超时）。模式语义：
+
+| `proxy_mode` | 行为 |
+|---|---|
+| `direct`（缺省） | 直连，不继承全局代理——行为与引入代理字段之前完全一致 |
+| `inherit` | 继承全局代理（`config.toml` 的 `[proxy] url` 或 `ACMECAST_PROXY_URL`，env 优先）；全局未配则直连 |
+| `custom` | 走本凭据的 `proxy_url`，覆盖全局代理 |
+
+行为要点：
+
+- `proxy_url` 仅在 `proxy_mode=custom` 时显示并生效（表单联动显隐）；支持
+  `socks5://`、`http://`、`https://` 三种 URL，允许 `socks5://user:pass@host:port`
+  形态（内嵌凭据会被脱敏，不出现在错误信息里）；
+- **存量凭据无需迁移**：变更前保存的凭据没有 `proxy_mode`——旧 `proxy_url` 有值
+  视为 `custom` + 该值，两字段都缺视为 `direct`，读取时归一化，不报错；
+- **代理只覆盖持有该凭据的出网调用**，链路随类型不同：
+  - DNS 提供商（四类）：提供商 API 调用（查询/写入/删除）与凭据页连通性测试；
+  - `acme.account`：ACME 目录/账号/下单请求与凭据页连通性测试（含吊销）；
+  - `deploy.ssh` / `deploy.s3` / `deploy.webdav`：凭据页连通性测试，以及
+    `cert.deploy` 部署执行（SSH 走 SOCKS5/HTTP CONNECT 隧道，S3/WebDAV 走
+    HTTP 代理）——但**部署执行链路没有全局代理来源**，这三类的 `inherit`
+    在部署执行时等同直连，仅凭据自带 `custom` URL 才经代理（探测与测试
+    链路有全局来源，`inherit` 正常继承）；
+  - 通知渠道不接代理；同一流水线里 `direct` 模式的凭据也保持直连；
+- `custom` 模式的非法 URL（不支持的 scheme 或无法解析）在凭据保存时被拒绝并
+  定位到 `proxy_url` 字段；代理不可达时错误信息会指向代理地址，凭据页「测试」
+  可提前暴露；
+- 全局代理的配置方式与合并优先级（`builtin < config.toml < env`）见
+  [配置](03-configuration.md)的「全局代理」——DoH 解析器的代理自动回退也读同一份取值。
 
 ### `deploy.ssh` — SSH 主机档案
 
@@ -106,6 +151,8 @@ EdgeOne（TEO）DNS 提供商凭据。字段与 `cloud.tencent` 完全一致（�
 | `password` | — | 口令 |
 | `cert_mode` | `0644` | 证书文件权限缺省 |
 | `key_mode` | `0600` | 私钥文件权限缺省 |
+| `proxy_mode` | `direct` | 出网代理模式：`direct` / `inherit` / `custom`（见下文「出网代理」） |
+| `proxy_url` | 空 | `proxy_mode=custom` 时的自定义代理（见下文「出网代理」） |
 
 `private_key` 与 `password` 必须**恰好其一**（皆缺或皆有都报错）。
 

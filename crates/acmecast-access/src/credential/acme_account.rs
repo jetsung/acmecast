@@ -56,6 +56,14 @@ pub struct AcmeAccountFields {
     /// 非空则所有使用方都走复用，不会再注册一次。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credentials: Option<String>,
+
+    /// 出网代理模式：`direct` 直连 / `inherit` 继承全局 / `custom` 自定义。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_mode: Option<String>,
+
+    /// 自定义出网代理（`proxy_mode=custom` 时生效）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_url: Option<String>,
 }
 
 impl std::fmt::Debug for AcmeAccountFields {
@@ -144,7 +152,10 @@ impl AcmeAccountFields {
                 // 视为未注册，允许保存，申请时再探测
             }
         }
-        Ok(())
+        // 代理字段与其他凭据类型同一口径：custom 必须给出合法 proxy_url。
+        acmecast_core::validate_proxy_field(
+            &serde_json::to_value(self).map_err(|e| acmecast_core::Error::Internal(e.to_string()))?,
+        )
     }
 
     /// 解析 CA 别名。
@@ -211,6 +222,9 @@ pub type TransportFactory = Arc<dyn Fn() -> Transport + Send + Sync>;
 #[derive(Clone, Default)]
 pub struct AcmeAccountType {
     transport: Option<TransportFactory>,
+    /// 全局出网代理（`[proxy] url` / `ACMECAST_PROXY_URL`）：供
+    /// `proxy_mode=inherit` 的凭据派生 `ProxyConfig`。
+    proxy_url: Option<String>,
 }
 
 impl std::fmt::Debug for AcmeAccountType {
@@ -229,10 +243,48 @@ impl AcmeAccountType {
         Self::default()
     }
 
+    /// 由凭据与全局代理派生 ACME 客户端的 `ProxyConfig`：
+    /// `direct`→空配置；`inherit`→全局代理；`custom`→凭据自带 URL。
+    /// `socks5://` 填 `socks5`，`http://`/`https://` 同时填 `http`+`https`
+    ///（代理本身对两种上行情境都适用）。非法 scheme 忽略走直连
+    ///（保存时已被 `validate_proxy_url_field` 拦下）。
+    #[must_use]
+    pub fn acme_proxy_config(
+        fields: &AcmeAccountFields,
+        global_proxy_url: Option<&str>,
+    ) -> acmecast_acme::ProxyConfig {
+        let Some(url) =
+            acmecast_core::effective_proxy_url(&serde_json::to_value(fields).unwrap_or_default(), global_proxy_url)
+        else {
+            return acmecast_acme::ProxyConfig::default();
+        };
+        if acmecast_core::validate_proxy_url(&url).is_err() {
+            return acmecast_acme::ProxyConfig::default();
+        }
+        let (http, https, socks5) = if url.starts_with("socks5") {
+            (None, None, Some(url))
+        } else {
+            (Some(url.clone()), Some(url), None)
+        };
+        acmecast_acme::ProxyConfig {
+            http,
+            https,
+            socks5,
+            accept_invalid_certs: false,
+        }
+    }
+
     /// 测试用构造：每次探测都用工厂现造一个传输层替身。
     #[must_use]
     pub fn with_transport(mut self, factory: TransportFactory) -> Self {
         self.transport = Some(factory);
+        self
+    }
+
+    /// 设置全局出网代理（`[proxy] url` / `ACMECAST_PROXY_URL`）。
+    #[must_use]
+    pub fn with_global_proxy(mut self, proxy_url: Option<impl Into<String>>) -> Self {
+        self.proxy_url = proxy_url.map(Into::into);
         self
     }
 }
@@ -255,7 +307,7 @@ impl CredentialType for AcmeAccountType {
         // 渲染顺序——两个 EAB 字段相邻且 kid 在前，都是半宽标量，流式排成一行。
         schema.schema.extensions.insert(
             "x-field-order".to_owned(),
-            serde_json::json!(["ca", "directory_url", "eab_kid", "eab_hmac_key", "credentials"]),
+            serde_json::json!(["ca", "directory_url", "eab_kid", "eab_hmac_key", "credentials", "proxy_mode", "proxy_url"]),
         );
 
         // schemars 只认类型不认语义：`ca: String` 出来是自由文本框。
@@ -310,6 +362,9 @@ impl CredentialType for AcmeAccountType {
                 .extensions
                 .insert("x-multiline".to_owned(), serde_json::Value::Bool(true));
         }
+        // 代理字段独占一行：枚举下拉 + 联动输入框，前驱字段（credentials）
+        // 自动挂 x-end-row。
+        acmecast_core::inject_proxy_field_annotations(&mut schema);
         schema
     }
 
@@ -349,7 +404,11 @@ impl CredentialType for AcmeAccountType {
             Some(factory) => {
                 AcmeService::from_credentials_with_transport(&credentials, factory()).await
             }
-            None => AcmeService::from_credentials(&credentials, None).await,
+            None => {
+                // 生产路径：按凭据 proxy_mode + 全局代理派生传输配置。
+                let transport = Self::acme_proxy_config(&parsed, self.proxy_url.as_deref());
+                AcmeService::from_credentials(&credentials, Some(&transport)).await
+            }
         };
 
         match probe {
@@ -385,6 +444,8 @@ mod tests {
             credentials: Some(stored_credentials(
                 "https://acme-v02.api.letsencrypt.org/acme/acct/123456",
             )),
+            proxy_mode: None,
+            proxy_url: None,
         }
     }
 
@@ -638,8 +699,16 @@ mod tests {
             .expect("x-field-order 应是字符串数组");
         assert_eq!(
             order,
-            ["ca", "directory_url", "eab_kid", "eab_hmac_key", "credentials"],
-            "EAB 密钥对应按 kid 前、hmac 后相邻渲染"
+            [
+                "ca",
+                "directory_url",
+                "eab_kid",
+                "eab_hmac_key",
+                "credentials",
+                "proxy_mode",
+                "proxy_url",
+            ],
+            "EAB 密钥对应按 kid 前、hmac 后相邻渲染，代理字段独占一行"
         );
 
         // ca 是长标签下拉：固定半宽独占一行（半宽 + 行尾空占位），长名称不被挤压隐藏。
@@ -726,6 +795,8 @@ mod tests {
             eab_kid: None,
             eab_hmac_key: None,
             credentials: Some(credentials.as_json().to_owned()),
+            proxy_mode: None,
+            proxy_url: None,
         }
     }
 
@@ -737,6 +808,77 @@ mod tests {
             .as_str()
             .expect("应有 key_pkcs8")
             .to_owned()
+    }
+
+    /// 代理字段派生：`inherit` 继承全局、`custom` 自带 URL、`direct` 直连；
+    /// scheme 映射 `socks5://`→socks5、`http(s)://`→http+https。
+    #[test]
+    fn acme_proxy_config_follows_proxy_mode() {
+        let mut fields = letsencrypt_fields();
+        let global = Some("socks5://1.2.3.4:7890");
+
+        // 缺省：直连空配置。
+        let none = AcmeAccountType::acme_proxy_config(&fields, global);
+        assert!(!none.is_enabled(), "缺省应直连: {none:?}");
+
+        // inherit：继承全局代理（socks5 映射到 socks5 槽位）。
+        fields.proxy_mode = Some("inherit".into());
+        let inherited = AcmeAccountType::acme_proxy_config(&fields, global);
+        assert!(inherited.is_enabled(), "inherit 应填充代理: {inherited:?}");
+        assert_eq!(inherited.socks5.as_deref(), Some("socks5://1.2.3.4:7890"));
+        assert_eq!(inherited.http, None);
+
+        // inherit 但全局未配：直连。
+        assert!(
+            !AcmeAccountType::acme_proxy_config(&fields, None).is_enabled(),
+            "inherit 无全局应直连"
+        );
+
+        // custom：自带 URL 覆盖全局（http 代理填 http+https 两槽位）。
+        fields.proxy_mode = Some("custom".into());
+        fields.proxy_url = Some("http://10.0.0.1:3128".into());
+        let custom = AcmeAccountType::acme_proxy_config(&fields, global);
+        assert_eq!(custom.http.as_deref(), Some("http://10.0.0.1:3128"));
+        assert_eq!(custom.https.as_deref(), Some("http://10.0.0.1:3128"));
+        assert_eq!(custom.socks5, None);
+
+        // direct：忽略一切。
+        fields.proxy_mode = Some("direct".into());
+        assert!(
+            !AcmeAccountType::acme_proxy_config(&fields, global).is_enabled(),
+            "direct 应直连"
+        );
+
+        // custom 非法 scheme：忽略走直连（保存时已被拦下）。
+        fields.proxy_mode = Some("custom".into());
+        fields.proxy_url = Some("ftp://127.0.0.1:21".into());
+        assert!(
+            !AcmeAccountType::acme_proxy_config(&fields, global).is_enabled(),
+            "非法 scheme 应直连"
+        );
+    }
+
+    /// schema 注入代理字段：枚举候选 + 中文标签 + custom 联动 + 前驱换行。
+    #[test]
+    fn acme_schema_injects_proxy_annotations() {
+        let rendered = serde_json::to_string(&AcmeAccountType::new().fields_schema()).unwrap();
+        assert!(
+            rendered.contains(r#""enum":["direct","inherit","custom"]"#),
+            "proxy_mode 应注入枚举候选: {rendered}"
+        );
+        for label in ["直连", "继承全局", "自定义"] {
+            assert!(rendered.contains(label), "应含中文展示名 {label}: {rendered}");
+        }
+        assert!(
+            rendered.contains(r#""x-visible-when":{"Equals":{"field":"proxy_mode","values":["custom"]}}"#),
+            "proxy_url 应联动 custom: {rendered}"
+        );
+        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(
+            value["properties"]["credentials"]["x-end-row"],
+            serde_json::json!(true),
+            "前驱字段（credentials）应带 x-end-row: {rendered}"
+        );
     }
 
     /// 把探测接到进程内的 mock 服务器上。

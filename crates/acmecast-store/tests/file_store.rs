@@ -659,3 +659,112 @@ async fn archived_replaced_material_keeps_owner_only_permissions() {
     assert_eq!(mode_of(&temp.path().join("certs/archived")), 0o700);
     assert_eq!(mode_of(&temp.path().join("certs/archived/fp-old")), 0o700);
 }
+
+// ---- 兼容回退读取（cert.apply 跳过注入复用） ----
+
+#[test]
+fn candidates_follow_record_then_derived_then_archived_order() {
+    let candidates = FileStore::cert_read_candidates(
+        &["certs/ssl/_wildcard.example.com.fullchain.cer"],
+        "*.example.com",
+        "fp-order",
+        &["fullchain.cer", "cert.pem"],
+    );
+    assert_eq!(
+        candidates,
+        vec![
+            "certs/ssl/_wildcard.example.com.fullchain.cer".to_owned(),
+            "certs/ssl/_wildcard.example.com.cert.pem".to_owned(),
+            "certs/ssl/_.example.com.fullchain.cer".to_owned(),
+            "certs/ssl/_.example.com.cert.pem".to_owned(),
+            "certs/archived/fp-order/_wildcard.example.com.fullchain.cer".to_owned(),
+            "certs/archived/fp-order/_wildcard.example.com.cert.pem".to_owned(),
+            "certs/archived/fp-order/_.example.com.fullchain.cer".to_owned(),
+            "certs/archived/fp-order/_.example.com.cert.pem".to_owned(),
+        ],
+        "候选顺序应为：记录路径 → 新前缀推导 → 旧前缀推导 → 归档副本，且去重"
+    );
+}
+
+#[tokio::test]
+async fn fallback_reads_the_legacy_layout_when_the_recorded_path_is_missing() {
+    let temp = TempDir::new();
+    let store = FileStore::open(temp.path()).await.unwrap();
+    // 库中记录指向新布局（文件缺失），旧布局文件存在。
+    store
+        .write("certs/ssl/_.example.com.cert.pem", "旧证书链")
+        .await
+        .unwrap();
+    store
+        .write("certs/ssl/_.example.com.key.pem", "旧私钥")
+        .await
+        .unwrap();
+
+    let chain = FileStore::cert_read_candidates(
+        &["certs/ssl/_wildcard.example.com.fullchain.cer"],
+        "*.example.com",
+        "fp-legacy",
+        &["fullchain.cer", "cert.pem"],
+    );
+    let key = FileStore::cert_read_candidates(
+        &["certs/ssl/_wildcard.example.com.key"],
+        "*.example.com",
+        "fp-legacy",
+        &["key", "key.pem"],
+    );
+    let (chain_pem, chain_hit) = store.read_with_fallback(&chain).await.expect("旧布局链应命中");
+    assert_eq!(chain_pem, "旧证书链");
+    assert_eq!(chain_hit, "certs/ssl/_.example.com.cert.pem");
+    let (key_pem, key_hit) = store.read_with_fallback(&key).await.expect("旧布局私钥应命中");
+    assert_eq!(key_pem, "旧私钥");
+    assert_eq!(key_hit, "certs/ssl/_.example.com.key.pem");
+}
+
+#[tokio::test]
+async fn fallback_reads_the_archived_copy_when_active_paths_are_missing() {
+    let temp = TempDir::new();
+    let store = FileStore::open(temp.path()).await.unwrap();
+    // 活跃目录与记录路径均缺失，仅归档副本存在。
+    store
+        .write(
+            "certs/archived/fp-archived/sub.example.com.fullchain.cer",
+            "归档证书链",
+        )
+        .await
+        .unwrap();
+
+    let chain = FileStore::cert_read_candidates(
+        &["certs/ssl/sub.example.com.fullchain.cer"],
+        "sub.example.com",
+        "fp-archived",
+        &["fullchain.cer"],
+    );
+    let (chain_pem, chain_hit) = store.read_with_fallback(&chain).await.expect("归档副本应命中");
+    assert_eq!(chain_pem, "归档证书链");
+    assert_eq!(chain_hit, "certs/archived/fp-archived/sub.example.com.fullchain.cer");
+}
+
+#[tokio::test]
+async fn fallback_reports_every_attempted_path_when_all_candidates_miss() {
+    let temp = TempDir::new();
+    let store = FileStore::open(temp.path()).await.unwrap();
+    let chain = FileStore::cert_read_candidates(
+        &["certs/ssl/sub.example.com.fullchain.cer"],
+        "sub.example.com",
+        "fp-none",
+        &["fullchain.cer"],
+    );
+    let attempts = store
+        .read_with_fallback(&chain)
+        .await
+        .expect_err("全部缺失应返回尝试清单");
+    let paths: Vec<&str> = attempts.iter().map(|(p, _)| p.as_str()).collect();
+    assert_eq!(
+        paths,
+        vec![
+            "certs/ssl/sub.example.com.fullchain.cer",
+            "certs/archived/fp-none/sub.example.com.fullchain.cer",
+        ],
+        "尝试清单应按候选顺序包含全部路径"
+    );
+}

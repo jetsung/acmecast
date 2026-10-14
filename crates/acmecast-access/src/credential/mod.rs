@@ -2,6 +2,7 @@
 
 pub mod acme_account;
 pub mod s3;
+pub mod s3_http;
 pub mod webdav;
 
 use schemars::schema::RootSchema;

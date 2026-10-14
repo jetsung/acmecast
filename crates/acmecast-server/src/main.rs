@@ -147,12 +147,14 @@ async fn run(config_override: Option<&str>) -> Result<(), Box<dyn std::error::Er
         std::sync::Arc::new(acmecast_server::steps::default_steps(
             db.clone(),
             config.data_dir.clone(),
-            acmecast_server::steps::default_dns_registry(),
+            acmecast_server::steps::default_dns_registry(config.proxy_url.as_deref()),
             acmecast_server::steps::default_deploy_registry(),
             propagation,
             config.resolvers.clone(),
+            config.proxy_url.as_deref(),
         )),
         config.redis_url.as_deref(),
+        config.proxy_url.as_deref(),
     )
     .await?;
     match &runtime.auth {

@@ -6,6 +6,7 @@
 //! 响应解析得对不对。
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::Value;
@@ -127,20 +128,87 @@ pub trait HttpTransport: Send + Sync + std::fmt::Debug {
     async fn send(&self, request: HttpRequest) -> Result<HttpResponse>;
 }
 
+// 代理原语已下沉共享 crate：凭据级三态、URL 校验与 schema 注入由
+// 所有凭据类型（DNS 提供商、部署目标、ACME 账号）共用，口径单一来源。
+// 这里 re-export 以兼容既有 `acmecast_dns::` 路径。
+pub use acmecast_core::{
+    ProxyMode, inject_proxy_field_annotations, proxy_log_target, proxy_url_from_credentials,
+    validate_proxy_url,
+};
+
+/// 按凭据选传输层。
+///
+/// `proxy_mode=direct` 直连；`inherit` 读 `global`（全局代理，非空则走代理，
+/// 未配仍直连）；`custom` 读凭据 `proxy_url`（校验后走代理）。
+/// 三种模式都未取到代理时沿用 `fallback`（默认直连，或测试注入的伪传输层）。
+pub fn transport_for_credentials(
+    credentials: &Value,
+    fallback: &Arc<dyn HttpTransport>,
+    global: Option<&str>,
+) -> Result<Arc<dyn HttpTransport>> {
+    // custom 分支先取 owned 值（`proxy_url_from_credentials` 返回 `Option<String>`），
+    // 另两个分支是借来的 `&str`，因此这里统一收成 owned。
+    let proxy_url: Option<String> = match ProxyMode::from_credentials(credentials) {
+        ProxyMode::Direct => None,
+        ProxyMode::Inherit => global
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned),
+        ProxyMode::Custom => proxy_url_from_credentials(credentials),
+    };
+    match proxy_url.as_deref() {
+        Some(url) => Ok(Arc::new(ReqwestTransport::with_proxy(url)?)),
+        // 三态都没取到代理（含 custom 但凭据 proxy_url 留空）→ 直连。
+        // custom 留空本该在保存时就被 validate_proxy_url_field 拦下；这里
+        // 直连而非报错，是为了让存量脏数据不至于让整条流水线崩在传输层。
+        None => Ok(Arc::clone(fallback)),
+    }
+}
+
 /// 走真实网络的传输层。
 #[derive(Debug)]
 pub struct ReqwestTransport {
     client: reqwest::Client,
+    /// 代理主机（`host:port`，不含用户名密码）：请求失败时写进错误信息，
+    /// 让「代理不可达」一眼可辨，而不是伪装成凭据无效。
+    proxy_host: Option<String>,
 }
 
 impl ReqwestTransport {
-    /// 建一个默认客户端。
+    /// 建一个默认客户端（直连）。
     pub fn new() -> Result<Self> {
         let client = reqwest::Client::builder()
             .user_agent(concat!("acmecast/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|e| Error::provider(format!("无法构造 HTTP 客户端: {e}")))?;
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            proxy_host: None,
+        })
+    }
+
+    /// 建一个走指定代理的客户端。
+    ///
+    /// 支持 `socks5://`、`http://`、`https://`（`socks` feature 已启用）；
+    /// 其余 scheme 或无法解析的 URL 被拒绝。
+    pub fn with_proxy(proxy_url: &str) -> Result<Self> {
+        validate_proxy_url(proxy_url)?;
+        let parsed = reqwest::Url::parse(proxy_url).expect("validate_proxy_url 已确保可解析");
+        let proxy = reqwest::Proxy::all(proxy_url)
+            .map_err(|e| Error::provider(format!("代理 URL `{proxy_url}` 不合法: {e}")))?;
+        let client = reqwest::Client::builder()
+            .user_agent(concat!("acmecast/", env!("CARGO_PKG_VERSION")))
+            .proxy(proxy)
+            .build()
+            .map_err(|e| Error::provider(format!("无法构造带代理的 HTTP 客户端: {e}")))?;
+        let host = match parsed.port() {
+            Some(port) => format!("{}:{port}", parsed.host_str().unwrap_or_default()),
+            None => parsed.host_str().unwrap_or_default().to_owned(),
+        };
+        Ok(Self {
+            client,
+            proxy_host: Some(host),
+        })
     }
 }
 
@@ -168,7 +236,14 @@ impl HttpTransport for ReqwestTransport {
         let response = builder
             .send()
             .await
-            .map_err(|e| Error::provider(format!("请求 {} 失败: {e}", request.url)))?;
+            .map_err(|e| {
+                let via = self
+                    .proxy_host
+                    .as_ref()
+                    .map(|host| format!("（经代理 {host}）"))
+                    .unwrap_or_default();
+                Error::provider(format!("请求 {} 失败{via}: {e}", request.url))
+            })?;
 
         let status = response.status().as_u16();
         let body = response
@@ -183,6 +258,143 @@ impl HttpTransport for ReqwestTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_proxy_transport_is_built_from_a_valid_url() {
+        for url in [
+            "socks5://127.0.0.1:7890",
+            "http://127.0.0.1:8080",
+            "https://proxy.example.com:443",
+        ] {
+            ReqwestTransport::with_proxy(url).unwrap_or_else(|e| panic!("{url} 应能构建: {e}"));
+        }
+    }
+
+    #[test]
+    fn an_invalid_proxy_url_is_rejected() {
+        assert!(ReqwestTransport::with_proxy("not-a-url").is_err());
+        assert!(ReqwestTransport::with_proxy("ftp://127.0.0.1:21").is_err());
+    }
+
+    #[test]
+    fn credentials_with_a_proxy_url_resolve_to_proxy_transport() {
+        let credentials = serde_json::json!({ "proxy_url": "socks5://127.0.0.1:7890" });
+        assert_eq!(
+            proxy_url_from_credentials(&credentials).as_deref(),
+            Some("socks5://127.0.0.1:7890")
+        );
+        // 构建成功即选择了代理路径（非法 URL 会在构建时报错）。
+        let fallback: Arc<dyn HttpTransport> = Arc::new(ReqwestTransport::default());
+        transport_for_credentials(&credentials, &fallback, None).expect("带代理应能构建 transport");
+    }
+
+    #[test]
+    fn credentials_without_a_proxy_field_resolve_to_direct_connection() {
+        let fallback: Arc<dyn HttpTransport> = Arc::new(ReqwestTransport::default());
+        for credentials in [
+            serde_json::json!({}),                 // 存量凭据缺字段
+            serde_json::json!({ "proxy_url": "" }), // 留空
+            serde_json::json!({ "proxy_url": "  " }),
+        ] {
+            assert_eq!(proxy_url_from_credentials(&credentials), None);
+            // 返回的是 fallback 本身（直连），且不会因代理构建失败报错。
+            transport_for_credentials(&credentials, &fallback, None).expect("直连应直接复用注入层");
+        }
+    }
+
+    /// 三态：direct 不继承全局、inherit 继承全局、custom 覆盖全局。
+    #[test]
+    fn proxy_mode_selects_the_transport_per_branch() {
+        let global = Some("socks5://127.0.0.1:7890");
+        let fallback: Arc<dyn HttpTransport> = Arc::new(ReqwestTransport::default());
+
+        // direct：即使全局已配也直连（复用注入层）。
+        assert_eq!(
+            ProxyMode::from_credentials(&serde_json::json!({ "proxy_mode": "direct" })),
+            ProxyMode::Direct
+        );
+        transport_for_credentials(
+            &serde_json::json!({ "proxy_mode": "direct" }),
+            &fallback,
+            global,
+        )
+        .expect("direct 应直连");
+
+        // inherit：全局已配 → 经代理；全局未配/留空 → 直连。
+        assert_eq!(
+            ProxyMode::from_credentials(&serde_json::json!({ "proxy_mode": "inherit" })),
+            ProxyMode::Inherit
+        );
+        transport_for_credentials(
+            &serde_json::json!({ "proxy_mode": "inherit" }),
+            &fallback,
+            global,
+        )
+        .expect("inherit 已配全局应能构建代理 transport");
+        transport_for_credentials(
+            &serde_json::json!({ "proxy_mode": "inherit" }),
+            &fallback,
+            None,
+        )
+        .expect("inherit 未配全局应直连");
+        transport_for_credentials(
+            &serde_json::json!({ "proxy_mode": "inherit" }),
+            &fallback,
+            Some("   "),
+        )
+        .expect("inherit 全局留空应直连");
+
+        // custom：读凭据 proxy_url，覆盖全局。
+        assert_eq!(
+            ProxyMode::from_credentials(&serde_json::json!({
+                "proxy_mode": "custom",
+                "proxy_url": "http://other.proxy:3128"
+            })),
+            ProxyMode::Custom
+        );
+        transport_for_credentials(
+            &serde_json::json!({
+                "proxy_mode": "custom",
+                "proxy_url": "http://other.proxy:3128"
+            }),
+            &fallback,
+            global,
+        )
+        .expect("custom 应走凭据代理");
+        // custom 但 proxy_url 留空：保存校验会拦；传输层退化为直连，
+        // 不让存量脏数据把流水线崩在传输层。
+        transport_for_credentials(
+            &serde_json::json!({ "proxy_mode": "custom" }),
+            &fallback,
+            global,
+        )
+        .expect("custom 缺 proxy_url 应退化为直连而非报错");
+    }
+
+    /// 存量凭据：无 `proxy_mode` 时按旧 `proxy_url` 有无归一化。
+    #[test]
+    fn legacy_credentials_without_proxy_mode_are_normalized_on_read() {
+        // 旧 proxy_url 有值 → custom + 该值。
+        assert_eq!(
+            ProxyMode::from_credentials(
+                &serde_json::json!({ "proxy_url": "socks5://127.0.0.1:7890" })
+            ),
+            ProxyMode::Custom
+        );
+        // 无两字段，或 proxy_url 为空/空白 → direct。
+        for credentials in [
+            serde_json::json!({}),
+            serde_json::json!({ "proxy_url": "" }),
+            serde_json::json!({ "proxy_url": "  " }),
+            serde_json::json!({ "api_token": "t" }),
+        ] {
+            assert_eq!(
+                ProxyMode::from_credentials(&credentials),
+                ProxyMode::Direct,
+                "{credentials} 应归一化为 direct"
+            );
+        }
+    }
 
     #[test]
     fn a_request_can_be_built_up() {

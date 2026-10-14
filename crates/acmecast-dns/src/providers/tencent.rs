@@ -26,7 +26,10 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::error::{Error, Result};
-use crate::http::{HttpRequest, HttpResponse, HttpTransport, ReqwestTransport};
+use crate::http::{
+    HttpRequest, HttpResponse, HttpTransport, ReqwestTransport, inject_proxy_field_annotations,
+    transport_for_credentials,
+};
 use crate::provider::{DnsProvider, TxtRecord, parse_credentials};
 
 type HmacSha256 = Hmac<Sha256>;
@@ -71,6 +74,16 @@ pub struct TencentCredentials {
     /// 账号站点：凭据属于哪一套账户体系，决定请求发往哪个端点。
     #[serde(default)]
     pub account_site: TencentSite,
+    /// 出网代理模式：`direct`（缺省，直连）/ `inherit`（继承全局代理，
+    /// 见 `config.toml` 的 `[proxy] url` 或 `ACMECAST_PROXY_URL`）/
+    /// `custom`（走下面 `proxy_url`，覆盖全局）。
+    #[serde(default)]
+    pub proxy_mode: Option<String>,
+    /// 自定义出网代理（`proxy_mode=custom` 时生效）：支持 `socks5://`、
+    /// `http://`、`https://`，留空直连；仅该提供商的 API 调用经此代理发送，
+    /// 不影响 ACME 申请与通知渠道的出网路径。
+    #[serde(default)]
+    pub proxy_url: Option<String>,
 }
 
 /// 按服务名与站点给出 API 主机名。
@@ -177,6 +190,20 @@ impl TencentApiClient {
         action: &str,
         payload: Value,
     ) -> Result<Value> {
+        self.call_with(&self.http, credentials, service, version, action, payload)
+            .await
+    }
+
+    /// 同 [`Self::call`]，但传输层由调用方按凭据选定（带代理凭据走代理）。
+    pub async fn call_with(
+        &self,
+        http: &Arc<dyn HttpTransport>,
+        credentials: &TencentCredentials,
+        service: &str,
+        version: &str,
+        action: &str,
+        payload: Value,
+    ) -> Result<Value> {
         let host = api_host(service, credentials.account_site);
         let timestamp = chrono::Utc::now().timestamp();
         let body = payload.to_string();
@@ -192,7 +219,7 @@ impl TencentApiClient {
             .with_header("Authorization", authorization)
             .with_body(payload);
 
-        let response = self.http.send(request).await?;
+        let response = http.send(request).await?;
         ensure_success(response, action)
     }
 }
@@ -231,6 +258,9 @@ pub fn ensure_success(response: HttpResponse, action: &str) -> Result<Value> {
 #[derive(Debug)]
 pub struct TencentProvider {
     client: TencentApiClient,
+    /// 全局出网代理（`[proxy] url` / `ACMECAST_PROXY_URL`）；仅
+    /// `proxy_mode=inherit` 的凭据读它。`None` 即直连。
+    global_proxy_url: Option<String>,
 }
 
 impl TencentProvider {
@@ -245,7 +275,29 @@ impl TencentProvider {
     pub fn with_transport(http: Arc<dyn HttpTransport>) -> Self {
         Self {
             client: TencentApiClient::with_transport(http),
+            global_proxy_url: None,
         }
+    }
+
+    /// 设置全局出网代理，供 `proxy_mode=inherit` 的凭据继承。
+    #[must_use]
+    pub fn with_global_proxy(mut self, proxy_url: Option<impl Into<String>>) -> Self {
+        self.global_proxy_url = proxy_url.map(Into::into);
+        self
+    }
+
+    /// 全局代理 URL；`proxy_mode=inherit` 时读它（留空/未配即直连）。
+    fn global_proxy_url(&self) -> Option<&str> {
+        self.global_proxy_url.as_deref()
+    }
+
+    /// 按凭据选传输层：`proxy_mode` 三态决定直连 / 继承全局 / 走凭据自定义代理。
+    fn http_for(
+        &self,
+        credentials: &Value,
+        global_proxy_url: Option<&str>,
+    ) -> Result<Arc<dyn HttpTransport>> {
+        transport_for_credentials(credentials, &self.client.http, global_proxy_url)
     }
 
     /// 探测凭据是否可用：调 STS 的 `GetCallerIdentity`。
@@ -253,9 +305,11 @@ impl TencentProvider {
     /// 这是凭据页「测试」按钮的探测动作——只做身份辨识，不依赖任何
     /// DNS 业务权限；端点随凭据的 `account_site` 切换（国内/国际站）。
     pub async fn verify_credentials(&self, credentials: &Value) -> Result<()> {
+        let http = self.http_for(credentials, self.global_proxy_url())?;
         let credentials: TencentCredentials = parse_credentials(credentials)?;
         self.client
-            .call(
+            .call_with(
+                &http,
                 &credentials,
                 STS_SERVICE,
                 STS_VERSION,
@@ -269,12 +323,14 @@ impl TencentProvider {
     /// 列出某个主机记录下的全部 TXT 记录（RecordId 与值）。
     async fn list_records(
         &self,
+        http: &Arc<dyn HttpTransport>,
         credentials: &TencentCredentials,
         record: &TxtRecord,
     ) -> Result<Vec<(i64, String)>> {
         let body = self
             .client
-            .call(
+            .call_with(
+                http,
                 credentials,
                 DNSPOD_SERVICE,
                 DNSPOD_VERSION,
@@ -325,10 +381,12 @@ impl DnsProvider for TencentProvider {
     }
 
     async fn create_txt(&self, credentials: &Value, record: &TxtRecord) -> Result<()> {
+        let http = self.http_for(credentials, self.global_proxy_url())?;
         let credentials: TencentCredentials = parse_credentials(credentials)?;
 
         self.client
-            .call(
+            .call_with(
+                &http,
                 &credentials,
                 DNSPOD_SERVICE,
                 DNSPOD_VERSION,
@@ -347,10 +405,12 @@ impl DnsProvider for TencentProvider {
     }
 
     async fn probe_zone(&self, credentials: &Value, zone: &str) -> Result<()> {
+        let http = self.http_for(credentials, self.global_proxy_url())?;
         let credentials: TencentCredentials = parse_credentials(credentials)?;
         // DescribeDomain 对不存在的域名报错，存在即托管在 DNSPod。
         self.client
-            .call(
+            .call_with(
+                &http,
                 &credentials,
                 DNSPOD_SERVICE,
                 DNSPOD_VERSION,
@@ -362,10 +422,11 @@ impl DnsProvider for TencentProvider {
     }
 
     async fn find_txt(&self, credentials: &Value, record: &TxtRecord) -> Result<Vec<String>> {
+        let http = self.http_for(credentials, self.global_proxy_url())?;
         let credentials: TencentCredentials = parse_credentials(credentials)?;
 
         Ok(self
-            .list_records(&credentials, record)
+            .list_records(&http, &credentials, record)
             .await?
             .into_iter()
             .map(|(_, value)| value)
@@ -373,12 +434,13 @@ impl DnsProvider for TencentProvider {
     }
 
     async fn delete_txt(&self, credentials: &Value, record: &TxtRecord) -> Result<()> {
+        let http = self.http_for(credentials, self.global_proxy_url())?;
         let credentials: TencentCredentials = parse_credentials(credentials)?;
 
         // 删除要 RecordId，而 trait 的入参只有记录本身；先查出来，
         // 并且**只删值与我们这条相同的**——同名但不是我们写的记录不该被替人清掉。
         let ids: Vec<i64> = self
-            .list_records(&credentials, record)
+            .list_records(&http, &credentials, record)
             .await?
             .into_iter()
             .filter(|(_, value)| value == &record.value)
@@ -388,7 +450,8 @@ impl DnsProvider for TencentProvider {
         // 一条都没找到也算成功：删除是幂等的，清理路径上不该为「它本来就不在」报错。
         for id in ids {
             self.client
-                .call(
+                .call_with(
+                    &http,
                     &credentials,
                     DNSPOD_SERVICE,
                     DNSPOD_VERSION,
@@ -410,14 +473,15 @@ impl DnsProvider for TencentProvider {
 #[must_use]
 pub fn tencent_credentials_schema() -> RootSchema {
     let mut schema = schema_for!(TencentCredentials);
-    let Some(object) = schema.schema.object.as_mut() else {
-        return schema;
-    };
     schema.schema.extensions.insert(
         "x-field-order".to_owned(),
-        serde_json::json!(["account_site", "secret_id", "secret_key"]),
+        serde_json::json!(["account_site", "secret_id", "secret_key", "proxy_mode", "proxy_url"]),
     );
-    if let Some(schemars::schema::Schema::Object(site)) = object.properties.get_mut("account_site")
+    inject_proxy_field_annotations(&mut schema);
+    // account_site 独占第一行但框保持一列宽（x-end-row 补空列占位换行）。
+    if let Some(validation) = schema.schema.object.as_mut()
+        && let Some(schemars::schema::Schema::Object(site)) =
+            validation.properties.get_mut("account_site")
     {
         site.extensions
             .insert("x-end-row".to_owned(), serde_json::Value::Bool(true));
@@ -434,6 +498,8 @@ mod tests {
             secret_id: "AKIDexample".to_owned(),
             secret_key: "secret-key".to_owned(),
             account_site: site,
+            proxy_mode: None,
+            proxy_url: None,
         }
     }
 
@@ -558,7 +624,9 @@ mod tests {
         // 站点选择打头，两半密钥成对随后；account_site 挂 x-end-row——
         // 半宽框独占一行（行尾空列占位），不做整行宽度标注。
         assert!(
-            rendered.contains(r#""x-field-order":["account_site","secret_id","secret_key"]"#),
+            rendered.contains(
+                r#""x-field-order":["account_site","secret_id","secret_key","proxy_mode","proxy_url"]"#
+            ),
             "应注入声明顺序: {rendered}"
         );
         assert!(
@@ -568,6 +636,39 @@ mod tests {
         assert!(
             !rendered.contains("x-full-width"),
             "不做整行标注，框保持一列宽: {rendered}"
+        );
+        // 前驱字段（secret_key）带 x-end-row，使 proxy_mode 从新行首列开始、
+        // 与 proxy_url 同行成对。
+        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(
+            value["properties"]["secret_key"]["x-end-row"],
+            serde_json::json!(true),
+            "secret_key 应带 x-end-row 把 proxy_mode 推到新行: {rendered}"
+        );
+        // proxy_mode 是枚举下拉：三候选 + 中文展示名，schemars 对
+        // Option<String> 不产 enum 数组，由注入函数手动补。
+        assert!(
+            rendered.contains(r#""enum":["direct","inherit","custom"]"#),
+            "proxy_mode 应注入枚举候选: {rendered}"
+        );
+        for label in ["直连", "继承全局", "自定义"] {
+            assert!(
+                rendered.contains(label),
+                "proxy_mode 应标注中文展示名 {label}: {rendered}"
+            );
+        }
+        // proxy_url 与 proxy_mode=custom 联动显隐。
+        assert!(
+            rendered.contains(r#""x-visible-when":{"Equals":{"field":"proxy_mode","values":["custom"]}}"#),
+            "proxy_url 应仅在 custom 模式显隐: {rendered}"
+        );
+        // 前驱字段（secret_key）带 x-end-row，使 proxy_mode 从新行首列开始、
+        // 与 proxy_url 同行（左下拉、右输入框）。
+        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(
+            value["properties"]["secret_key"]["x-end-row"],
+            serde_json::json!(true),
+            "secret_key 应带 x-end-row 把 proxy_mode 推到新行: {rendered}"
         );
     }
 }

@@ -203,6 +203,26 @@ pub(crate) fn compact_propagation_miss_logs(logs: &mut Vec<StepLogRecord>) {
 }
 
 
+/// 入库前精简：仅保留最后一条 `proxy: ` 代理行，其余移除。
+///
+/// 与 [`compact_propagation_miss_logs`] 同一双轨策略：SSE 实时流全量保留
+/// （DoH 回退行与凭据代理行多行独立可视），落库前只留最后一条代理行。
+pub(crate) fn compact_proxy_logs(logs: &mut Vec<StepLogRecord>) {
+    let Some(keep) = logs
+        .iter()
+        .rposition(|log| log.message.starts_with("proxy: "))
+    else {
+        return;
+    };
+    let mut idx = 0usize;
+    logs.retain(|log| {
+        let is_proxy = log.message.starts_with("proxy: ");
+        let keep_this = !(is_proxy && idx != keep);
+        idx += 1;
+        keep_this
+    });
+}
+
 /// 执行过程事件分流：向外部 `EventSink` 透传的同时，将增量日志写入 `HistoryCache`，并广播至 SSE。
 /// 双轨语义：此处的 `Log` 分支保持全量 `round * miss`（每一轮 miss 均写入缓存与 SSE），
 /// 精简仅发生在 `execute_run` 终态的 `compact_propagation_miss_logs` 阶段，不在此处过滤。
@@ -291,8 +311,10 @@ pub(crate) async fn execute_run(
             })
         })
         .collect();
-    // 入库前精简：仅保留最后一条 `round * miss`，不影响 SSE 已推送的实时流。
+    // 入库前精简：仅保留最后一条 `round * miss` 与最后一条 `proxy: `，
+    // 不影响 SSE 已推送的实时流。
     compact_propagation_miss_logs(&mut step_logs);
+    compact_proxy_logs(&mut step_logs);
     let final_meta = HistoryMeta {
         id: history_id,
         pipeline_id: definition.id,
@@ -395,6 +417,39 @@ mod tests {
         let len = logs.len();
         compact_propagation_miss_logs(&mut logs);
         assert_eq!(logs.len(), len);
+    }
+
+    /// 多条 `proxy: ` 行只留最后一条；无/单条代理行为 no-op。
+    #[test]
+    fn compact_proxy_logs_keeps_last_only() {
+        // 多条 → 仅保留最后一条。
+        let mut logs = vec![
+            make_log("proxy: via socks5://1.2.3.4:7890"),
+            make_log("round 1 hit (resolver: Cloudflare DNS)"),
+            make_log("proxy: via socks5://5.6.7.8:1080"),
+            make_log("propagation succeeded after 1 rounds"),
+        ];
+        compact_proxy_logs(&mut logs);
+        let proxies: Vec<_> = logs.iter().filter(|l| l.message.starts_with("proxy: ")).collect();
+        assert_eq!(proxies.len(), 1, "{logs:?}");
+        assert!(proxies[0].message.contains("5.6.7.8"), "{logs:?}");
+        assert_eq!(logs.len(), 3, "其余日志不受影响: {logs:?}");
+
+        // 无代理行 → no-op。
+        let mut none = vec![make_log("round 1 hit (resolver: 阿里 DNS)")];
+        let len = none.len();
+        compact_proxy_logs(&mut none);
+        assert_eq!(none.len(), len);
+
+        // 单条 → no-op。
+        let mut single = vec![
+            make_log("propagation start timeout=600 interval=10"),
+            make_log("proxy: via http://10.0.0.1:3128"),
+            make_log("round 1 hit (resolver: 阿里 DNS)"),
+        ];
+        let len = single.len();
+        compact_proxy_logs(&mut single);
+        assert_eq!(single.len(), len, "单条代理行应原样保留: {single:?}");
     }
 
     #[test]

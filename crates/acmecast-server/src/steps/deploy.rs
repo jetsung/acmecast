@@ -48,6 +48,44 @@ fn url_host(raw: &str) -> Option<String> {
     if host.is_empty() { None } else { Some(host.to_owned()) }
 }
 
+/// 一条部署目标日志条目：凭据元数据（id/type/name/remark）+ 注册表目标项。
+///
+/// 只落元数据不落字段值——凭据的密钥内容不进运行历史；缺失的
+/// 名称/备注/凭据（无凭据目标）记 `—`。
+#[must_use]
+pub(crate) fn deploy_target_entry(
+    credential: Option<(&i64, &str, &str, &str)>,
+    target_type: &str,
+    target_display: &str,
+) -> String {
+    let (id, type_id, name, remark) = match credential {
+        Some((id, type_id, name, remark)) => (
+            id.to_string(),
+            type_id.to_owned(),
+            non_blank(name),
+            non_blank(remark),
+        ),
+        None => ("—".to_owned(), target_type.to_owned(), "—".to_owned(), "—".to_owned()),
+    };
+    format!("id:{id} type:{type_id} name:{name} remark:{remark} target:{target_type}({target_display})")
+}
+
+/// 空白视为缺省。
+fn non_blank(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        "—".to_owned()
+    } else {
+        trimmed.to_owned()
+    }
+}
+
+/// `deploy targets: ` 日志行：多目标以 `；` 分隔。
+#[must_use]
+pub(crate) fn format_deploy_targets(entries: &[String]) -> String {
+    format!("deploy targets: {}", entries.join("；"))
+}
+
 /// `cert.deploy` 的输入。
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct CertDeployInput {
@@ -144,6 +182,38 @@ impl PipelineStep for CertDeployStep {
             .registry
             .require(input.target.trim())
             .map_err(|e| domain_error("部署目标", e))?;
+
+        // deploy targets 行：本批次即将执行的目标集合（凭据元数据 + 注册表
+        // 目标项），在"已部署到目标"平台行之前写入；只落元数据，不参与精简。
+        // config.credential_id 是凭据引用目标（tencent-ssl 等）的统一键。
+        let credential = match input.config.get("credential_id").and_then(|v| v.as_i64()) {
+            Some(credential_id) => ctx.credentials().resolve(credential_id).await.ok(),
+            None => None,
+        };
+        let credential_meta = credential.as_ref().map(|c| (&c.id, c.type_id.as_str(), c.name.as_str(), c.remark.as_str()));
+        ctx.log_info(format_deploy_targets(&[deploy_target_entry(
+            credential_meta,
+            target.type_id(),
+            target.display_name(),
+        )]));
+
+        // `proxy: ` 行必须与实际出网一致：只有真正把出网接到凭据代理上的
+        // 目标类型（ssh/s3/webdav）才打；local 不出网、tencent-ssl 的出网
+        // 不接凭据代理，打了就是误导。派生口径与目标侧完全一致——deploy
+        // 链路没有全局代理来源，inherit 等同直连，仅凭据自带的 custom URL
+        // 生效。展示形态剥掉 userinfo——认证材料不进运行历史。
+        const PROXY_CARRYING_TARGETS: [&str; 3] = ["ssh", "s3", "webdav"];
+        if PROXY_CARRYING_TARGETS.contains(&target.type_id())
+            && let Some(proxy) = credential
+                .as_ref()
+                .and_then(|c| acmecast_core::effective_proxy_url(&c.fields, None))
+        {
+            ctx.log_info(format!(
+                "proxy: via {}",
+                acmecast_dns::proxy_log_target(&proxy)
+            ));
+        }
+
         let deployer = Deployer::new(Arc::clone(&self.state));
         // force 已移除：仅 tencent-ssl 走指纹幂等，其余每次都写入
         let force = false;
@@ -300,7 +370,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::Mutex;
 
-    use acmecast_access::{CredentialRegistry, CredentialStore};
+    use acmecast_access::{CredentialRegistry, CredentialStore, CredentialType};
     use acmecast_core::CredentialCipher;
     use acmecast_deploy::{DeployMode, DeployOutcome, DeploymentTarget};
     use acmecast_pipeline::{Artifacts, PipelineStateStore, StepLogLevel};
@@ -381,6 +451,34 @@ mod tests {
         db
     }
 
+    /// deploy targets 条目格式化：凭据元数据齐全 / 缺省记 `—` / 多目标以 `；` 分隔。
+    #[test]
+    fn deploy_targets_line_formats_entries() {
+        // 单目标：凭据元数据齐全。
+        let id = 7i64;
+        let entry = deploy_target_entry(
+            Some((&id, "cloud.tencent", "腾讯云账号", "")),
+            "tencent-ssl",
+            "腾讯云 SSL",
+        );
+        assert_eq!(
+            entry,
+            "id:7 type:cloud.tencent name:腾讯云账号 remark:— target:tencent-ssl(腾讯云 SSL)"
+        );
+
+        // 无凭据目标：元数据缺省记 `—`。
+        let fallback = deploy_target_entry(None, "ssh", "SSH 主机");
+        assert_eq!(
+            fallback,
+            "id:— type:ssh name:— remark:— target:ssh(SSH 主机)"
+        );
+
+        // 多目标：以 `；` 分隔。
+        let line = format_deploy_targets(&[entry, fallback]);
+        assert!(line.starts_with("deploy targets: "), "{line}");
+        assert!(line.contains("；"), "多目标应以；分隔: {line}");
+    }
+
     fn credential_store(db: &DatabaseConnection) -> CredentialStore<'_> {
         let cipher = CredentialCipher::from_base64(&CredentialCipher::generate_key_base64())
             .expect("密钥应可用");
@@ -432,6 +530,24 @@ mod tests {
         let mut ctx = StepContext::new(1, 1, 0, &input, &artifacts, &credentials, &pipeline_state);
         let _output = step.execute(&mut ctx).await.expect("部署应成功");
         let logs = ctx.take_logs();
+
+        // deploy targets 行：无凭据（config 未带 credential_id）→ 元数据缺省记 `—`，
+        // 且在"已部署到目标"平台行之前。
+        let targets_idx = logs
+            .iter()
+            .position(|log| log.message.starts_with("deploy targets: "))
+            .expect("应有 deploy targets 日志行");
+        assert!(
+            logs[targets_idx].message.contains("id:— type:tencent-ssl name:— remark:—"),
+            "无凭据条目应缺省记 —: {}",
+            logs[targets_idx].message
+        );
+        assert!(
+            logs[targets_idx + 1..]
+                .iter()
+                .any(|log| log.message.contains("已部署到目标")),
+            "deploy targets 行应在平台信息行之前"
+        );
 
         // 结构化输出日志应在最后一条 info 日志上。
         let structured = logs
@@ -657,6 +773,127 @@ mod tests {
         assert!(
             logs.iter().all(|l| l.output.is_none() || l.output.as_ref().unwrap().get("cert_ids").is_none()),
             "失败路径不应产生含 cert_ids 的成功回显"
+        );
+    }
+
+    /// 只为落一条带代理字段的凭据进内存库，供 deploy 步骤经
+    /// `config.credential_id` 解析；字段本身不做校验。
+    #[derive(Debug)]
+    struct ProxyFieldCredentialType;
+
+    #[async_trait::async_trait]
+    impl CredentialType for ProxyFieldCredentialType {
+        fn type_id(&self) -> &'static str {
+            "test.proxy-fields"
+        }
+        fn display_name(&self) -> &'static str {
+            "测试代理凭据"
+        }
+        fn fields_schema(&self) -> schemars::schema::RootSchema {
+            schemars::schema::RootSchema::default()
+        }
+        fn validate(&self, _fields: &serde_json::Value) -> acmecast_core::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// 把一份字段值加密后落进凭据表，返回记录 id（口径与
+    /// `CredentialStore::update_fields` 一致：整段明文整体加密）。
+    async fn insert_credential(
+        db: &DatabaseConnection,
+        cipher: &CredentialCipher,
+        fields: serde_json::Value,
+    ) -> i64 {
+        use sea_orm::{ActiveModelTrait, Set};
+
+        let plaintext = serde_json::to_string(&fields).expect("字段应可序列化");
+        let encrypted = cipher.encrypt_string(&plaintext).expect("加密应成功");
+        let now = chrono::Utc::now();
+        let model = acmecast_store::entity::credential::ActiveModel {
+            name: Set("测试凭据".to_owned()),
+            type_id: Set("test.proxy-fields".to_owned()),
+            encrypted_fields: Set(encrypted),
+            remark: Set(String::new()),
+            capabilities: Set("[]".to_owned()),
+            created_at: Set(now),
+            updated_at: Set(now),
+            ..Default::default()
+        };
+        model.insert(db).await.expect("插入应成功").id
+    }
+
+    /// 按给定目标类型与凭据字段跑一次 deploy 步骤，返回日志消息列表。
+    async fn run_deploy_with_credential(
+        target_id: &'static str,
+        fields: serde_json::Value,
+    ) -> Vec<String> {
+        let cipher = CredentialCipher::from_base64(&CredentialCipher::generate_key_base64())
+            .expect("密钥应可用");
+        let db = mem_db().await;
+        let credential_id = insert_credential(&db, &cipher, fields).await;
+
+        let mut registry = DeploymentRegistry::new();
+        registry
+            .register(MockTarget { type_id_val: target_id, cert_ids: vec![] })
+            .expect("注册应成功");
+        let step = CertDeployStep::new(Arc::new(registry), Arc::new(InMemoryDeploymentState::new()));
+
+        let mut credential_registry = CredentialRegistry::new();
+        credential_registry.register(ProxyFieldCredentialType).expect("注册应成功");
+        let credentials = CredentialStore::new(&db, Arc::new(credential_registry), Arc::new(cipher));
+        let pipeline_state = MemoryState::default();
+        let artifacts = cert_artifacts();
+        let input = serde_json::json!({
+            "target": target_id,
+            "config": { "credential_id": credential_id },
+            "force": false,
+        });
+
+        let mut ctx = StepContext::new(1, 1, 0, &input, &artifacts, &credentials, &pipeline_state);
+        step.execute(&mut ctx).await.expect("部署应成功");
+        ctx.take_logs().into_iter().map(|log| log.message).collect()
+    }
+
+    /// `proxy: ` 行必须与实际出网一致：local 不出网、tencent-ssl 的出网不接
+    /// 凭据代理——凭据即便自带 custom 代理也不得打出该行。
+    #[tokio::test]
+    async fn targets_without_proxy_integration_log_no_proxy_line() {
+        let fields = serde_json::json!({
+            "proxy_mode": "custom",
+            "proxy_url": "socks5://user:pass@10.0.0.1:3128"
+        });
+        for target_id in ["local", "tencent-ssl"] {
+            let logs = run_deploy_with_credential(target_id, fields.clone()).await;
+            let messages: Vec<&String> = logs.iter().collect();
+            assert!(
+                !logs.iter().any(|m| m.starts_with("proxy: ")),
+                "{target_id} 未接入凭据代理，不应出现 proxy 行: {messages:?}"
+            );
+        }
+    }
+
+    /// 接入代理的目标（ssh）按与目标侧一致的口径打行：custom 自带 URL
+    /// 打一行（userinfo 剥掉）；inherit 在 deploy 链路等同直连，不打。
+    #[tokio::test]
+    async fn proxy_carrying_target_logs_line_only_for_custom_proxy() {
+        let custom = serde_json::json!({
+            "proxy_mode": "custom",
+            "proxy_url": "socks5://user:pass@10.0.0.1:3128"
+        });
+        let logs = run_deploy_with_credential("ssh", custom).await;
+        let proxy_lines: Vec<&String> =
+            logs.iter().filter(|m| m.starts_with("proxy: ")).collect();
+        assert_eq!(
+            proxy_lines,
+            vec!["proxy: via socks5://10.0.0.1:3128"],
+            "custom 应恰好打一行且 userinfo 剥掉: {logs:?}"
+        );
+
+        let inherit = serde_json::json!({ "proxy_mode": "inherit" });
+        let logs = run_deploy_with_credential("ssh", inherit).await;
+        assert!(
+            !logs.iter().any(|m| m.starts_with("proxy: ")),
+            "deploy 链路无全局代理来源，inherit 不应打 proxy 行: {logs:?}"
         );
     }
 

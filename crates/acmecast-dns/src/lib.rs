@@ -17,7 +17,10 @@ pub use challenge::{
     with_txt_record,
 };
 pub use error::{Error, Result};
-pub use http::{HttpRequest, HttpResponse, HttpTransport, ReqwestTransport};
+pub use http::{
+    HttpRequest, HttpResponse, HttpTransport, ProxyMode, ReqwestTransport, proxy_log_target,
+    proxy_url_from_credentials, validate_proxy_url,
+};
 pub use http01::Http01Answer;
 pub use propagation::{
     prioritize_for_provider, DnsResolver, DohResolver, PropagationPolicy, default_resolvers,
@@ -29,4 +32,6 @@ pub use providers::{
     AliyunProvider, CloudflareProvider, TencentApiClient, TencentEoProvider, TencentProvider,
 };
 pub use registry::DnsProviderRegistry;
-pub use resolvers::{ResolverEntry, load_extended_resolvers};
+pub use resolvers::{
+    PROXY_URL_ENV, ResolverEntry, doh_transport, doh_transport_from, load_extended_resolvers,
+};

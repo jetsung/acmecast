@@ -19,6 +19,8 @@ base64.workspace = true
 tracing.workspace = true
 chrono.workspace = true
 uuid.workspace = true
+url.workspace = true
+schemars.workspace = true
 
 [dev-dependencies]
 serial_test = "3"

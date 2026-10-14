@@ -28,6 +28,14 @@ pub struct S3Fields {
     /// 对象键前缀（可选）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prefix: Option<String>,
+
+    /// 出网代理模式：`direct` 直连 / `inherit` 继承全局 / `custom` 自定义。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_mode: Option<String>,
+
+    /// 自定义出网代理（`proxy_mode=custom` 时生效）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxy_url: Option<String>,
 }
 
 impl std::fmt::Debug for S3Fields {
@@ -42,7 +50,20 @@ impl std::fmt::Debug for S3Fields {
 
 /// S3 凭据类型。
 #[derive(Debug, Default)]
-pub struct S3CredentialType;
+pub struct S3CredentialType {
+    /// 全局出网代理（`[proxy] url` / `ACMECAST_PROXY_URL`）；供
+    /// `proxy_mode=inherit` 的凭据在连通性测试里继承。
+    global_proxy_url: Option<String>,
+}
+
+impl S3CredentialType {
+    /// 设置全局出网代理（`[proxy] url` / `ACMECAST_PROXY_URL`）。
+    #[must_use]
+    pub fn with_global_proxy(mut self, proxy_url: Option<impl Into<String>>) -> Self {
+        self.global_proxy_url = proxy_url.map(Into::into);
+        self
+    }
+}
 
 #[async_trait::async_trait]
 impl CredentialType for S3CredentialType {
@@ -70,7 +91,7 @@ impl CredentialType for S3CredentialType {
             }
             Err(e) => return ConnectivityOutcome::Unavailable { reason: e.to_string() },
         };
-        match s3_probe(&parsed_fields).await {
+        match s3_probe(&parsed_fields, self.global_proxy_url.as_deref()).await {
             Ok(()) => ConnectivityOutcome::Ok,
             Err(e) => ConnectivityOutcome::Unavailable { reason: self.redact(&raw, &e) },
         }
@@ -94,7 +115,7 @@ impl CredentialType for S3CredentialType {
         if parsed.bucket.trim().is_empty() {
             return Err(acmecast_core::Error::validation("bucket", "不能为空"));
         }
-        Ok(())
+        acmecast_core::validate_proxy_field(fields)
     }
 }
 
@@ -112,9 +133,14 @@ pub fn s3_fields_schema() -> RootSchema {
             "bucket",
             "region",
             "prefix",
-            "session_token"
+            "session_token",
+            "proxy_mode",
+            "proxy_url"
         ]),
     );
+    // 代理字段独占一行：枚举下拉 + 联动输入框，前驱字段（session_token）
+    // 自动挂 x-end-row。
+    acmecast_core::inject_proxy_field_annotations(&mut schema);
     schema
 }
 
@@ -144,21 +170,40 @@ mod tests {
                 "bucket",
                 "region",
                 "prefix",
-                "session_token"
+                "session_token",
+                "proxy_mode",
+                "proxy_url"
             ]
         );
         let props = schema
             .schema
             .object
+            .as_ref()
             .expect("应为对象 schema")
-            .properties;
+            .properties
+            .clone();
         for key in names {
             assert!(props.contains_key(key), "properties 缺少字段 {key}");
         }
+        // 代理字段注入：枚举候选 + 中文标签 + custom 联动 + 前驱换行。
+        let rendered = serde_json::to_string(&schema).unwrap();
+        assert!(
+            rendered.contains(r#""enum":["direct","inherit","custom"]"#),
+            "proxy_mode 应注入枚举候选: {rendered}"
+        );
+        for label in ["直连", "继承全局", "自定义"] {
+            assert!(rendered.contains(label), "应含中文展示名 {label}: {rendered}");
+        }
+        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(
+            value["properties"]["session_token"]["x-end-row"],
+            serde_json::json!(true),
+            "前驱字段（session_token）应带 x-end-row: {rendered}"
+        );
     }
 }
 
-async fn s3_probe(fields: &S3Fields) -> Result<(), String> {
+async fn s3_probe(fields: &S3Fields, global_proxy_url: Option<&str>) -> Result<(), String> {
     use aws_config::Region;
     use aws_credential_types::Credentials;
     use aws_sdk_s3::config::Builder as S3ConfigBuilder;
@@ -181,6 +226,14 @@ async fn s3_probe(fields: &S3Fields) -> Result<(), String> {
     let endpoint = fields.endpoint.trim().trim_end_matches('/').to_owned();
     if !endpoint.is_empty() {
         s3_config = s3_config.endpoint_url(endpoint).force_path_style(true);
+    }
+    // 出网代理：custom 自带 URL；inherit 继承全局代理（连通性测试注入）。
+    let effective_proxy = acmecast_core::effective_proxy_url(
+        &serde_json::to_value(fields).map_err(|e| e.to_string())?,
+        global_proxy_url,
+    );
+    if let Some(proxy) = super::s3_http::s3_http_client(effective_proxy.as_deref()) {
+        s3_config = s3_config.http_client(proxy);
     }
     let config = s3_config.build();
     let client = Client::from_conf(config);

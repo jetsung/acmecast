@@ -15,14 +15,14 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use schemars::schema::RootSchema;
-use schemars::schema_for;
 use serde_json::{Value, json};
 
 use super::tencent::{
     STS_SERVICE, STS_VERSION, TTL_MAX, TTL_MIN, TencentApiClient, TencentCredentials,
+    tencent_credentials_schema,
 };
 use crate::error::{Error, Result};
-use crate::http::{HttpTransport, ReqwestTransport};
+use crate::http::{HttpTransport, ReqwestTransport, transport_for_credentials};
 use crate::provider::{DnsProvider, TxtRecord, parse_credentials};
 
 /// EdgeOne（TEO）API 3.0 的服务名与版本。
@@ -36,6 +36,9 @@ const TEO_VERSION: &str = "2022-09-01";
 #[derive(Debug)]
 pub struct TencentEoProvider {
     client: TencentApiClient,
+    /// 全局出网代理（`[proxy] url` / `ACMECAST_PROXY_URL`）；仅
+    /// `proxy_mode=inherit` 的凭据读它。`None` 即直连。
+    global_proxy_url: Option<String>,
 }
 
 impl TencentEoProvider {
@@ -50,7 +53,29 @@ impl TencentEoProvider {
     pub fn with_transport(http: Arc<dyn HttpTransport>) -> Self {
         Self {
             client: TencentApiClient { http },
+            global_proxy_url: None,
         }
+    }
+
+    /// 设置全局出网代理，供 `proxy_mode=inherit` 的凭据继承。
+    #[must_use]
+    pub fn with_global_proxy(mut self, proxy_url: Option<impl Into<String>>) -> Self {
+        self.global_proxy_url = proxy_url.map(Into::into);
+        self
+    }
+
+    /// 全局代理 URL；`proxy_mode=inherit` 时读它（留空/未配即直连）。
+    fn global_proxy_url(&self) -> Option<&str> {
+        self.global_proxy_url.as_deref()
+    }
+
+    /// 按凭据选传输层：`proxy_mode` 三态决定直连 / 继承全局 / 走凭据自定义代理。
+    fn http_for(
+        &self,
+        credentials: &Value,
+        global_proxy_url: Option<&str>,
+    ) -> Result<Arc<dyn HttpTransport>> {
+        transport_for_credentials(credentials, &self.client.http, global_proxy_url)
     }
 
     /// 探测凭据是否可用：调 STS 的 `GetCallerIdentity`（与云解析提供商同款）。
@@ -58,9 +83,11 @@ impl TencentEoProvider {
     /// EdgeOne 凭据与腾讯云 DNS 凭据是同一套密钥体系，探测也走同一个
     /// 身份接口；端点随凭据的 `account_site` 切换。
     pub async fn verify_credentials(&self, credentials: &Value) -> Result<()> {
+        let http = self.http_for(credentials, self.global_proxy_url())?;
         let credentials: TencentCredentials = parse_credentials(credentials)?;
         self.client
-            .call(
+            .call_with(
+                &http,
                 &credentials,
                 STS_SERVICE,
                 STS_VERSION,
@@ -75,10 +102,16 @@ impl TencentEoProvider {
     ///
     /// 每次现查、不缓存：一次挑战只有寥寥几次请求，缓存的失效复杂度
     /// 换不来可感知的收益，与 Cloudflare 提供商每次换 zone_id 是同一取舍。
-    async fn zone_id(&self, credentials: &TencentCredentials, zone: &str) -> Result<String> {
+    async fn zone_id(
+        &self,
+        http: &Arc<dyn HttpTransport>,
+        credentials: &TencentCredentials,
+        zone: &str,
+    ) -> Result<String> {
         let body = self
             .client
-            .call(
+            .call_with(
+                http,
                 credentials,
                 TEO_SERVICE,
                 TEO_VERSION,
@@ -107,13 +140,15 @@ impl TencentEoProvider {
     /// `record-xxxx` 字符串，删除时要原样传回，不能假定整数。
     async fn list_records(
         &self,
+        http: &Arc<dyn HttpTransport>,
         credentials: &TencentCredentials,
         zone_id: &str,
         record: &TxtRecord,
     ) -> Result<Vec<(Value, String)>> {
         let body = self
             .client
-            .call(
+            .call_with(
+                http,
                 credentials,
                 TEO_SERVICE,
                 TEO_VERSION,
@@ -165,15 +200,19 @@ impl DnsProvider for TencentEoProvider {
     }
 
     fn credential_fields(&self) -> RootSchema {
-        schema_for!(TencentCredentials)
+        // 与云解析共用同一份 schema：字段集与渲染标注（x-field-order、
+        // proxy_url 的 x-visible-when 联动）都由此保持一致。
+        tencent_credentials_schema()
     }
 
     async fn create_txt(&self, credentials: &Value, record: &TxtRecord) -> Result<()> {
+        let http = self.http_for(credentials, self.global_proxy_url())?;
         let credentials: TencentCredentials = parse_credentials(credentials)?;
-        let zone_id = self.zone_id(&credentials, &record.zone).await?;
+        let zone_id = self.zone_id(&http, &credentials, &record.zone).await?;
 
         self.client
-            .call(
+            .call_with(
+                &http,
                 &credentials,
                 TEO_SERVICE,
                 TEO_VERSION,
@@ -191,11 +230,12 @@ impl DnsProvider for TencentEoProvider {
     }
 
     async fn find_txt(&self, credentials: &Value, record: &TxtRecord) -> Result<Vec<String>> {
+        let http = self.http_for(credentials, self.global_proxy_url())?;
         let credentials: TencentCredentials = parse_credentials(credentials)?;
-        let zone_id = self.zone_id(&credentials, &record.zone).await?;
+        let zone_id = self.zone_id(&http, &credentials, &record.zone).await?;
 
         Ok(self
-            .list_records(&credentials, &zone_id, record)
+            .list_records(&http, &credentials, &zone_id, record)
             .await?
             .into_iter()
             .map(|(_, content)| content)
@@ -203,20 +243,22 @@ impl DnsProvider for TencentEoProvider {
     }
 
     async fn probe_zone(&self, credentials: &Value, zone: &str) -> Result<()> {
+        let http = self.http_for(credentials, self.global_proxy_url())?;
         let credentials: TencentCredentials = parse_credentials(credentials)?;
         // zone_id 的查询即托管探测：zone 未接入 EdgeOne 时报错并指明 zone 名。
-        self.zone_id(&credentials, zone).await?;
+        self.zone_id(&http, &credentials, zone).await?;
         Ok(())
     }
 
     async fn delete_txt(&self, credentials: &Value, record: &TxtRecord) -> Result<()> {
+        let http = self.http_for(credentials, self.global_proxy_url())?;
         let credentials: TencentCredentials = parse_credentials(credentials)?;
-        let zone_id = self.zone_id(&credentials, &record.zone).await?;
+        let zone_id = self.zone_id(&http, &credentials, &record.zone).await?;
 
         // 先查后删，并且**只删内容与我们这条相同的**——同名但不是
         // 我们写的记录不该被替人清掉；一条都没有就视为删除成功。
         let ids: Vec<Value> = self
-            .list_records(&credentials, &zone_id, record)
+            .list_records(&http, &credentials, &zone_id, record)
             .await?
             .into_iter()
             .filter(|(_, content)| content == &record.value)
@@ -227,7 +269,8 @@ impl DnsProvider for TencentEoProvider {
             return Ok(());
         }
         self.client
-            .call(
+            .call_with(
+                &http,
                 &credentials,
                 TEO_SERVICE,
                 TEO_VERSION,

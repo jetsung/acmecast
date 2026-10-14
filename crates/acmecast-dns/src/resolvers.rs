@@ -168,6 +168,70 @@ fn normalize(s: String) -> String {
     s.trim().to_lowercase()
 }
 
+/// 全局出网代理的环境变量键名。
+///
+/// 与 `ServerConfig.proxy_url` 同源（同一份配置，合并优先级
+/// `builtin < config.toml < env`）：DoH 解析器与凭据 `proxy_mode=inherit`
+/// 共用它。原 DoH 专用的 `ACMECAST_DOH_PROXY_URL` 已废弃合并到此处。
+pub const PROXY_URL_ENV: &str = "ACMECAST_PROXY_URL";
+
+/// 按给定代理 URL（`None` 即直连）构建 DoH 解析器专用传输层。
+///
+/// 校验口径与凭据级 `proxy_url` 完全一致（同一 [`validate_proxy_url`]）；
+/// 该传输层**仅供传播 DoH 解析器使用**——凭据的出网客户端各自独立构建，
+/// 不会读到这里的配置，未配 `proxy_url` 的凭据始终保持直连。
+pub fn doh_transport_from(proxy_url: Option<&str>) -> crate::Result<Arc<dyn HttpTransport>> {
+    let Some(url) = proxy_url.map(str::trim).filter(|v| !v.is_empty()) else {
+        return Ok(Arc::new(crate::ReqwestTransport::new()?));
+    };
+    crate::validate_proxy_url(url)?;
+    Ok(Arc::new(crate::ReqwestTransport::with_proxy(url)?))
+}
+
+/// 从环境变量 [`PROXY_URL_ENV`] 读取全局代理并构建 DoH 解析器传输层。
+///
+/// 未设置或留空即直连；非法值（不支持的 scheme、无法解析）返回错误，
+/// 由调用方决定拒绝启动。
+pub fn doh_transport() -> crate::Result<Arc<dyn HttpTransport>> {
+    doh_transport_from(std::env::var(PROXY_URL_ENV).ok().as_deref())
+}
+
 fn normalize_endpoint(endpoint: &str) -> String {
     endpoint.trim().trim_end_matches('/').to_lowercase()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_doh_transport_defaults_to_direct_connection() {
+        // 未配置（None）与留空都应走直连且构建成功。
+        doh_transport_from(None).expect("未配置应直连构建成功");
+        doh_transport_from(Some("")).expect("留空应视为直连");
+        doh_transport_from(Some("   ")).expect("空白应视为直连");
+    }
+
+    #[test]
+    fn a_doh_transport_with_a_valid_proxy_is_built() {
+        for url in ["socks5://127.0.0.1:7890", "http://proxy.local:8080", "https://p.example.com"] {
+            doh_transport_from(Some(url))
+                .unwrap_or_else(|e| panic!("{url} 应能构建 DoH 传输层: {e}"));
+        }
+    }
+
+    #[test]
+    fn an_invalid_doh_proxy_is_rejected_with_scheme_hint() {
+        for url in ["ftp://127.0.0.1:21", "not-a-url"] {
+            let err = doh_transport_from(Some(url)).expect_err("非法代理应被拒绝");
+            assert!(err.to_string().contains("socks5"), "应提示支持的 scheme: {err}");
+        }
+    }
+
+    /// `doh_transport()` 读统一后的 `ACMECAST_PROXY_URL`（与
+    /// `ServerConfig.proxy_url` 同源）；非法值同样被拒。
+    #[test]
+    fn the_env_key_is_the_unified_proxy_url() {
+        assert_eq!(PROXY_URL_ENV, "ACMECAST_PROXY_URL");
+    }
 }

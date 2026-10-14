@@ -50,6 +50,8 @@ fn registered_account() -> AcmeAccountFields {
             })
             .to_string(),
         ),
+        proxy_mode: None,
+        proxy_url: None,
     }
 }
 
