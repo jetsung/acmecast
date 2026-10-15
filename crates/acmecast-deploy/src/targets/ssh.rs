@@ -153,6 +153,7 @@ pub struct ResolvedSshConfig {
 pub fn resolve_input(
     input: &SshInput,
     profile: Option<&SshHostFields>,
+    global_proxy_url: Option<&str>,
 ) -> Result<ResolvedSshConfig> {
     // 档案自身先过一遍校验：字段形态坏掉要指向档案里的字段，
     // 而不是合并后报「缺主机」把人往错误的方向带。
@@ -227,12 +228,10 @@ pub fn resolve_input(
             .or_else(|| profile.and_then(|profile| profile.key_mode.clone()))
             .unwrap_or_else(default_key_mode),
         reload_command: input.reload_command.clone(),
-        // 出网代理：仅档案 custom 自带 URL 生效（deploy 链路无全局来源，
-        // inherit 等同直连）。
         proxy_url: profile.and_then(|profile| {
             acmecast_core::effective_proxy_url(
                 &serde_json::to_value(profile).expect("SshHostFields 必可序列化"),
-                None,
+                global_proxy_url,
             )
         }),
     })
@@ -336,7 +335,7 @@ impl DeploymentTarget for SshTarget {
             Some(id) => Some(resolve_profile(id, credentials).await?),
             None => None,
         };
-        let config = resolve_input(&input, profile.as_ref())?;
+        let config = resolve_input(&input, profile.as_ref(), self._global_proxy_url.as_deref())?;
 
         let transport = self.connector.connect(&config, credentials).await?;
 
@@ -1016,7 +1015,7 @@ mod tests {
             proxy_url: Some("socks5://10.0.0.1:1080".to_owned()),
             ..test_profile()
         };
-        let resolved = resolve_input(&input, Some(&profile)).expect("应合并成功");
+        let resolved = resolve_input(&input, Some(&profile), None).expect("应合并成功");
         assert_eq!(
             resolved.proxy_url.as_deref(),
             Some("socks5://10.0.0.1:1080"),
@@ -1030,7 +1029,7 @@ mod tests {
                 proxy_url: Some("socks5://10.0.0.1:1080".to_owned()),
                 ..test_profile()
             };
-            let resolved = resolve_input(&input, Some(&profile)).expect("应合并成功");
+            let resolved = resolve_input(&input, Some(&profile), None).expect("应合并成功");
             assert_eq!(resolved.proxy_url, None, "{mode} 应直连");
         }
     }
@@ -1116,7 +1115,7 @@ mod tests {
             "key_path": "/srv/ssl/site.key",
         }))
         .expect("应能解析");
-        let config = resolve_input(&input, Some(&profile())).expect("档案应补齐连接与认证");
+        let config = resolve_input(&input, Some(&profile()), None).expect("档案应补齐连接与认证");
 
         assert_eq!(config.host, "web-1.example.com");
         assert_eq!(config.user, "deploy");
@@ -1140,7 +1139,7 @@ mod tests {
             "credential_id": 1,
         }))
         .expect("应能解析");
-        let err = resolve_input(&input, Some(&profile())).expect_err("档案不含路径应报错");
+        let err = resolve_input(&input, Some(&profile()), None).expect_err("档案不含路径应报错");
 
         let text = err.to_string();
         assert!(text.contains("cert_path"), "应指出缺证书路径: {text}");
@@ -1161,7 +1160,7 @@ mod tests {
             "reload_command": "systemctl reload caddy",
         }))
         .expect("应能解析");
-        let config = resolve_input(&input, Some(&profile())).expect("合并应成功");
+        let config = resolve_input(&input, Some(&profile()), None).expect("合并应成功");
 
         assert_eq!(config.port, 2223, "输入显式端口应覆盖档案");
         assert_eq!(config.cert_path, "/override/site.crt");
@@ -1181,7 +1180,7 @@ mod tests {
             "key_path": "/k.pem",
         }))
         .expect("应能解析");
-        let config = resolve_input(&input, None).expect("直填应完整");
+        let config = resolve_input(&input, None, None).expect("直填应完整");
 
         assert_eq!(config.host, "10.0.0.9");
         assert_eq!(config.port, 22);
@@ -1194,7 +1193,7 @@ mod tests {
     #[test]
     fn missing_fields_are_named_after_the_merge() {
         let input: SshInput = serde_json::from_value(serde_json::json!({})).expect("应能解析");
-        let err = resolve_input(&input, None).expect_err("既无档案也无直填应报错");
+        let err = resolve_input(&input, None, None).expect_err("既无档案也无直填应报错");
         assert!(
             err.to_string().contains("host"),
             "应指出缺主机: {err}",
@@ -1208,7 +1207,7 @@ mod tests {
             "key_path": "/k.pem",
         }))
         .expect("应能解析");
-        let err = resolve_input(&input, None).expect_err("缺认证应报错");
+        let err = resolve_input(&input, None, None).expect_err("缺认证应报错");
         assert!(err.to_string().contains("auth"), "{err}");
 
         let input: SshInput = serde_json::from_value(serde_json::json!({
@@ -1217,7 +1216,7 @@ mod tests {
         .expect("应能解析");
         let mut broken = profile();
         broken.private_key = None;
-        let err = resolve_input(&input, Some(&broken)).expect_err("档案缺认证材料应报错");
+        let err = resolve_input(&input, Some(&broken), None).expect_err("档案缺认证材料应报错");
         assert!(err.to_string().contains("credential_id.private_key"), "{err}");
     }
 
@@ -1229,7 +1228,7 @@ mod tests {
         .expect("应能解析");
         let mut broken = profile();
         broken.private_key = None;
-        let err = resolve_input(&input, Some(&broken)).expect_err("档案缺认证材料应报错");
+        let err = resolve_input(&input, Some(&broken), None).expect_err("档案缺认证材料应报错");
         let text = err.to_string();
         assert!(text.contains("credential_id.private_key"), "{err}");
     }
