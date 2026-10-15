@@ -129,8 +129,6 @@ pub fn default_steps(
     proxy_url: Option<&str>,
 ) -> StepRegistry {
     let mut steps = StepRegistry::new();
-    // 到期检测需读证书库：为 cert.apply 注入 db，0/负数=跳过检测，其余按 not_after 判定。
-    // 跳过分支需注入库中证书产物，故一并注入 data_dir。
     steps
         .register(CertApplyStep::with_policy_resolvers_db_and_data_dir(
             dns,
@@ -145,7 +143,7 @@ pub fn default_steps(
         .expect("内置步骤不应重复注册");
     let state = Arc::new(DatabaseDeploymentState::new(db));
     steps
-        .register(CertDeployStep::new(deploy, state))
+        .register(CertDeployStep::new(deploy, state).with_proxy_url(proxy_url))
         .expect("内置步骤不应重复注册");
     steps
 }

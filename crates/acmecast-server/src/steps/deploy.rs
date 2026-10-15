@@ -100,13 +100,22 @@ pub struct CertDeployInput {
 pub struct CertDeployStep {
     registry: Arc<DeploymentRegistry>,
     state: Arc<dyn DeploymentStateStore>,
+    proxy_url: Option<String>,
 }
 
 impl CertDeployStep {
     /// 用部署注册表与部署记录存储装配。
     #[must_use]
     pub fn new(registry: Arc<DeploymentRegistry>, state: Arc<dyn DeploymentStateStore>) -> Self {
-        Self { registry, state }
+        Self { registry, state, proxy_url: None }
+    }
+
+    /// 设置全局出网代理（`[proxy] url` / `ACMECAST_PROXY_URL`），供日志中
+    /// `proxy: via ...` 与实际部署出网同口径（`inherit` 继承全局）。
+    #[must_use]
+    pub fn with_proxy_url(mut self, proxy_url: Option<impl Into<String>>) -> Self {
+        self.proxy_url = proxy_url.map(Into::into);
+        self
     }
 }
 
@@ -196,24 +205,22 @@ impl PipelineStep for CertDeployStep {
             target.type_id(),
             target.display_name(),
         )]));
-
         // `proxy: ` 行必须与实际出网一致：只有真正把出网接到凭据代理上的
         // 目标类型（ssh/s3/webdav）才打；local 不出网、tencent-ssl 的出网
         // 不接凭据代理，打了就是误导。派生口径与目标侧完全一致——deploy
-        // 链路没有全局代理来源，inherit 等同直连，仅凭据自带的 custom URL
-        // 生效。展示形态剥掉 userinfo——认证材料不进运行历史。
+        // 链路经全局代理注入，inherit 继承全局（ACMECAST_PROXY_URL/[proxy]），
+        // direct 直连、custom 走凭据自带 URL。展示形态剥掉 userinfo——认证材料不进运行历史。
         const PROXY_CARRYING_TARGETS: [&str; 3] = ["ssh", "s3", "webdav"];
         if PROXY_CARRYING_TARGETS.contains(&target.type_id())
             && let Some(proxy) = credential
                 .as_ref()
-                .and_then(|c| acmecast_core::effective_proxy_url(&c.fields, None))
+                .and_then(|c| acmecast_core::effective_proxy_url(&c.fields, self.proxy_url.as_deref()))
         {
             ctx.log_info(format!(
                 "proxy: via {}",
                 acmecast_dns::proxy_log_target(&proxy)
             ));
         }
-
         let deployer = Deployer::new(Arc::clone(&self.state));
         // force 已移除：仅 tencent-ssl 走指纹幂等，其余每次都写入
         let force = false;
