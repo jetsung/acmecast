@@ -163,6 +163,8 @@ vi.mock("@/api/client", () => ({
                                 key_mode: { type: ["string", "null"] },
                                 cert_mode: { type: ["string", "null"] },
                                 key_path: { type: ["string", "null"] },
+                                fullchain_path: { type: ["string", "null"] },
+                                ca_path: { type: ["string", "null"] },
                                 cert_path: { type: ["string", "null"] },
                                 port: { type: ["integer", "null"] },
                                 host: { type: ["string", "null"] },
@@ -213,6 +215,10 @@ vi.mock("@/api/client", () => ({
                                   type: "integer",
                                   description: "腾讯云凭据的标识。",
                                   "x-credential-types": ["cloud.tencent"],
+                                },
+                                alias: {
+                                  type: "string",
+                                  description: "上传到云端的证书备注名。",
                                 },
                                 repeatable: {
                                   type: "boolean",
@@ -563,10 +569,11 @@ describe("PipelineEditorPage", () => {
     fireEvent.click(await screen.findByTitle("web-01（id=10）"));
 
     // 直填字段（可从档案获得或由缺省兜底）不再渲染，只留部署输入。
-    for (const banned of ["host", "port", "user", "auth", "cert_mode", "key_mode"]) {
+    for (const banned of ["host", "port", "user", "auth", "cert_mode", "key_mode", "cert_path"]) {
       expect(screen.queryByLabelText(banned)).toBeNull();
     }
-    expect(screen.getByLabelText("cert_path")).toBeTruthy();
+    expect(screen.getByLabelText("fullchain_path")).toBeTruthy();
+    expect(screen.getByLabelText("ca_path")).toBeTruthy();
     expect(screen.getByLabelText("key_path")).toBeTruthy();
     expect(screen.getByLabelText("reload_command")).toBeTruthy();
 
@@ -580,19 +587,19 @@ describe("PipelineEditorPage", () => {
     expect(rootOrder.indexOf("target")).toBeLessThan(rootOrder.indexOf("SSH 主机档案"));
 
     // 布局:SSH 主机档案与 reload_command 各独占一行(右侧空列占位),
-    // cert_path/key_path 成对同行(半宽)。
+    // fullchain/ca/key 路径成对同行(半宽)。
     const colOf = (label: string) =>
       allItems.find((item) => item.querySelector("label")?.textContent === label)
         ?.closest(".ant-col");
     expect(colOf("SSH 主机档案")?.className).toContain("ant-col-12");
-    expect(colOf("cert_path")?.className).toContain("ant-col-12");
+    expect(colOf("fullchain_path")?.className).toContain("ant-col-12");
     expect(colOf("key_path")?.className).toContain("ant-col-12");
     expect(colOf("reload_command")?.className).toContain("ant-col-12");
     // 空列占位:档案与重载命令所在行的行尾各有一个无 label 的空列。
     const emptyCols = document.querySelectorAll<HTMLElement>(".ant-col[aria-hidden]");
     expect(emptyCols.length).toBe(2);
 
-    fireEvent.change(screen.getByLabelText("cert_path"), { target: { value: "/srv/ssl/site.crt" } });
+    fireEvent.change(screen.getByLabelText("fullchain_path"), { target: { value: "/srv/ssl/site.fullchain.cer" } });
     fireEvent.change(screen.getByLabelText("key_path"), { target: { value: "/srv/ssl/site.key" } });
 
     const body = await save();
@@ -600,7 +607,7 @@ describe("PipelineEditorPage", () => {
       target: "ssh",
       acme_account_credential_id: 7,
       // 提交只含档案引用与部署输入,连接/权限字段由档案在执行时提供。
-      config: { credential_id: 10, cert_path: "/srv/ssl/site.crt", key_path: "/srv/ssl/site.key" },
+      config: { credential_id: 10, fullchain_path: "/srv/ssl/site.fullchain.cer", key_path: "/srv/ssl/site.key" },
     });
   });
 

@@ -19,8 +19,9 @@ use crate::targets::ssh::SshAuthSource;
 /// SSH 主机档案的凭据类型标识。
 ///
 /// 与 SSH 部署目标的 `type_id()` 对齐（沿 DNS 凭据的先例：
-/// `cloud.cloudflare` / `cloud.aliyun` 凭据类型也与各自的提供商标识对齐）。
-pub const SSH_HOST_TYPE_ID: &str = "deploy.ssh";
+/// `cloudflare` / `aliyun` 凭据类型也与各自的提供商标识对齐）。
+pub const SSH_HOST_TYPE_ID: &str = "ssh";
+
 fn default_port() -> u16 {
     22
 }
@@ -39,23 +40,6 @@ pub fn ssh_host_fields_schema() -> RootSchema {
     use schemars::schema::Schema;
 
     let mut schema = schemars::schema_for!(SshHostFields);
-    // serde_json 的 Map 会把 properties 按字母序重排（cert_mode 会抢到
-    // host 前面）——用 x-field-order 钉住业务渲染顺序，同时它是代理
-    // 字段前驱（key_mode 挂 x-end-row）的判定依据。
-    schema.schema.extensions.insert(
-        "x-field-order".to_owned(),
-        serde_json::json!([
-            "host",
-            "port",
-            "user",
-            "private_key",
-            "password",
-            "cert_mode",
-            "key_mode",
-            "proxy_mode",
-            "proxy_url"
-        ]),
-    );
     if let Some(Schema::Object(private_key)) = schema
         .schema
         .object
@@ -66,9 +50,6 @@ pub fn ssh_host_fields_schema() -> RootSchema {
             .extensions
             .insert("x-multiline".to_owned(), serde_json::Value::Bool(true));
     }
-    // 代理字段独占一行：枚举下拉 + 联动输入框，前驱字段（key_mode）
-    // 自动挂 x-end-row。
-    acmecast_core::inject_proxy_field_annotations(&mut schema);
     schema
 }
 
@@ -107,14 +88,6 @@ pub struct SshHostFields {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(default = "default_key_mode")]
     pub key_mode: Option<String>,
-
-    /// 出网代理模式：`direct` 直连 / `inherit` 继承全局 / `custom` 自定义。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub proxy_mode: Option<String>,
-
-    /// 自定义出网代理（`proxy_mode=custom` 时生效）。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub proxy_url: Option<String>,
 }
 
 /// 证书权限的表单缺省值，与部署目标的系统缺省（`default_cert_mode`）一致。
@@ -143,7 +116,6 @@ impl std::fmt::Debug for SshHostFields {
             )
             .field("cert_mode", &self.cert_mode)
             .field("key_mode", &self.key_mode)
-            .field("proxy_url", &acmecast_core::redact_presence(&self.proxy_url))
             .finish()
     }
 }
@@ -180,26 +152,7 @@ impl SshHostFields {
                 Err(acmecast_core::Error::validation("password", "不能为空白"))
             }
             _ => Ok(()),
-        }?;
-        // custom 模式必须给出合法代理 URL（保存/部署前拦截）。
-        let proxy_mode = acmecast_core::ProxyMode::from_credentials(
-            &serde_json::json!({
-                "proxy_mode": self.proxy_mode,
-                "proxy_url": self.proxy_url,
-            }),
-        );
-        if proxy_mode == acmecast_core::ProxyMode::Custom {
-            let Some(url) = self.proxy_url.as_deref().map(str::trim).filter(|u| !u.is_empty())
-            else {
-                return Err(acmecast_core::Error::validation(
-                    "proxy_url",
-                    "proxy_mode=custom 时必须填写代理 URL",
-                ));
-            };
-            acmecast_core::validate_proxy_url(url)
-                .map_err(|e| acmecast_core::Error::validation("proxy_url", e.to_string()))?;
         }
-        Ok(())
     }
 
     /// 取出档案自带的认证材料，转成部署可用的来源。
@@ -245,8 +198,6 @@ mod tests {
             password: None,
             cert_mode: None,
             key_mode: None,
-            proxy_mode: None,
-            proxy_url: None,
         }
     }
 
@@ -397,6 +348,6 @@ mod tests {
 
     #[test]
     fn the_type_id_aligns_with_the_ssh_deploy_target() {
-        assert_eq!(SSH_HOST_TYPE_ID, "deploy.ssh");
+        assert_eq!(SSH_HOST_TYPE_ID, "ssh");
     }
 }

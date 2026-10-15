@@ -577,7 +577,7 @@ async fn a_full_single_page_is_not_paginated_again() {
 fn the_target_declares_itself() {
     let target = TencentSslTarget::with_transport(ScriptedTransport::new(vec![]));
     assert_eq!(target.type_id(), "tencent-ssl");
-    assert_eq!(target.display_name(), "腾讯云 SSL 证书");
+    assert_eq!(target.display_name(), "腾讯云 SSL 证书(仅需 fullchain+key)");
 
     let example = target.example_input();
     for field in [

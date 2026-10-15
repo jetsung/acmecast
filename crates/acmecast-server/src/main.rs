@@ -133,6 +133,21 @@ async fn run(config_override: Option<&str>) -> Result<(), Box<dyn std::error::Er
     // 失败只记日志不阻断启动（列表对空算法展示占位）。
     acmecast_server::cert_backfill::backfill_key_algorithms(&db, &config.data_dir).await;
 
+    // 上次进程退出（崩溃/被杀）时还在「运行中」的历史不可能再有执行者写回
+    // 终态，留着会永久阻塞该流水线的后续触发（手动 409、调度跳过）——
+    // 启动时统一标记为失败。失败仅记日志，不阻断启动。
+    match acmecast_pipeline::HistoryRepository::new(&db)
+        .fail_stale_running()
+        .await
+    {
+        Ok(0) => {}
+        Ok(marked) => tracing::warn!(
+            marked,
+            "已把上次进程退出遗留的运行中历史标记为失败，相关流水线恢复可触发"
+        ),
+        Err(error) => tracing::error!(%error, "清点遗留运行中历史失败，启动继续"),
+    }
+
     // 存量证书按「域名集合仅保留最新一个」收敛：多余归档到 certs/archived/<指纹>/。
     // 幂等、逐条失败仅记日志，不阻断启动。
     acmecast_server::cert_migrate::migrate_archived_certs(&db, &config.data_dir).await;
@@ -147,8 +162,14 @@ async fn run(config_override: Option<&str>) -> Result<(), Box<dyn std::error::Er
         std::sync::Arc::new(acmecast_server::steps::default_steps(
             db.clone(),
             config.data_dir.clone(),
-            acmecast_server::steps::default_dns_registry(config.proxy_url.as_deref()),
-            acmecast_server::steps::default_deploy_registry(),
+            acmecast_server::steps::default_dns_registry(
+                config.proxy_url.as_deref(),
+                config.network_timeout,
+            ),
+            acmecast_server::steps::default_deploy_registry(
+                config.proxy_url.as_deref(),
+                config.network_timeout,
+            ),
             propagation,
             config.resolvers.clone(),
             config.proxy_url.as_deref(),
@@ -202,6 +223,7 @@ async fn run(config_override: Option<&str>) -> Result<(), Box<dyn std::error::Er
         runtime.cipher.as_ref(),
         runtime.notifier.clone(),
         runtime.redis.clone(),
+        std::sync::Arc::clone(&runtime.run_control),
         http_shutdown.clone(),
     );
 

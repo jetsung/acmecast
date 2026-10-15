@@ -64,6 +64,9 @@ pub struct AliyunProvider {
     /// 全局出网代理（`[proxy] url` / `ACMECAST_PROXY_URL`）；仅
     /// `proxy_mode=inherit` 的凭据读它。`None` 即直连。
     global_proxy_url: Option<String>,
+    /// 网络操作超时（`[network] timeout_secs`）：`proxy_mode=custom` 建
+    /// reqwest 客户端时施加请求级超时。
+    network_timeout: std::time::Duration,
 }
 
 impl AliyunProvider {
@@ -79,13 +82,19 @@ impl AliyunProvider {
         Self {
             http,
             global_proxy_url: None,
+            network_timeout: acmecast_core::NETWORK_TIMEOUT,
         }
     }
 
-    /// 设置全局出网代理，供 `proxy_mode=inherit` 的凭据继承。
+    /// 设置全局出网代理与网络超时，供 `proxy_mode=inherit` 的凭据继承代理。
     #[must_use]
-    pub fn with_global_proxy(mut self, proxy_url: Option<impl Into<String>>) -> Self {
+    pub fn with_global_proxy_and_timeout(
+        mut self,
+        proxy_url: Option<impl Into<String>>,
+        network_timeout: std::time::Duration,
+    ) -> Self {
         self.global_proxy_url = proxy_url.map(Into::into);
+        self.network_timeout = network_timeout;
         self
     }
 
@@ -100,7 +109,12 @@ impl AliyunProvider {
         credentials: &Value,
         global_proxy_url: Option<&str>,
     ) -> Result<Arc<dyn HttpTransport>> {
-        transport_for_credentials(credentials, &self.http, global_proxy_url)
+        transport_for_credentials(
+            credentials,
+            &self.http,
+            global_proxy_url,
+            self.network_timeout,
+        )
     }
 
     /// 发一次 RPC 调用（DNS 服务端点）。

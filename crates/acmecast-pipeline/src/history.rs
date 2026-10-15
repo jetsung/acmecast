@@ -316,10 +316,12 @@ impl<'db> HistoryRepository<'db> {
 
     /// 某条流水线是否还有**运行中**的记录。
     ///
-    /// 调度引擎触发前用它去重（9.4：运行中的流水线不被重复触发）。
-    /// 判定只看 `status = running`——正常流程下运行结束会被更新为终态；
-    /// 若进程在运行中途崩溃，记录会停在 running，此时视为「仍在运行」
-    /// 而拒绝自动触发，比误触发并发运行更安全。
+    /// 调度引擎触发前用它去重（9.4：运行中的流水线不被重复触发），手动触发
+    /// 同样以它挡并发（409）。判定只看 `status = running`——正常流程下运行
+    /// 结束会被原地更新为终态；跨进程遗留的 running（进程崩溃/被杀后不可能
+    /// 再有执行者写回终态）由服务启动时的 [`Self::fail_stale_running`] 统一
+    /// 标记为失败。因此「运行中」的判定只覆盖本进程生命周期，正是确实可能
+    /// 有执行者在跑的区间。
     pub async fn has_running(&self, pipeline_id: i64) -> Result<bool> {
         let row = history::Entity::find()
             .filter(history::Column::PipelineId.eq(pipeline_id))
@@ -328,6 +330,48 @@ impl<'db> HistoryRepository<'db> {
             .await?;
 
         Ok(row.is_some())
+    }
+
+    /// 把跨进程遗留的 `running` 历史统一标记为失败，返回标记条数。
+    ///
+    /// 运行历史「先插 running、跑完原地改终态」的生命周期依附于进程：进程
+    /// 崩溃或被杀后，遗留的 running 记录不可能再有执行者回来写终态，却会让
+    /// [`Self::has_running`] 永远判「运行中」——手动触发 409、调度触发跳过，
+    /// 流水线从此无法再触发。本方法只在服务启动时调用（此刻不可能有任何
+    /// 流水线在本进程内运行，清点全部 running 是安全的）；逐条失败仅记日志，
+    /// 不阻断启动。
+    pub async fn fail_stale_running(&self) -> Result<u64> {
+        let stale = history::Entity::find()
+            .filter(history::Column::Status.eq(history::RunStatus::Running.as_str()))
+            .all(self.db)
+            .await?;
+        if stale.is_empty() {
+            return Ok(0);
+        }
+
+        let mut marked = 0_u64;
+        for row in stale {
+            let result = history::ActiveModel {
+                id: Set(row.id),
+                status: Set(history::RunStatus::Failed.as_str().to_owned()),
+                finished_at: Set(Some(Utc::now())),
+                error_message: Set(Some(
+                    "服务重启时运行中断：执行进程已退出，实际结果未知".to_owned(),
+                )),
+                ..Default::default()
+            }
+            .update(self.db)
+            .await;
+            match result {
+                Ok(_) => marked += 1,
+                Err(error) => tracing::warn!(
+                    history_id = row.id,
+                    %error,
+                    "遗留的运行中历史标记为失败时出错"
+                ),
+            }
+        }
+        Ok(marked)
     }
 
     /// 读某次运行的全部日志，按产生时间与步骤序号排序。

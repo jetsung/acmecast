@@ -167,7 +167,7 @@ struct SshHostType;
 
 impl CredentialType for SshHostType {
     fn type_id(&self) -> &'static str {
-        "deploy.ssh"
+        "ssh"
     }
 
     fn display_name(&self) -> &'static str {
@@ -401,7 +401,7 @@ fn profile_fields() -> Value {
 #[tokio::test]
 async fn a_host_profile_supplies_connection_and_materials() {
     let (db, store, cipher, remote, used) = setup().await;
-    let id = seed_credential(db, &cipher, "deploy.ssh", "生产机", profile_fields()).await;
+    let id = seed_credential(db, &cipher, "ssh", "生产机", profile_fields()).await;
 
     let outcome = target(&remote, &used)
         .deploy(
@@ -449,7 +449,7 @@ async fn a_host_profile_supplies_connection_and_materials() {
 #[tokio::test]
 async fn explicit_input_values_override_the_profile() {
     let (db, store, cipher, remote, used) = setup().await;
-    let id = seed_credential(db, &cipher, "deploy.ssh", "生产机", profile_fields()).await;
+    let id = seed_credential(db, &cipher, "ssh", "生产机", profile_fields()).await;
 
     target(&remote, &used)
         .deploy(
@@ -487,7 +487,7 @@ async fn a_profile_without_auth_material_fails_before_writing() {
     let (db, store, cipher, remote, used) = setup().await;
     let mut broken = profile_fields();
     broken["private_key"] = Value::Null;
-    let id = seed_credential(db, &cipher, "deploy.ssh", "坏档案", broken).await;
+    let id = seed_credential(db, &cipher, "ssh", "坏档案", broken).await;
 
     let err = target(&remote, &used)
         .deploy(

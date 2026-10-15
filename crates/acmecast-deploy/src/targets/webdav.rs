@@ -11,8 +11,30 @@ use acmecast_cert::parse_pem_leaf;
 use crate::target::{CertMaterials, DeployMode, DeployOutcome, DeploymentTarget, parse_input};
 
 const ACCEPTED_CREDENTIAL_TYPES: [&str; 1] = ["deploy.webdav"];
-#[derive(Debug, Default)]
-pub struct WebdavTarget;
+
+#[derive(Debug)]
+pub struct WebdavTarget {
+    global_proxy_url: Option<String>,
+    network_timeout: std::time::Duration,
+}
+
+impl Default for WebdavTarget {
+    fn default() -> Self {
+        Self { global_proxy_url: None, network_timeout: acmecast_core::NETWORK_TIMEOUT }
+    }
+}
+
+impl WebdavTarget {
+    #[must_use]
+    pub fn new(proxy_url: Option<&str>, network_timeout: std::time::Duration) -> Self {
+        let global_proxy_url = proxy_url.map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned);
+        Self { global_proxy_url, network_timeout }
+    }
+    #[must_use]
+    pub fn with_timeout(network_timeout: std::time::Duration) -> Self {
+        Self { global_proxy_url: None, network_timeout }
+    }
+}
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct WebdavInput {
@@ -21,9 +43,15 @@ pub struct WebdavInput {
     /// 基路径覆盖：留空则使用凭据中的 `base_path`。
     #[serde(default)]
     pub base_path: Option<String>,
-    /// 证书对象路径模板；可选，含 `{domain}`，未填时跟随 cert.store 的本地文件名。
+    /// 完整链对象路径模板；可选，含 `{domain}` 占位，未填时派生 `<prefix>.fullchain.cer`。
+    #[serde(default)]
+    pub fullchain_path: Option<String>,
+    /// （存量别名）证书链路径模板：`fullchain_path` 未配置时生效，视为 fullchain。
     #[serde(default)]
     pub cert_path: Option<String>,
+    /// 中间链路径模板；可选，未填时派生 `<prefix>.ca.cer`，显式留空则跳过上传。
+    #[serde(default)]
+    pub ca_path: Option<String>,
     /// 私钥对象路径模板；可选，未填时跟随 cert.store 的本地文件名。
     #[serde(default)]
     pub key_path: Option<String>,
@@ -42,30 +70,12 @@ fn normalize_base(raw: &Option<String>) -> String {
 }
 
 fn render_path(template: &Option<String>, domain: &str, suffix: &str) -> String {
-    let safe = domain_file_prefix(domain);
+    let safe = acmecast_cert::domain_file_prefix(domain);
     if let Some(t) = template.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         t.replace("{domain}", &safe)
     } else {
         format!("{safe}.{suffix}")
     }
-}
-
-fn domain_file_prefix(domain: &str) -> String {
-    let normalized = if let Some(stripped) = domain.strip_prefix("*.") {
-        format!("_wildcard.{stripped}")
-    } else if domain == "*" {
-        "_wildcard".to_owned()
-    } else {
-        domain.to_owned()
-    };
-    let cleaned: String = normalized
-        .chars()
-        .map(|c| match c {
-            'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '-' | '_' => c,
-            _ => '_',
-        })
-        .collect();
-    if cleaned.is_empty() { "certificate".to_owned() } else { cleaned }
 }
 
 #[async_trait]
@@ -93,7 +103,7 @@ impl DeploymentTarget for WebdavTarget {
         }
         schema.schema.extensions.insert(
             "x-field-order".into(),
-            json!(["credential_id", "base_path", "cert_path", "key_path", "insecure_skip_verify"]),
+            json!(["credential_id", "base_path", "fullchain_path", "ca_path", "key_path", "insecure_skip_verify", "cert_path"]),
         );
         schema
     }
@@ -130,12 +140,29 @@ impl DeploymentTarget for WebdavTarget {
         let url = if vault_url.trim().is_empty() { return Err(Error::invalid_input("credential_id", "凭据缺少 url")); } else { vault_url };
         let domain = primary_domain_of(materials)
             .unwrap_or_else(|_| "certificate".to_owned());
-        let cert_name = render_path(&input.cert_path, &domain, "cer");
+        // 3 对象：fullchain 原样、ca（首块之后剩余，单张时空对象，显式留空跳过）、key。
+        let fullchain_template = input.fullchain_path.clone().or(input.cert_path.clone());
+        let fullchain_name = render_path(&fullchain_template, &domain, "fullchain.cer");
+        let ca_name = match input.ca_path.as_deref() {
+            // 显式留空：跳过 ca 上传。
+            Some(raw) if raw.trim().is_empty() => None,
+            Some(raw) => Some(render_path(&Some(raw.to_owned()), &domain, "ca.cer")),
+            None => Some(render_path(&None, &domain, "ca.cer")),
+        };
         let key_name = render_path(&input.key_path, &domain, "key");
         let base_url = url.trim_end_matches('/');
-        let cert_url = format!("{base_url}/{base}{cert_name}");
+        let fullchain_url = format!("{base_url}/{base}{fullchain_name}");
         let key_url = format!("{base_url}/{base}{key_name}");
-        let paths = vec![cert_url.clone(), key_url.clone()];
+        let ca_content = acmecast_cert::ca_pem_of(&materials.chain_pem);
+        let ca_url = ca_name.map(|ca| format!("{base_url}/{base}{ca}"));
+        let mut uploads: Vec<(&str, &str)> = vec![
+            (&fullchain_url, &materials.chain_pem),
+            (&key_url, &materials.key_pem),
+        ];
+        if let Some(ca) = &ca_url {
+            uploads.insert(1, (ca.as_str(), &ca_content));
+        }
+        let paths: Vec<String> = uploads.iter().map(|(url, _)| (*url).to_owned()).collect();
         if mode == DeployMode::SkipWrite {
             return Ok(DeployOutcome::skipped(paths));
         }
@@ -145,11 +172,19 @@ impl DeploymentTarget for WebdavTarget {
             return Err(Error::invalid_input("credential_id", "凭据缺少 username/password"));
         }
 
-        // 真实 WebDAV PUT：凭据 proxy_mode=custom 时经代理出网（deploy 链路
-        // 无全局代理来源，inherit 在此处等同直连）。
-        let proxy_url = credential_proxy(&fields);
-        webdav_put(&cert_url, &username, &password, &materials.chain_pem, input.insecure_skip_verify, proxy_url.as_deref()).await?;
-        webdav_put(&key_url, &username, &password, &materials.key_pem, input.insecure_skip_verify, proxy_url.as_deref()).await?;
+        let proxy_url = credential_proxy(&fields, self.global_proxy_url.as_deref());
+        for (upload_url, content) in uploads {
+            webdav_put(
+                upload_url,
+                &username,
+                &password,
+                content,
+                input.insecure_skip_verify,
+                proxy_url.as_deref(),
+                self.network_timeout,
+            )
+            .await?;
+        }
         Ok(DeployOutcome::written(paths))
     }
 }
@@ -157,14 +192,19 @@ impl DeploymentTarget for WebdavTarget {
 
 /// 从部署凭据字段取真实生效的代理 URL：`custom` 自带 URL 生效；
 /// `direct`/`inherit`（deploy 链路无全局代理来源）返回 `None` 直连。
-fn credential_proxy(fields: &Value) -> Option<String> {
-    if acmecast_core::ProxyMode::from_credentials(fields) != acmecast_core::ProxyMode::Custom {
-        return None;
-    }
-    acmecast_core::proxy_url_from_credentials(fields)
+fn credential_proxy(fields: &Value, global_proxy_url: Option<&str>) -> Option<String> {
+    acmecast_core::effective_proxy_url(fields, global_proxy_url)
 }
 
-async fn webdav_put(url: &str, username: &str, password: &str, content: &str, _insecure_skip_verify: bool, proxy_url: Option<&str>) -> Result<()> {
+async fn webdav_put(
+    url: &str,
+    username: &str,
+    password: &str,
+    content: &str,
+    _insecure_skip_verify: bool,
+    proxy_url: Option<&str>,
+    timeout: std::time::Duration,
+) -> Result<()> {
     let mut builder = reqwest::Client::builder();
     if let Some(proxy_url) = proxy_url {
         // 统一口径校验 scheme（reqwest 的 Proxy::all 不查 scheme 支持度）。
@@ -175,7 +215,9 @@ async fn webdav_put(url: &str, username: &str, password: &str, content: &str, _i
             .map_err(|e| Error::invalid_input("proxy_url", format!("代理 URL 非法: {e}")))?;
         builder = builder.proxy(proxy);
     }
+    // 请求级超时：MKCOL 与 PUT 都经这个客户端，无响应时以含目标 URL 的错误失败。
     let client = builder
+        .timeout(timeout)
         .build()
         .map_err(|e| Error::Remote(format!("构造 HTTP 客户端失败: {e}")))?;
     // Ensure parent collection exists (MKCOL)
@@ -213,20 +255,41 @@ fn primary_domain_of(materials: &CertMaterials) -> Result<String> {
 mod tests {
     use super::*;
 
-    /// 部署侧代理派生：仅 `custom` 自带 URL 生效，其余直连。
     #[test]
     fn credential_proxy_only_custom_applies() {
         let custom = json!({"proxy_mode": "custom", "proxy_url": "socks5://10.0.0.1:1080"});
+        assert_eq!(credential_proxy(&custom, None).as_deref(), Some("socks5://10.0.0.1:1080"));
+        assert_eq!(credential_proxy(&json!({"proxy_mode": "direct", "proxy_url": "socks5://1.2.3.4:7890"}), Some("http://proxy:8080")), None);
+        assert_eq!(credential_proxy(&json!({"proxy_mode": "inherit"}), None), None);
+        assert_eq!(credential_proxy(&json!({"proxy_mode": "inherit"}), Some("http://proxy:8080")).as_deref(), Some("http://proxy:8080"));
+        assert_eq!(credential_proxy(&json!({"proxy_url": "http://10.0.0.2:8080"}), None).as_deref(), Some("http://10.0.0.2:8080"));
+    }
+
+    #[test]
+    fn default_paths_align_three_file_layout() {
+        assert_eq!(render_path(&None, "example.com", "fullchain.cer"), "example.com.fullchain.cer");
+        assert_eq!(render_path(&None, "example.com", "ca.cer"), "example.com.ca.cer");
+        assert_eq!(render_path(&None, "example.com", "key"), "example.com.key");
+    }
+
+    #[test]
+    fn wildcard_uses_wildcard_prefix() {
         assert_eq!(
-            credential_proxy(&custom).as_deref(),
-            Some("socks5://10.0.0.1:1080")
+            render_path(&None, "*.example.com", "ca.cer"),
+            "_wildcard.example.com.ca.cer"
         );
-        assert_eq!(credential_proxy(&json!({"proxy_mode": "direct", "proxy_url": "socks5://1.2.3.4:7890"})), None);
-        assert_eq!(credential_proxy(&json!({"proxy_mode": "inherit"})), None);
-        // 存量兼容：无 proxy_mode 但旧 proxy_url 有值 → custom。
-        assert_eq!(
-            credential_proxy(&json!({"proxy_url": "http://10.0.0.2:8080"})).as_deref(),
-            Some("http://10.0.0.2:8080")
-        );
+    }
+
+    #[test]
+    fn cert_path_aliases_fullchain() {
+        let input: WebdavInput = serde_json::from_value(json!({
+            "credential_id": 1,
+            "cert_path": "{domain}.cer"
+        }))
+        .unwrap();
+        let resolved = input.fullchain_path.clone().or(input.cert_path.clone());
+        assert_eq!(render_path(&resolved, "example.com", "fullchain.cer"), "example.com.cer");
+        // ca 仍按默认派生。
+        assert_eq!(render_path(&None, "example.com", "ca.cer"), "example.com.ca.cer");
     }
 }

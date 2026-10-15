@@ -56,18 +56,6 @@ pub enum Error {
     #[error("远程主机操作失败: {0}")]
     Remote(String),
 
-    /// 云服务 API 调用失败（如腾讯云 SSL 证书库）。
-    ///
-    /// 厂商的业务错误常藏在 HTTP 200 的响应体里，`reason` 会带上
-    /// 原始错误码与消息——排查时那是最有用的线索。
-    #[error("云服务 `{service}` 调用失败: {reason}")]
-    Cloud {
-        /// 云服务标识，如 `tencent-ssl`。
-        service: String,
-        /// 失败原因（含厂商原始错误码）。
-        reason: String,
-    },
-
     /// 凭据体系错误。
     #[error(transparent)]
     Access(#[from] acmecast_access::Error),
@@ -90,14 +78,6 @@ impl Error {
     pub fn invalid_input(field: impl Into<String>, reason: impl Into<String>) -> Self {
         Self::InvalidInput {
             field: field.into(),
-            reason: reason.into(),
-        }
-    }
-
-    /// 构造一条云服务 API 调用失败。
-    pub fn cloud(service: impl Into<String>, reason: impl Into<String>) -> Self {
-        Self::Cloud {
-            service: service.into(),
             reason: reason.into(),
         }
     }

@@ -95,23 +95,12 @@ name = "acmecast-deploy"
 version = "0.1.0"
 dependencies = [
  "acmecast-access",
- "acmecast-cert",
  "acmecast-core",
- "acmecast-dns",
  "acmecast-store",
  "async-trait",
- "aws-config",
- "aws-credential-types",
- "aws-sdk-s3",
- "aws-smithy-http-client",
- "aws-smithy-runtime-api",
- "aws-smithy-types",
  "base64 0.22.1",
  "chrono",
- "http-body-util",
  "nix 0.29.0",
- "rcgen",
- "reqwest",
  "russh",
  "schemars",
  "sea-orm",
@@ -121,7 +110,6 @@ dependencies = [
  "thiserror 2.0.20",
  "tokio",
  "tracing",
- "url",
  "uuid",
 ]
 
@@ -187,6 +175,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
 ]

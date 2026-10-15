@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Alert, Select, Table, Tag, Typography } from "antd";
 import type { TableColumnsType } from "antd";
 import { useState } from "react";
-import { useNavigate } from "react-router";
+import { Link, useNavigate } from "react-router";
 import type { components } from "@/api/schema";
 import { client } from "@/api/client";
 import { formatTime, unwrapData } from "@/api/helpers";
@@ -44,7 +44,20 @@ export function HistoryListPage() {
 
   const columns: TableColumnsType<HistoryRow> = [
     { title: "ID", dataIndex: "id", width: 80 },
-    { title: "流水线", dataIndex: "pipeline_id", width: 100 },
+    {
+      title: "流水线",
+      dataIndex: "pipeline_id",
+      width: 100,
+      // 点击 #xx 只跳流水线编辑页,阻止冒泡避免触发行级跳转运行详情。
+      render: (id: number | null) =>
+        id != null ? (
+          <Link to={`/pipelines/${id}`} onClick={(e) => e.stopPropagation()}>
+            #{id}
+          </Link>
+        ) : (
+          "-"
+        ),
+    },
     {
       title: "触发来源",
       dataIndex: "trigger_source",

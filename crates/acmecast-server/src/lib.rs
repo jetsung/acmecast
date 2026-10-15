@@ -13,6 +13,7 @@ pub mod history_stream;
 pub mod openapi;
 pub mod response;
 mod run;
+pub mod run_control;
 pub mod scheduler;
 pub mod steps;
 /// 生成管理员口令的 Argon2 PHC 哈希（`hash-password` 子命令与开发示例共用）。
@@ -91,6 +92,8 @@ pub struct RuntimeState {
     pub redis: Option<Arc<redis::aio::ConnectionManager>>,
     /// 流水线运行历史 SSE 广播器。
     pub broadcaster: Arc<history_stream::SseBroadcaster>,
+    /// 运行控制注册表：本进程内在执行的运行 → 取消令牌，供终止运行接口触发取消。
+    pub run_control: Arc<run_control::RunControl>,
 }
 
 impl std::fmt::Debug for RuntimeState {
@@ -149,6 +152,7 @@ impl RuntimeState {
             notifier: None,
             redis: None,
             broadcaster: Arc::new(history_stream::SseBroadcaster::new()),
+            run_control: Arc::new(run_control::RunControl::new()),
         }
     }
 

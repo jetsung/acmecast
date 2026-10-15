@@ -141,7 +141,6 @@ async fn history_reflects_the_skip_flag_across_runs() {
 
     let all = state.history(DeploymentQuery::default()).await.unwrap();
     assert_eq!(all.total, 2);
-    // 按 ID 倒序：较新（ID 更大）的跳过写入在前，较早的真写在后。
     assert!(!all.items[1].skipped_write, "较早那条是真写");
     assert!(all.items[0].skipped_write, "较新那条跳过了写入");
 

@@ -44,42 +44,67 @@ pub(crate) fn domain_error(
 /// `proxy_url` 是全局出网代理（`[proxy] url` / `ACMECAST_PROXY_URL`）：
 /// 注入各提供商，供 `proxy_mode=inherit` 的凭据在挑战调用里继承；
 /// `direct` / `custom` 模式的凭据不受影响。留空即全部直连。
+/// `network_timeout` 是网络操作超时（`[network] timeout_secs`）：
+/// 建 reqwest 客户端时施加请求级超时。
 #[must_use]
-pub fn default_dns_registry(proxy_url: Option<&str>) -> Arc<DnsProviderRegistry> {
+pub fn default_dns_registry(
+    proxy_url: Option<&str>,
+    network_timeout: std::time::Duration,
+) -> Arc<DnsProviderRegistry> {
     let mut registry = DnsProviderRegistry::new();
     registry
-        .register(acmecast_dns::CloudflareProvider::new().with_global_proxy(proxy_url))
+        .register(
+            acmecast_dns::CloudflareProvider::new()
+                .with_global_proxy_and_timeout(proxy_url, network_timeout),
+        )
         .expect("内置 DNS 提供商不应重复注册");
     registry
-        .register(acmecast_dns::AliyunProvider::new().with_global_proxy(proxy_url))
+        .register(
+            acmecast_dns::AliyunProvider::new()
+                .with_global_proxy_and_timeout(proxy_url, network_timeout),
+        )
         .expect("内置 DNS 提供商不应重复注册");
     registry
-        .register(acmecast_dns::TencentProvider::new().with_global_proxy(proxy_url))
+        .register(
+            acmecast_dns::TencentProvider::new()
+                .with_global_proxy_and_timeout(proxy_url, network_timeout),
+        )
         .expect("内置 DNS 提供商不应重复注册");
     registry
-        .register(acmecast_dns::TencentEoProvider::new().with_global_proxy(proxy_url))
+        .register(
+            acmecast_dns::TencentEoProvider::new()
+                .with_global_proxy_and_timeout(proxy_url, network_timeout),
+        )
         .expect("内置 DNS 提供商不应重复注册");
     Arc::new(registry)
 }
 
 /// 注册全部内置部署目标的注册表。
+///
+/// `proxy_url` 是全局出网代理（`[proxy] url` / `ACMECAST_PROXY_URL`）：注入各
+/// 部署目标，供 `proxy_mode=inherit` 的凭据继承；`direct`/`custom` 不受影响。
+/// `network_timeout` 是网络操作超时（`[network] timeout_secs`）：注入各
+/// 部署目标，约束 SSH 连接与传输、S3/WebDAV 上传、腾讯云 API 调用。
 #[must_use]
-pub fn default_deploy_registry() -> Arc<DeploymentRegistry> {
+pub fn default_deploy_registry(
+    proxy_url: Option<&str>,
+    network_timeout: std::time::Duration,
+) -> Arc<DeploymentRegistry> {
     let mut registry = DeploymentRegistry::new();
     registry
         .register(acmecast_deploy::LocalTarget)
         .expect("内置部署目标不应重复注册");
     registry
-        .register(acmecast_deploy::SshTarget::live())
+        .register(acmecast_deploy::SshTarget::live(proxy_url, network_timeout))
         .expect("内置部署目标不应重复注册");
     registry
-        .register(acmecast_deploy::TencentSslTarget::new())
+        .register(acmecast_deploy::TencentSslTarget::new(proxy_url, network_timeout))
         .expect("内置部署目标不应重复注册");
     registry
-        .register(acmecast_deploy::S3Target)
+        .register(acmecast_deploy::S3Target::new(proxy_url, network_timeout))
         .expect("内置 S3 部署目标不应重复注册");
     registry
-        .register(acmecast_deploy::WebdavTarget)
+        .register(acmecast_deploy::WebdavTarget::new(proxy_url, network_timeout))
         .expect("内置 WebDAV 部署目标不应重复注册");
     Arc::new(registry)
 }
@@ -152,7 +177,7 @@ mod tests {
     #[test]
     fn the_dns_registry_carries_the_global_proxy() {
         for proxy in [None, Some("socks5://127.0.0.1:7890")] {
-            let registry = default_dns_registry(proxy);
+            let registry = default_dns_registry(proxy, acmecast_core::NETWORK_TIMEOUT);
             for type_id in [
                 "cloud.cloudflare",
                 "cloud.aliyun",
@@ -195,7 +220,7 @@ mod tests {
         let transport = Arc::new(Counting::default());
         let provider = CloudflareProvider::with_transport(Arc::clone(&transport)
             as Arc<dyn HttpTransport>)
-        .with_global_proxy(Some("ftp://127.0.0.1:21"));
+        .with_global_proxy_and_timeout(Some("ftp://127.0.0.1:21"), acmecast_core::NETWORK_TIMEOUT);
         let record = TxtRecord::new("example.com", "_acme-challenge.example.com", "value", 60);
 
         // inherit：读全局代理 → 非法值在传输层构建时被拒，替身未被调用。

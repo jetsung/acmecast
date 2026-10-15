@@ -47,9 +47,10 @@ const ACCEPTED_CREDENTIAL_TYPES: [&str; 1] = ["cloud.tencent"];
 #[derive(Debug)]
 pub struct TencentSslTarget {
     client: TencentApiClient,
+    global_proxy_url: Option<String>,
+    network_timeout: std::time::Duration,
+    fallback_http: Arc<dyn HttpTransport>,
 }
-
-/// 腾讯云 SSL 部署的输入。
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct TencentSslInput {
     /// 引用一张 `tencent` 类型凭据（腾讯云账号密钥，DNS 与 SSL 通用）。
@@ -96,17 +97,34 @@ impl TencentSslInput {
 }
 
 impl TencentSslTarget {
-    /// 走真实网络。
     #[must_use]
-    pub fn new() -> Self {
-        Self::with_transport(Arc::new(ReqwestTransport::default()))
+    pub fn new(proxy_url: Option<&str>, network_timeout: std::time::Duration) -> Self {
+        let fallback: Arc<dyn HttpTransport> = Arc::new(ReqwestTransport::new(network_timeout).expect("HTTP 客户端应能构造"));
+        let global_proxy_url = proxy_url.map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned);
+        Self {
+            client: TencentApiClient::with_transport(Arc::clone(&fallback)),
+            global_proxy_url,
+            network_timeout,
+            fallback_http: fallback,
+        }
+    }
+    #[must_use]
+    pub fn with_timeout(network_timeout: std::time::Duration) -> Self {
+        Self::new(None, network_timeout)
+    }
+
+    fn http_for(&self, credentials: &serde_json::Value) -> Result<Arc<dyn HttpTransport>> {
+        acmecast_dns::http::transport_for_credentials(credentials, &self.fallback_http, self.global_proxy_url.as_deref(), self.network_timeout).map_err(|e| Error::Remote(format!("选择传输层失败: {e}")))
     }
 
     /// 注入传输层，供测试用。
     #[must_use]
     pub fn with_transport(http: Arc<dyn HttpTransport>) -> Self {
         Self {
-            client: TencentApiClient::with_transport(http),
+            client: TencentApiClient::with_transport(Arc::clone(&http)),
+            global_proxy_url: None,
+            network_timeout: acmecast_core::NETWORK_TIMEOUT,
+            fallback_http: http,
         }
     }
 
@@ -239,8 +257,10 @@ impl TencentSslTarget {
         action: &str,
         payload: Value,
     ) -> Result<Value> {
+        let fields = serde_json::json!({"proxy_mode": credentials.proxy_mode, "proxy_url": credentials.proxy_url});
+        let http = self.http_for(&fields).map_err(|e| Error::cloud("tencent-ssl", format!("{action}: {e}")))?;
         self.client
-            .call(credentials, SSL_SERVICE, SSL_VERSION, action, payload)
+            .call_with(&http, credentials, SSL_SERVICE, SSL_VERSION, action, payload)
             .await
             .map_err(|error| {
                 // 剥掉 DNS crate 的错误外壳（「调用 DNS 服务失败」），保留
@@ -256,7 +276,7 @@ impl TencentSslTarget {
 
 impl Default for TencentSslTarget {
     fn default() -> Self {
-        Self::new()
+        Self::new(None, acmecast_core::NETWORK_TIMEOUT)
     }
 }
 
@@ -314,7 +334,9 @@ impl DeploymentTarget for TencentSslTarget {
     }
 
     fn display_name(&self) -> &'static str {
-        "腾讯云 SSL 证书"
+        // 与文件类目标（local/ssh/s3/webdav 的 fullchain.cer/ca.cer/key 3 文件）区分：
+        // 腾讯云是云 API 上传，仅需 fullchain+key 两个材料，不产生/不要求 ca.cer。
+        "腾讯云 SSL 证书(仅需 fullchain+key)"
     }
 
     fn supports_skip_write(&self) -> bool {

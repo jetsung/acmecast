@@ -128,12 +128,6 @@ pub trait DeploymentTarget: Send + Sync + std::fmt::Debug + 'static {
         credentials: &CredentialStore<'_>,
         mode: DeployMode,
     ) -> Result<DeployOutcome>;
-
-    /// 是否支持指纹幂等跳过。仅需去重的目标覆为 true，其余每次都写入以保证
-    /// 远端删后下次触发必补回（如 S3/WebDAV/local/ssh），无需先 GET 远端指纹。
-    fn supports_skip_write(&self) -> bool {
-        false
-    }
 }
 
 /// 把输入反序列化成目标自己的结构体。

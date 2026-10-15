@@ -27,6 +27,8 @@ pub struct PipelineRunLauncher {
     redis: Option<Arc<redis::aio::ConnectionManager>>,
     /// 流水线运行历史 SSE 广播器。
     broadcaster: Option<Arc<crate::history_stream::SseBroadcaster>>,
+    /// 运行控制注册表；与 HTTP 层共用同一实例，供终止运行接口取消调度触发的运行。
+    run_control: Option<Arc<crate::run_control::RunControl>>,
 }
 
 impl std::fmt::Debug for PipelineRunLauncher {
@@ -75,7 +77,18 @@ impl PipelineRunLauncher {
             notifier,
             redis,
             broadcaster: None,
+            run_control: None,
         }
+    }
+
+    /// 设置运行控制注册表（与 HTTP 层共用同一实例）。
+    #[must_use]
+    pub fn with_run_control(
+        mut self,
+        run_control: Arc<crate::run_control::RunControl>,
+    ) -> Self {
+        self.run_control = Some(run_control);
+        self
     }
 
     /// 设置 SSE 广播器。
@@ -132,6 +145,7 @@ impl PipelineLauncher for PipelineRunLauncher {
             events,
             Some(&cache),
             self.broadcaster.as_deref(),
+            self.run_control.as_deref(),
         )
         .await?;
 
@@ -166,6 +180,7 @@ pub fn spawn_scheduler(
     cipher: Option<&std::sync::Arc<acmecast_core::CredentialCipher>>,
     notifier: Option<Arc<acmecast_notify::WebhookEventSink>>,
     redis: Option<Arc<redis::aio::ConnectionManager>>,
+    run_control: Arc<crate::run_control::RunControl>,
     shutdown: watch::Receiver<bool>,
 ) -> JoinHandle<()> {
     let cipher = cipher.cloned();
@@ -177,7 +192,8 @@ pub fn spawn_scheduler(
             cipher.as_ref(),
             notifier,
             redis,
-        );
+        )
+        .with_run_control(run_control);
         let engine = SchedulerEngine::new(&db, &launcher, SchedulerConfig::default());
 
         if let Err(error) = engine.load(chrono::Utc::now()).await {

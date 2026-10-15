@@ -5,6 +5,7 @@
 //! 等 crate 实现，启动时在 `acmecast-server` 里一次性注册。
 
 pub mod artifacts;
+pub mod cancel;
 pub mod error;
 pub mod event;
 pub mod history;
@@ -17,6 +18,7 @@ pub mod step;
 pub mod visibility;
 
 pub use artifacts::{Artifact, Artifacts};
+pub use cancel::CancelToken;
 pub use error::{Error, Result};
 pub use event::{EventSink, PipelineEvent};
 pub use history::{

@@ -44,6 +44,13 @@ pub enum Error {
     #[error("任务类型重复注册: {0}")]
     DuplicateStepType(String),
 
+    /// 运行被外部取消（如终止运行接口）。
+    ///
+    /// 属于**正常业务结果**而非执行器故障：执行器把它转成一次失败收尾，
+    /// 终态与失败原因照常写回运行历史。
+    #[error("运行已被取消: {0}")]
+    Cancelled(String),
+
     /// 凭据体系错误。
     #[error(transparent)]
     Access(#[from] acmecast_access::Error),

@@ -3,8 +3,6 @@ name = "acmecast-deploy"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-authors.workspace = true
-repository.workspace = true
 publish.workspace = true
 description = "证书部署：部署目标抽象与结果记录"
 
@@ -14,10 +12,6 @@ acmecast-core.workspace = true
 acmecast-access.workspace = true
 # 部署状态落在数据库（8.5 的幂等依据）。
 acmecast-store.workspace = true
-# 腾讯云 SSL 目标复用 DNS crate 里的腾讯云 API 3.0 通用调用端与凭据结构。
-acmecast-dns.workspace = true
-# 从证书链解析主域名，用于云端同域名证书的存在性判断。
-acmecast-cert.workspace = true
 async-trait.workspace = true
 base64.workspace = true
 chrono.workspace = true
@@ -26,19 +20,10 @@ sha2.workspace = true
 russh.workspace = true
 nix.workspace = true
 tokio.workspace = true
-url.workspace = true
-reqwest.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-aws-sdk-s3.workspace = true
-aws-config.workspace = true
-aws-credential-types.workspace = true
-aws-smithy-http-client.workspace = true
-aws-smithy-runtime-api.workspace = true
-http-body-util.workspace = true
-aws-smithy-types.workspace = true
 uuid.workspace = true
 tracing.workspace = true
 
@@ -49,8 +34,6 @@ chrono.workspace = true
 nix.workspace = true
 sea-orm.workspace = true
 uuid.workspace = true
-# 测试用证书现场生成，避免仓库里堆会过期的固定样本。
-rcgen.workspace = true
 
 [lints]
 workspace = true

@@ -325,10 +325,10 @@ mod tests {
             .register(acmecast_deploy::LocalTarget)
             .expect("首次注册应成功");
         registry
-            .register(acmecast_deploy::SshTarget::live())
+            .register(acmecast_deploy::SshTarget::live(None, acmecast_core::NETWORK_TIMEOUT))
             .expect("首次注册应成功");
         registry
-            .register(acmecast_deploy::TencentSslTarget::new())
+            .register(acmecast_deploy::TencentSslTarget::new(None, acmecast_core::NETWORK_TIMEOUT))
             .expect("首次注册应成功");
         let step =
             CertDeployStep::new(Arc::new(registry), Arc::new(InMemoryDeploymentState::new()));
@@ -340,13 +340,17 @@ mod tests {
         // 每个已注册目标都要带 display_name、example 与 schema，
         // 前端的占位提示与未来的结构化校验都从这里取。
         assert_eq!(targets["local"]["display_name"], "本地文件系统");
-        assert!(targets["local"]["example"]["cert_path"].is_string());
+        assert!(targets["local"]["example"]["fullchain_path"].is_string());
         assert_eq!(targets["local"]["schema"]["type"], "object");
         // SSH 的示例是档案式写法：一个 `credential_id` 打底，路径可选。
         assert!(targets["ssh"]["example"]["credential_id"].is_i64());
         assert_eq!(targets["ssh"]["schema"]["type"], "object");
         // 腾讯云 SSL 变体：凭据引用、备注、重复开关、替换开关、资源类型与地域，schema 走同一注入通道。
-        assert_eq!(targets["tencent-ssl"]["display_name"], "腾讯云 SSL 证书");
+        // display_name 显式声明 2 材料（fullchain+key）语义，与文件类目标 3 文件区分。
+        assert_eq!(
+            targets["tencent-ssl"]["display_name"],
+            "腾讯云 SSL 证书(仅需 fullchain+key)"
+        );
         assert!(targets["tencent-ssl"]["example"]["credential_id"].is_i64());
         assert_eq!(
             targets["tencent-ssl"]["schema"]["properties"]["replace_existing"]["type"],

@@ -161,7 +161,8 @@ impl DeploymentStateStore for DatabaseDeploymentState {
         }
 
         let paginator = select
-            // 按主键倒序，ID 最大的记录排在最前；翻页不重不漏。
+            .order_by_desc(deployment::Column::DeployedAt)
+            // 同一时刻的记录靠主键定序，否则翻页时同一条可能出现在两页里。
             .order_by_desc(deployment::Column::Id)
             .paginate(&self.db, page_size);
 
@@ -261,9 +262,8 @@ impl DeploymentStateStore for InMemoryDeploymentState {
             .cloned()
             .collect();
 
-        // 与数据库实现同样按主键倒序：内存实现按写入顺序存储，
-        // 最后写入的隐含 ID 最大，反转后即为 ID 倒序。
-        matched.reverse();
+        // 与数据库实现同样按时间倒序。
+        matched.sort_by_key(|entry| std::cmp::Reverse(entry.deployed_at));
 
         let total = matched.len() as u64;
         let items = matched
