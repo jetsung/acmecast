@@ -56,7 +56,7 @@ impl CloudflareCredentialType {
             Some(transport) => Arc::clone(transport),
             None => Arc::new(ReqwestTransport::default()),
         };
-        CloudflareProvider::with_transport(transport).with_global_proxy(self.global_proxy_url.clone())
+        CloudflareProvider::with_transport(transport).with_global_proxy_and_timeout(self.global_proxy_url.clone(), acmecast_core::NETWORK_TIMEOUT)
     }
 }
 
@@ -135,7 +135,7 @@ impl AliyunCredentialType {
             Some(transport) => Arc::clone(transport),
             None => Arc::new(ReqwestTransport::default()),
         };
-        AliyunProvider::with_transport(transport).with_global_proxy(self.global_proxy_url.clone())
+        AliyunProvider::with_transport(transport).with_global_proxy_and_timeout(self.global_proxy_url.clone(), acmecast_core::NETWORK_TIMEOUT)
     }
 }
 
@@ -250,7 +250,7 @@ impl TencentCredentialType {
             Some(transport) => Arc::clone(transport),
             None => Arc::new(ReqwestTransport::default()),
         };
-        TencentProvider::with_transport(transport).with_global_proxy(self.global_proxy_url.clone())
+        TencentProvider::with_transport(transport).with_global_proxy_and_timeout(self.global_proxy_url.clone(), acmecast_core::NETWORK_TIMEOUT)
     }
 }
 
@@ -316,7 +316,7 @@ impl TencentEoCredentialType {
             Some(transport) => Arc::clone(transport),
             None => Arc::new(ReqwestTransport::default()),
         };
-        TencentEoProvider::with_transport(transport).with_global_proxy(self.global_proxy_url.clone())
+        TencentEoProvider::with_transport(transport).with_global_proxy_and_timeout(self.global_proxy_url.clone(), acmecast_core::NETWORK_TIMEOUT)
     }
 }
 

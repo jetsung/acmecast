@@ -31,6 +31,7 @@ acmecast-notify = { path = "crates/acmecast-notify" }
 # 同步原语（测试中串行化环境变量访问，替代 std::sync::Mutex 的 unwrap）
 parking_lot = "0.12"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "fs", "process", "sync", "net"] }
+tokio-util = "0.7"
 async-trait = "0.1"
 async-stream = "0.3"
 futures-util = "0.3"

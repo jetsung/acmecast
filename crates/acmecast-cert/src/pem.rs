@@ -85,6 +85,36 @@ pub fn first_der(pem: &str) -> Result<Vec<u8>> {
         .ok_or(Error::NoCertificate)
 }
 
+/// 复刻 `acme.sh _split_cert_chain` 的拆链：首个 `END CERTIFICATE` 为界。
+///
+/// 返回 `(leaf_pem, ca_pem)`：`leaf` 为首块（含头尾），`ca` 为首块之后剩余；
+/// 链仅含单张（或不含证书块）时 `ca` 为空串。容忍 CRLF 与多余空行，
+/// 仅含私钥块等非证书内容时同样返回空 `ca`。
+#[must_use]
+pub fn split_chain(chain_pem: &str) -> (String, String) {
+    const END_MARKER: &str = CERT_PEM_FOOTER;
+    if let Some(idx) = chain_pem.find(END_MARKER) {
+        let end = idx + END_MARKER.len();
+        let leaf = chain_pem[..end].trim().to_owned() + "\n";
+        let rest = chain_pem[end..].trim();
+        if rest.is_empty() {
+            (leaf, String::new())
+        } else {
+            (leaf, format!("{rest}\n"))
+        }
+    } else {
+        (chain_pem.to_owned(), String::new())
+    }
+}
+
+/// 取证书链中叶子之后的剩余链（中间证书），供部署侧 `ca.cer` 落盘复用。
+///
+/// 与 [`split_chain`] 同一规则：多张时为首块之后剩余，单张时为空串。
+#[must_use]
+pub fn ca_pem_of(chain_pem: &str) -> String {
+    split_chain(chain_pem).1
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,5 +222,52 @@ mod tests {
             Ok(_) => panic!("没有证书块时应报错"),
             Err(err) => assert!(matches!(err, Error::NoCertificate), "{err:?}"),
         }
+    }
+
+    // ---- split_chain / ca_pem_of ----
+
+    #[test]
+    fn split_chain_single_cert_yields_empty_ca() {
+        let pem = der_to_pem(SAMPLE_DER);
+        let (leaf, ca) = split_chain(&pem);
+        assert_eq!(leaf.trim_end(), pem.trim_end());
+        assert!(ca.is_empty(), "单张时 ca 应为空串");
+        assert!(ca_pem_of(&pem).is_empty());
+    }
+
+    #[test]
+    fn split_chain_two_certs_takes_rest_after_first() {
+        let chain = format!("{}{}", der_to_pem(&[1, 2, 3]), der_to_pem(&[4, 5, 6]));
+        let (leaf, ca) = split_chain(&chain);
+        assert!(leaf.contains("AQID\n") || leaf.contains("AQID\r"), "leaf 应为首块");
+        assert!(!leaf.contains("BAUG"), "leaf 不应含第二块");
+        assert!(ca.contains("BAUG"), "ca 应为首块之后剩余");
+        assert_eq!(ca, ca_pem_of(&chain));
+    }
+
+    #[test]
+    fn split_chain_tolerates_blank_lines_and_crlf() {
+        let mut chain = String::from("\r\n");
+        chain.push_str(&der_to_pem(SAMPLE_DER).replace('\n', "\r\n"));
+        chain.push_str("\r\n\r\n");
+        chain.push_str(&der_to_pem(&[9, 9]).replace('\n', "\r\n"));
+        let (leaf, ca) = split_chain(&chain);
+        assert!(leaf.trim_end().ends_with(CERT_PEM_FOOTER));
+        assert!(leaf.lines().count() == 3, "leaf 应只含第一块");
+        assert!(ca.contains(CERT_PEM_HEADER), "ca 应含第二块");
+    }
+
+    #[test]
+    fn split_chain_ignores_private_key_only_input() {
+        let key_only = "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n";
+        let (leaf, ca) = split_chain(key_only);
+        assert_eq!(leaf, key_only);
+        assert!(ca.is_empty());
+    }
+
+    #[test]
+    fn ca_pem_of_matches_split_chain() {
+        let chain = format!("{}{}", der_to_pem(&[1]), der_to_pem(&[2]));
+        assert_eq!(ca_pem_of(&chain), split_chain(&chain).1);
     }
 }

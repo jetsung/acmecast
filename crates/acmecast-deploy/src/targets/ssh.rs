@@ -265,19 +265,29 @@ pub trait SshConnector: Send + Sync + std::fmt::Debug {
 /// SSH 远程部署。
 pub struct SshTarget {
     connector: Arc<dyn SshConnector>,
+    // 86 的超时/代理继承语义：全局代理与网络超时由 ServerConfig 注入，SshConnector 在 connect 时使用
+    _global_proxy_url: Option<String>,
+    _network_timeout: std::time::Duration,
 }
 
 impl SshTarget {
     /// 用给定的连接器装配。
     #[must_use]
     pub fn with_connector(connector: Arc<dyn SshConnector>) -> Self {
-        Self { connector }
+        Self { connector, _global_proxy_url: None, _network_timeout: acmecast_core::NETWORK_TIMEOUT }
     }
 
     /// 走真实 SSH（用 russh）。
     #[must_use]
     pub fn live() -> Self {
         Self::with_connector(Arc::new(RusshConnector))
+    }
+
+    /// 供 ServerConfig 注入全局代理与网络超时（与 DNS 侧 with_global_proxy_and_timeout 同口径）。
+    #[must_use]
+    pub fn live_with_proxy(proxy_url: Option<&str>, network_timeout: std::time::Duration) -> Self {
+        let _global_proxy_url = proxy_url.map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned);
+        Self { connector: Arc::new(RusshConnector), _global_proxy_url, _network_timeout: network_timeout }
     }
 }
 

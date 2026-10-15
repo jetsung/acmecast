@@ -649,7 +649,7 @@ ORDER BY (archived_at IS NULL) DESC,  -- 活跃 (1) 排前，已归档 (0) 排�
 - `crates/acmecast-store/src/repository/cert.rs: find_by_key` — 活跃优先排序（`IS NULL` 布尔表达式 + `id DESC`）
 - `crates/acmecast-store/src/repository/cert.rs: find_by_domains` — 调用 `find_by_key`，直接受益
 - `crates/acmecast-server/src/steps/store.rs: archive_replaced_certificate` — 归档守卫（`certs/archived/` / `certs/revoked/` 前缀检查）
-- `crates/acmecast-server/src/steps/apply.rs` — 到期检测与跳过注入受益于查询修正，无代码改动
+- `crates/acmecast-server/src/steps/apply.rs` — 到期检测与跳过注入受益于查询修正；跳过分支的兼容回退读取与领域级失败见下节
 
 ### 材料缺失降级为标记吊销终态
 
@@ -682,3 +682,98 @@ ORDER BY (archived_at IS NULL) DESC,  -- 活跃 (1) 排前，已归档 (0) 排�
 - `crates/acmecast-store/src/repository/cert.rs: mark_revoked` — 设置 `revoked_at`、清空 `archived_at`（降级复用）
 - `frontend/src/pages/certificates/CertificateDetailPage.tsx` — 按 `material_missing` 区分提示文案
 - `frontend/src/pages/certificates/CertificateListPage.tsx` — 列表行归档/吊销降级提示、状态列显示与删除按钮可用性
+
+## 跳过注入兼容回退读取与可诊断失败
+
+`cert.apply` 在 `renew_before_days` 判定为"不在续期窗口"时走跳过分支（以 `skipped` 结束、不触达 CA），需从证书库加载匹配记录并读取其 `cert_pem`/`key_pem` 注入产物，供后续 `cert.store`/`cert.deploy` 使用。该分支的文件读取 MUST 具备兼容回退能力与领域级可诊断失败语义，不再透传裸 OS 错误。
+
+### 兼容回退候选路径
+
+跳过分支读取证书文件 MUST 按固定顺序依次尝试，命中任一可读副本即成功注入：
+
+1. **记录路径**：库中记录的 `cert_pem_path` / `key_pem_path`（新布局 `*.ca.cer`/`*.fullchain.cer`/`key`）。
+2. **旧布局回退**：若记录路径缺失，按主域名与通配前缀映射推导旧布局候选（`certs/ssl/<old>.cert.pem` / `<old>.key.pem`，其中 `*.` → `_` / `_wildcard` 前缀），复用 `certificate-file-layout` 的兼容读取路径。
+3. **归档副本回退**：若旧布局仍缺失，在 `certs/archived/<指纹>/` 下查找对应文件（仅对当前 `cert_id`/指纹的归档目录，匹配记录指纹即最新活跃指纹时视为同一材料）。
+
+所有候选路径 MUST 经 `FileStore` 路径防逃逸校验（拒绝含 `..` 或绝对路径的越界候选），不直接拼接用户可控输入。
+
+### 回退命中
+
+- 命中任一可读副本即以相同产物键（`cert_pem`/`key_pem`/`domains`/`fingerprint`/`cert_id`）注入 `Artifacts`，不覆盖前序同名产物，不中止流水线。
+- 回退命中记一条 `INFO` 日志，含指纹与所用的回退路径，便于排障。
+- 流水线继续后续步骤，终态为 `succeeded`，不视为失败。
+
+### 回退全部失败的领域错误
+
+当所有候选路径均不可读或缺失时，MUST 以领域错误明确失败，不透传裸 OS 错误（如 `No such file or directory (os error 2)`）：
+
+- 错误信息 MUST 归因到 `cert.apply` 跳过注入阶段，包含证书标识（`cert_id`/指纹/归一化 `domains`）、已尝试的路径列表与数据目录状态（存在性/可读性摘要）。
+- 错误信息 MUST 给出可操作指引：检查数据目录挂载与权限、核对归档/迁移是否完成、或将 `renew_before_days` 设为 `0` 强制重签。
+- 步骤日志（`ctx.log_error`）MUST 记录完整尝试列表与各路径失败原因。
+- 运行历史终态为 `failed`，步骤状态为 `failed`（非 `skipped`），避免"跳过成功"误导。
+- 不静默使用错误材料或跳过部署，后续 `cert.store`/`cert.deploy` 不因缺少产物产生二次迷惑错误。
+
+### 日志收敛
+
+- 回退命中仅一条 `INFO`（指纹+回退路径），全部失败一条 `ERROR`（尝试列表+指引），不为每个候选单独打日志。
+- 可观测性与 `pipeline-renewal-lifecycle` 的"跳过可观测"要求对齐：运行历史终态命中回退则 `succeeded`，全部失败则 `failed`。
+- 跳过分支本就不向通知渠道投递；失败分支按既有失败通知规则处理。
+
+### 作用域与不变量
+
+- 本变更不改变阈值判定、域名归一、产物键、通知抑制与幂等/归档规则。
+- 兼容回退仅在跳过分支且主路径缺失时触发，正常签发路径无额外 IO（串行 2–4 次文件读取，仅限回退场景）。
+- 回退读取复用证书详情/下载/吊销/部署路径中已有的兼容读取能力（`certificate-file-layout` 的旧布局回退 + `certificate-storage` 的归档查找），不在 `apply.rs` 内联重写路径推导，避免与规格漂移。
+
+### 实现索引
+
+- `crates/acmecast-server/src/steps/apply.rs` — 跳过分支兼容回退读取（新布局→旧布局→归档副本）与领域级失败（`cert_id`/指纹/`domains`/尝试路径/指引）
+- `crates/acmecast-store/src/filestore.rs` / 证书兼容读取助手 — 回退候选路径推导与 `FileStore` 防逃逸校验
+- `crates/acmecast-pipeline` — 错误分类与步骤终态（`failed` 而非 `skipped`）
+- `crates/acmecast-server/src/steps/apply.rs: zone_of` / `complete_challenge` — 跳过注入与正常签发共用产物键
+
+## 文件类部署目标 3 文件布局与腾讯云 2 文件区分
+
+文件类部署目标（`local` / `ssh` / `s3` / `webdav`）的部署产物从 2 文件改为 **3 文件**，对齐主存储 `certificate-file-layout` 的 3 文件布局；腾讯云 `tencent-ssl` 为云 API 语义，保持 **2 文件**（fullchain + key），二者显式区分。
+
+### 3 文件集合（文件类目标）
+
+文件类目标默认写入/上传 3 文件，不再单独产出叶子 `cer`：
+
+- `<prefix>.fullchain.cer` ← `chain_pem` 原样
+- `<prefix>.ca.cer` ← `chain_pem` 按 PEM 拆链规则（`split_chain` / `ca_pem_of`）生成的剩余链（多张时为首块之后剩余，单张时为**空文件**，与主存储一致）
+- `<prefix>.key` ← `key_pem`
+
+其中 `<prefix>` = `domain_file_prefix(primary_domain)`（通配 `*.example.com` → `_wildcard.example.com`），与主存储共用同一函数（`acmecast_cert::domain_file_prefix`），拆链共用 `acmecast_cert::ca_pem_of`。
+
+### 腾讯云 2 文件语义（对比声明）
+
+`tencent-ssl` 部署目标保持 2 文件语义：上传参数 `CertificatePublicKey=chain_pem`（fullchain）与 `CertificatePrivateKey=key_pem`，不涉及文件化与 `ca.cer` 拆分。文档与校验口径 MUST 显式声明该差异，避免与文件类目标的 3 文件混淆——实现上 MUST NOT 引入 `ca.cer` 拆分逻辑。
+
+### 字段与别名兼容
+
+各目标新增 `fullchain`/`ca` 路径或模板字段，存量 `cert_path`/`cert_filename` 视为 `fullchain` 的别名（`fullchain_path`/`fullchain_filename` 未配置时生效）；`ca` 路径未显式配置时按 fullchain 同目录同前缀派生 `*.ca.cer`，**显式留空**可跳过 `ca.cer` 产出。打开存量流水线步骤时 `fullchain_path`/`fullchain_filename` 自动回显 `cert_path`/`cert_filename` 值。
+
+| 目标 | 新增字段 | 别名字段 | 默认派生 |
+|---|---|---|---|
+| `local` | `fullchain_path` / `ca_path` | `cert_path` | `ca_path` ← fullchain 同目录 `*.ca.cer` |
+| `ssh` | `fullchain_path` / `ca_path` | `cert_path` | `ca_path` ← fullchain 同目录 `*.ca.cer` |
+| `s3` | `fullchain_filename` / `ca_filename` | `cert_filename` | `ca_filename` ← `<prefix>.ca.cer` |
+| `webdav` | `fullchain_path` / `ca_path` | `cert_path` | `ca_path` ← `<prefix>.ca.cer` |
+
+### 原子性、幂等与路径集合
+
+- `local`/`ssh`：3 文件走原子写（临时文件 + `rename`）、`parse_mode`/`set_mode`/`set_owner` 校验；任一文件失败则整体失败，已写临时文件清理。
+- `s3`/`webdav`：任一 PUT 失败即失败，不污染主存储；`DeployMode::SkipWrite`（指纹一致且非 `force`）时 3 文件路径均列入 `DeployOutcome.paths`，不发起写入。
+- 运行历史与部署日志中引用的路径 MUST 仅包含实际部署的 3 文件（`*.ca.cer` / `*.fullchain.cer` / `*.key`），MUST NOT 引用不存在的叶子 `*.cer`。
+
+### 实现索引
+
+- `crates/acmecast-cert/src/pem.rs: split_chain / ca_pem_of` — 拆链纯函数（主存储与部署侧共用）
+- `crates/acmecast-cert/src/lib.rs: domain_file_prefix` — 公共前缀派生（`*.example.com` → `_wildcard.example.com`）
+- `crates/acmecast-deploy/src/targets/local.rs: LocalInput / derive_ca_path` — `fullchain_path`/`ca_path`/`key_path` 与别名回填、`ca_path` 派生
+- `crates/acmecast-deploy/src/targets/ssh.rs: SshInput / ResolvedSshConfig / resolve_input` — 同 local 的别名回填与派生逻辑
+- `crates/acmecast-deploy/src/targets/s3.rs: S3Input` — `fullchain_filename`/`ca_filename`/`key_filename` 与 `cert_filename` 别名
+- `crates/acmecast-deploy/src/targets/webdav.rs: WebdavInput` — `fullchain_path`/`ca_path`/`key_path` 与 `cert_path` 别名
+- `crates/acmecast-deploy/src/targets/tencent.rs` — 2 文件上传（`CertificatePublicKey=chain_pem` + `CertificatePrivateKey=key_pem`），不拆 `ca.cer`
+- `docs/07-deploy-targets.md` — 各目标字段表与共享 3 文件语义

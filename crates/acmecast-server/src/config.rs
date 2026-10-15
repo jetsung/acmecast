@@ -60,6 +60,10 @@ pub struct ServerConfig {
     /// 的合并（`builtin < config.toml < env`）。`None` 即直连——不给任何
     /// 渠道注入代理，也不隐式读取 `HTTPS_PROXY` 之类的标准变量。
     pub proxy_url: Option<String>,
+    /// 流水线网络操作（SSH 连接/传输、S3/WebDAV 上传、腾讯云与 DNS API）的
+    /// 超时时长；来自 `[network]` 段与环境变量 `ACMECAST_NETWORK_TIMEOUT_SECS`
+    /// 的合并（`builtin < config.toml < env`）。
+    pub network_timeout: std::time::Duration,
     /// Redis / Valkey 缓存连接串（可选）；缺省时禁用缓存。
     pub redis_url: Option<String>,
 }
@@ -81,6 +85,7 @@ impl Default for ServerConfig {
             },
             resolvers: Vec::new(),
             proxy_url: None,
+            network_timeout: default_network_timeout(),
             redis_url: None,
         }
     }
@@ -126,6 +131,37 @@ pub struct AppConfig {
     /// 通知渠道条目；字段合法性在合并阶段校验。
     #[serde(default)]
     pub notifications: Vec<NotificationEntry>,
+    /// 流水线网络操作超时；缺省段即内置默认值。
+    #[serde(default)]
+    pub network: NetworkSection,
+}
+
+/// `config.toml` 中 `[network]` 段的字段：流水线网络操作超时。
+///
+/// 与 `[propagation]` 同构；约束 SSH 部署连接与传输、S3/WebDAV 上传、
+/// 腾讯云 SSL 与 DNS 提供商的 API 调用。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkSection {
+    /// 网络操作超时（秒）。须为正整数，`0` 在启动合并时被拒绝。
+    #[serde(default = "default_network_timeout_secs")]
+    pub timeout_secs: u64,
+}
+
+impl Default for NetworkSection {
+    fn default() -> Self {
+        Self {
+            timeout_secs: default_network_timeout_secs(),
+        }
+    }
+}
+
+fn default_network_timeout_secs() -> u64 {
+    30
+}
+
+fn default_network_timeout() -> std::time::Duration {
+    std::time::Duration::from_secs(default_network_timeout_secs())
 }
 
 /// `config.toml` 中 `[proxy]` 段的字段：全局出网代理。
@@ -404,6 +440,13 @@ fn apply_file(config: &mut ServerConfig, file: &AppConfig) -> acmecast_core::Res
         interval_secs: file.propagation.interval_secs,
     };
     config.resolvers = file.resolvers.clone();
+    // 网络操作超时：须为正整数，0 在启动时拒绝（与 env 同一口径）。
+    if file.network.timeout_secs == 0 {
+        return Err(acmecast_core::Error::Config(
+            "[network] timeout_secs 不合法: 期望正整数（秒）".to_owned(),
+        ));
+    }
+    config.network_timeout = std::time::Duration::from_secs(file.network.timeout_secs);
     // 全局代理：非空值才覆盖（留空即维持直连），并当场校验——文件值非法
     // 要让服务拒绝启动，而不是等第一次出网才以「代理连不上」的形式炸开。
     if let Some(url) = normalized_proxy_url(file.proxy.url.as_deref()) {
@@ -646,6 +689,20 @@ fn apply_env(config: &mut ServerConfig) -> acmecast_core::Result<()> {
     {
         config.propagation.interval_secs = secs;
     }
+    // 网络操作超时 env 覆盖文件值：已设置时必须是可解析的正整数，否则拒绝启动
+    //（比 [propagation] 的静默忽略更严——写错的超时值等到第一次挂起才暴露代价太高）。
+    if let Ok(value) = std::env::var("ACMECAST_NETWORK_TIMEOUT_SECS") {
+        match value.trim().parse::<u64>() {
+            Ok(secs) if secs > 0 => {
+                config.network_timeout = std::time::Duration::from_secs(secs);
+            }
+            _ => {
+                return Err(acmecast_core::Error::Config(
+                    "ACMECAST_NETWORK_TIMEOUT_SECS 不合法: 期望正整数（秒）".to_owned(),
+                ));
+            }
+        }
+    }
     if let Some(redis_url) = resolve_redis_url_from_env() {
         config.redis_url = Some(redis_url);
     }
@@ -722,6 +779,13 @@ pub fn template_content() -> String {
     out.push_str("[propagation]\n");
     out.push_str("timeout_secs = 300\n");
     out.push_str("interval_secs = 5\n\n");
+
+    out.push_str("# 流水线网络操作超时（可选）：约束 SSH 部署连接与传输、S3/WebDAV\n");
+    out.push_str("# 上传、腾讯云 SSL 与 DNS 提供商的 API 调用——每次连接/请求在此时长内\n");
+    out.push_str("# 完成或以超时失败，避免远端无响应时步骤永久挂起。须为正整数。\n");
+    out.push_str("# 环境变量 ACMECAST_NETWORK_TIMEOUT_SECS 可覆盖。\n");
+    out.push_str("[network]\n");
+    out.push_str("timeout_secs = 30\n\n");
 
     out.push_str("# 全局出网代理（可选）。\n");
     out.push_str("# 支持 socks5:// / http:// / https://，取值须可解析；留空或本段缺省即直连，\n");
@@ -963,6 +1027,83 @@ mod tests {
         let config = ServerConfig::default();
         assert_eq!(config.propagation.timeout_secs, 300);
         assert_eq!(config.propagation.interval_secs, 5);
+    }
+
+    // ---- 网络操作超时（[network] 段 / ACMECAST_NETWORK_TIMEOUT_SECS）----
+
+    /// 合并优先级 `builtin < config.toml < env`：文件覆盖内置 30 秒，
+    /// env 再覆盖文件值。
+    #[test]
+    #[serial]
+    fn network_file_overrides_builtin_env_overrides_file() {
+        clear_server_env();
+        let dir = unique_dir("network");
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "[network]\ntimeout_secs = 60\n").unwrap();
+
+        unsafe { std::env::set_var("ACMECAST_CONFIG", &path) };
+        let config = ServerConfig::from_env_and_file().unwrap();
+        // 文件胜过内置
+        assert_eq!(config.network_timeout, std::time::Duration::from_secs(60));
+
+        // env 胜过文件
+        unsafe { std::env::set_var("ACMECAST_NETWORK_TIMEOUT_SECS", "15") };
+        let config = ServerConfig::from_env_and_file().unwrap();
+        assert_eq!(config.network_timeout, std::time::Duration::from_secs(15));
+
+        unsafe { std::env::remove_var("ACMECAST_NETWORK_TIMEOUT_SECS") };
+        unsafe { std::env::remove_var("ACMECAST_CONFIG") };
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 未配置时默认 30 秒。
+    #[test]
+    fn network_defaults_are_documented_values() {
+        let config = ServerConfig::default();
+        assert_eq!(config.network_timeout, std::time::Duration::from_secs(30));
+    }
+
+    /// 非法值拒绝启动：文件 `timeout_secs = 0`、env 非正整数或非数字都报错。
+    #[test]
+    #[serial]
+    fn invalid_network_timeout_is_rejected_at_startup() {
+        clear_server_env();
+        let dir = unique_dir("network-invalid");
+        let path = dir.join("config.toml");
+        unsafe { std::env::set_var("ACMECAST_CONFIG", &path) };
+
+        // 文件 0 值拒绝启动。
+        std::fs::write(&path, "[network]\ntimeout_secs = 0\n").unwrap();
+        let err = ServerConfig::from_env_and_file().expect_err("文件 0 值应拒绝启动");
+        assert!(err.to_string().contains("正整数"), "{err}");
+
+        // env 非法值同样拒绝启动（文件合法，排除文件先报错的干扰）。
+        std::fs::write(&path, "[network]\ntimeout_secs = 60\n").unwrap();
+        for value in ["-5", "0", "abc"] {
+            unsafe { std::env::set_var("ACMECAST_NETWORK_TIMEOUT_SECS", value) };
+            let err = ServerConfig::from_env_and_file()
+                .expect_err("env 非法值应拒绝启动");
+            assert!(
+                err.to_string().contains("ACMECAST_NETWORK_TIMEOUT_SECS"),
+                "{err}"
+            );
+        }
+
+        unsafe { std::env::remove_var("ACMECAST_NETWORK_TIMEOUT_SECS") };
+        unsafe { std::env::remove_var("ACMECAST_CONFIG") };
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 自动生成的模板包含带注释的 `[network]` 段与默认值。
+    #[test]
+    fn template_contains_network_section() {
+        let content = template_content();
+        assert!(content.contains("[network]"), "{content}");
+        assert!(content.contains("timeout_secs = 30"), "{content}");
+        assert!(
+            content.contains("ACMECAST_NETWORK_TIMEOUT_SECS"),
+            "{content}"
+        );
     }
 
     #[test]

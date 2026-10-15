@@ -1376,7 +1376,10 @@ async fn run_pipeline(
         return Err(ApiError::new(
             StatusCode::CONFLICT,
             "conflict",
-            format!("流水线 {id} 正在运行中，请等待本次运行结束"),
+            format!(
+                "流水线 {id} 正在运行中，请等待本次运行结束；若运行历史里存在长期 \
+                 running 的旧记录（上次进程中断遗留），重启服务即会将其标记为失败并解除阻塞"
+            ),
         ));
     }
 
@@ -1410,6 +1413,8 @@ async fn run_pipeline(
     let notifier = state.runtime.notifier.clone();
     let redis_manager = state.redis();
     let broadcaster = state.runtime.broadcaster.clone();
+    // 运行控制注册表随执行旁路登记：终止运行接口经它取消本次运行。
+    let run_control = Arc::clone(&state.runtime.run_control);
     tokio::spawn(async move {
         let cache = crate::history_cache::HistoryCache::new(redis_manager);
         let credentials = CredentialStore::new(&db, registry, cipher);
@@ -1425,6 +1430,7 @@ async fn run_pipeline(
             events,
             Some(&cache),
             Some(&broadcaster),
+            Some(&run_control),
         )
         .await;
         match result {

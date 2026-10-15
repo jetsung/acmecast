@@ -997,7 +997,7 @@ impl DohProxyFallback {
         if self.transport.is_none() {
             // 生产 URL 已在启动时经 `validate_proxy_url` 校验；这里再失败
             // 只可能是 reqwest 拒绝该代理配置——退化为无回退。
-            self.transport = ReqwestTransport::with_proxy(url)
+            self.transport = ReqwestTransport::with_proxy(url, acmecast_core::NETWORK_TIMEOUT)
                 .ok()
                 .map(|transport| Arc::new(transport) as Arc<dyn HttpTransport>);
         }

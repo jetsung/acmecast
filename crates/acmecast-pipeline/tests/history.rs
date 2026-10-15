@@ -389,3 +389,101 @@ async fn a_run_without_logs_reads_back_empty() {
     let history_id = record_at(&repo, pipeline_id, Utc::now()).await;
     assert!(repo.logs_of(history_id).await.unwrap().is_empty());
 }
+
+// ---- 启动时清理跨进程遗留的 running 历史 ----
+
+/// 落一条仍在运行中的历史（模拟进程中断后遗留的记录）。
+async fn record_running(
+    repo: &HistoryRepository<'_>,
+    pipeline_id: i64,
+    trigger: TriggerSource,
+) -> i64 {
+    repo.record(HistoryRecord {
+        pipeline_id,
+        trigger_source: trigger,
+        status: history::RunStatus::Running,
+        started_at: Utc::now(),
+        finished_at: None,
+        error_message: None,
+        logs: Vec::new(),
+    })
+    .await
+    .expect("应能落库")
+}
+
+/// 遗留的 running 历史被标记为失败：has_running 恢复 false（解除触发阻塞），
+/// 已完成的历史不受影响，重复清理幂等。
+#[tokio::test]
+async fn stale_running_histories_are_marked_failed_and_unblock_their_pipelines() {
+    let db = database().await;
+    let repo = HistoryRepository::new(&db);
+    let pipeline_a = insert_pipeline(&db, "中断的流水线").await;
+    let pipeline_b = insert_pipeline(&db, "另一条中断的流水线").await;
+
+    let stale_a = record_running(&repo, pipeline_a, TriggerSource::Cron).await;
+    let stale_b = record_running(&repo, pipeline_b, TriggerSource::Manual).await;
+    assert!(repo.has_running(pipeline_a).await.unwrap());
+
+    // 一条正常完成的历史混在其中：清理不应碰它。
+    let finished = record_at(&repo, pipeline_a, Utc::now()).await;
+
+    let marked = repo.fail_stale_running().await.expect("清理应成功");
+    assert_eq!(marked, 2, "两条遗留 running 都应被标记");
+
+    // 终态与摘要：failed + 结束时间 + 可读原因。
+    let page = repo
+        .list(HistoryQuery {
+            pipeline_id: Some(pipeline_a),
+            ..HistoryQuery::default()
+        })
+        .await
+        .unwrap();
+    let stale = page
+        .items
+        .iter()
+        .find(|item| item.id == stale_a)
+        .expect("清理后的记录应仍在列表里");
+    assert_eq!(stale.status, history::RunStatus::Failed);
+    assert!(stale.finished_at.is_some());
+    let reason = stale.error_message.as_deref().unwrap_or_default();
+    assert!(reason.contains("服务重启"), "摘要应说明中断原因: {reason}");
+
+    // 阻塞解除：两条流水线都恢复可触发。
+    assert!(!repo.has_running(pipeline_a).await.unwrap());
+    assert!(!repo.has_running(pipeline_b).await.unwrap());
+
+    // 正常完成的历史未被波及。
+    let done = page
+        .items
+        .iter()
+        .find(|item| item.id == finished)
+        .expect("已完成记录应仍在列表里");
+    assert_eq!(done.status, history::RunStatus::Success);
+    assert!(done.error_message.is_none());
+
+    // 幂等：再清一次无事可做。
+    let marked = repo.fail_stale_running().await.expect("再次清理应成功");
+    assert_eq!(marked, 0, "没有 running 时清点应为 0");
+}
+
+/// 判定与清理配合覆盖完整生命周期：running 期间拒绝并发，终态后放行。
+#[tokio::test]
+async fn running_block_last_only_until_a_terminal_state_is_written() {
+    let db = database().await;
+    let repo = HistoryRepository::new(&db);
+    let pipeline_id = insert_pipeline(&db, "会结束的流水线").await;
+
+    let history_id = record_running(&repo, pipeline_id, TriggerSource::Manual).await;
+    assert!(
+        repo.has_running(pipeline_id).await.unwrap(),
+        "运行中应判定为运行中"
+    );
+
+    repo.finish(history_id, history::RunStatus::Success, None, Vec::new())
+        .await
+        .expect("应能写回终态");
+    assert!(
+        !repo.has_running(pipeline_id).await.unwrap(),
+        "终态后应解除并发阻挡"
+    );
+}

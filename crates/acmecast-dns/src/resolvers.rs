@@ -182,10 +182,15 @@ pub const PROXY_URL_ENV: &str = "ACMECAST_PROXY_URL";
 /// 不会读到这里的配置，未配 `proxy_url` 的凭据始终保持直连。
 pub fn doh_transport_from(proxy_url: Option<&str>) -> crate::Result<Arc<dyn HttpTransport>> {
     let Some(url) = proxy_url.map(str::trim).filter(|v| !v.is_empty()) else {
-        return Ok(Arc::new(crate::ReqwestTransport::new()?));
+        return Ok(Arc::new(
+            crate::ReqwestTransport::new(acmecast_core::NETWORK_TIMEOUT)?,
+        ));
     };
     crate::validate_proxy_url(url)?;
-    Ok(Arc::new(crate::ReqwestTransport::with_proxy(url)?))
+    Ok(Arc::new(crate::ReqwestTransport::with_proxy(
+        url,
+        acmecast_core::NETWORK_TIMEOUT,
+    )?))
 }
 
 /// 从环境变量 [`PROXY_URL_ENV`] 读取全局代理并构建 DoH 解析器传输层。

@@ -250,13 +250,16 @@ impl<'a> acmecast_pipeline::EventSink for RunExecutionSink<'a> {
 
 /// 执行一条已定义的流水线，并把终态与各步骤日志写回 `history_id`。
 ///
-/// 流水线**本身**失败（某步骤报错）属于正常业务结果，返回 `Ok(outcome)`；
-/// `Err` 留给执行器或存储层出问题的情况——那时历史会停在 running，由调用方
-/// 决定重试策略（cron 触发靠它保留触发点）。
+/// 流水线**本身**失败（某步骤报错，含被 [`crate::run_control::RunControl`]
+/// 取消）属于正常业务结果，返回 `Ok(outcome)`；`Err` 留给执行器或存储层
+/// 出问题的情况——那时历史会停在 running，由调用方决定重试策略（cron 触发
+/// 靠它保留触发点）。
 ///
 /// `events` 是可选的事件订阅端（如 webhook 通知）；
 /// `cache` 是可选的 Redis / Valkey 缓存层；
-/// `broadcaster` 是可选的 SSE 广播器。
+/// `broadcaster` 是可选的 SSE 广播器；
+/// `run_control` 是可选的运行控制注册表——传入即把本次运行的取消令牌登记
+/// 进去（终态写回后注销），供终止运行接口触发取消。
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn execute_run(
     db: &DatabaseConnection,
@@ -268,6 +271,7 @@ pub(crate) async fn execute_run(
     events: Option<&dyn acmecast_pipeline::EventSink>,
     cache: Option<&HistoryCache>,
     broadcaster: Option<&crate::history_stream::SseBroadcaster>,
+    run_control: Option<&crate::run_control::RunControl>,
 ) -> acmecast_pipeline::Result<RunOutcome> {
     let state = DatabaseStateStore::new(db);
     let execution_sink = RunExecutionSink {
@@ -275,10 +279,21 @@ pub(crate) async fn execute_run(
         broadcaster,
         upstream: events,
     };
+    // 取消令牌：登记进运行控制注册表后，终止运行接口可触发取消；
+    // 终态写回前注销，映射不随运行次数增长。
+    let cancel = acmecast_pipeline::CancelToken::new();
+    if let Some(control) = run_control {
+        control.register(history_id, cancel.clone());
+    }
     let mut runner = PipelineRunner::new(steps, credentials, &state).with_trigger(source);
-    runner = runner.with_events(&execution_sink);
+    runner = runner.with_events(&execution_sink).with_cancel(&cancel);
 
-    let outcome = runner.run(definition, history_id).await?;
+    let outcome = runner.run(definition, history_id).await;
+
+    if let Some(control) = run_control {
+        control.remove(history_id);
+    }
+    let outcome = outcome?;
 
     let final_status = if outcome.is_success() {
         RunStatus::Success

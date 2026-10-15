@@ -10,14 +10,23 @@
   不算「已部署」，否则重试会被误判跳过）。
 - **重载失败**：非 0 退出码视为失败（错误携带命令、退出码与合并输出），
   此时文件已写好。
+- **文件类目标默认 3 文件**：`local` / `ssh` / `s3` / `webdav` 默认产出
+  `<prefix>.fullchain.cer`（完整链原样）、`<prefix>.ca.cer`（中间链，链仅
+  单张时为空文件）与 `<prefix>.key`（私钥），与主存储 `certs/ssl/` 的三文件
+  布局一致；不再单独产出叶子 `<prefix>.cer`（需叶子时从 fullchain 拆首块）。
+  存量字段 `cert_path` / `cert_filename` 视为 fullchain 的别名继续生效。
+- **腾讯云 `tencent-ssl` 仅需 2 材料**：云端 API 上传 `CertificatePublicKey`
+  （= fullchain 链 PEM）与 `CertificatePrivateKey`（= 私钥），不产生也不要求
+  `ca.cer` 文件——与文件类目标的 3 文件语义显式区分。
 
 ## `local` — 本地文件系统
 
 | 字段 | 必需 | 默认 | 说明 |
 |---|---|---|---|
-| `cert_path` | 是 | — | 证书链 PEM 目标路径 |
+| `fullchain_path` | 是* | — | 完整链 PEM 目标路径（*存量 `cert_path` 视为其别名，二者需给其一） |
+| `ca_path` | 否 | 按 `fullchain_path` 派生 | 中间链目标路径；未配置时同目录派生 `<stem>.ca.cer`，**显式留空**则跳过 `ca.cer` 产出 |
 | `key_path` | 是 | — | 私钥 PEM 目标路径 |
-| `cert_mode` | 否 | `0644` | 证书权限（八进制字符串） |
+| `cert_mode` | 否 | `0644` | 证书/中间链权限（八进制字符串） |
 | `key_mode` | 否 | `0600` | 私钥权限（比证书严） |
 | `uid` / `gid` | 否 | — | 文件属主；不填保持写入者所有（改他人所有需 root） |
 | `reload_command` | 否 | — | 写完后执行的重载命令，走 shell（`sh -c`） |
@@ -42,8 +51,9 @@
 | `credential_id` | 输入 | 引用 `deploy.ssh` 类型主机档案 |
 | `host` / `port` / `user` | 输入或档案 | 连接参数 |
 | `auth` | 输入或档案 | `{"kind": "private_key", "credential_id": N}` 或 `{"kind": "password", "credential_id": N}` |
-| `cert_path` / `key_path` | **仅输入** | 远端目标路径（档案不含路径——一份档案可服务多条流水线） |
-| `cert_mode` / `key_mode` | 输入或档案 | 文件权限 |
+| `fullchain_path` / `key_path` | **仅输入** | 远端完整链与私钥路径（档案不含路径——一份档案可服务多条流水线；存量 `cert_path` 视为 `fullchain_path` 别名） |
+| `ca_path` | **仅输入** | 远端中间链路径；未配置时按 fullchain 同目录派生 `<stem>.ca.cer`，显式留空则跳过写入 |
+| `cert_mode` / `key_mode` | 输入或档案 | 文件权限（`cert_mode` 同时作用于 fullchain 与 ca） |
 | `reload_command` | **仅输入** | 远端重载命令 |
 
 细节：
@@ -107,7 +117,8 @@ CDN / WAF 等云资源引用。**国内站与国际站同构**：凭据的 `acco
 | `region` | 是 | — | 区域，如 `us-east-1` |
 | `bucket` | 是 | — | 桶名 |
 | `prefix` | 否 | — | 对象键前缀，如 `certs/` |
-| `cert_filename` | 否 | — | 证书对象键模板，含 `{domain}` 占位，未填时为 `<prefix>/<domain>.cer` |
+| `fullchain_filename` | 否 | — | 完整链对象键模板，含 `{domain}` 占位，未填时为 `<prefix>/<domain>.fullchain.cer`（存量 `cert_filename` 视为其别名） |
+| `ca_filename` | 否 | — | 中间链对象键模板，未填时为 `<prefix>/<domain>.ca.cer`（链仅单张时为空对象）；**显式留空**则跳过上传 |
 | `key_filename` | 否 | — | 私钥对象键模板，未填时为 `<prefix>/<domain>.key` |
 | `force_path_style` | 否 | `false` | 强制 path-style（MinIO 等自建存储） |
 | `insecure_skip_verify` | 否 | `false` | 跳过 TLS 证书校验 |
@@ -123,7 +134,8 @@ CDN / WAF 等云资源引用。**国内站与国际站同构**：凭据的 `acco
 | `credential_id` | 是 | — | 引用 `deploy.webdav` 类型凭据（含 `username`/`password`） |
 | `url` | 是 | — | WebDAV 基地址，如 `https://dav.example.com/` |
 | `base_path` | 否 | — | 基路径，归一化后拼接 |
-| `cert_path` | 否 | — | 证书对象路径模板，含 `{domain}` |
+| `fullchain_path` | 否 | — | 完整链对象路径模板，含 `{domain}`，未填时派生 `<prefix>.fullchain.cer`（存量 `cert_path` 视为其别名） |
+| `ca_path` | 否 | — | 中间链路径模板，未填时派生 `<prefix>.ca.cer`；**显式留空**则跳过上传 |
 | `key_path` | 否 | — | 私钥对象路径模板 |
 | `insecure_skip_verify` | 否 | `false` | 跳过 TLS 证书校验 |
 
@@ -142,7 +154,7 @@ CDN / WAF 等云资源引用。**国内站与国际站同构**：凭据的 `acco
   "target": "ssh",
   "config": {
     "credential_id": 5,
-    "cert_path": "/etc/nginx/ssl/example.com.crt",
+    "fullchain_path": "/etc/nginx/ssl/example.com.fullchain.cer",
     "key_path": "/etc/nginx/ssl/example.com.key",
     "reload_command": "systemctl reload nginx"
   }
@@ -150,4 +162,5 @@ CDN / WAF 等云资源引用。**国内站与国际站同构**：凭据的 `acco
 ```
 
 `credential_id: 5` 是 `deploy.ssh` 类型主机档案；路径与重载命令随部署输入给出。
+未配置 `ca_path` 时按 `fullchain_path` 同目录派生 `example.com.ca.cer`。
 

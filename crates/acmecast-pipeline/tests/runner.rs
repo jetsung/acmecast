@@ -730,3 +730,113 @@ async fn an_artifact_of_the_wrong_shape_reports_a_parse_error() {
     );
     assert_eq!(failure.step_order, 1, "失败应发生在消费方");
 }
+
+// ---- 外部取消 ----
+
+/// 挂在取消等待上永不返回的步骤：模拟卡死的远端（传输层超时之前的窗口）。
+#[derive(Debug)]
+struct Hangs;
+
+#[async_trait]
+impl PipelineStep for Hangs {
+    fn type_id(&self) -> &'static str {
+        "test.hangs"
+    }
+
+    async fn execute(&self, _ctx: &mut StepContext<'_>) -> Result<StepOutput> {
+        std::future::pending::<()>().await;
+        Ok(StepOutput::empty())
+    }
+}
+
+/// 取消在步骤执行中触发：当前步骤失败、后续步骤不执行、
+/// 失败原因写明「运行被人工终止」。
+#[tokio::test]
+async fn a_cancel_during_a_step_fails_that_step_and_stops_the_run() {
+    let db = database().await;
+    let state = NoState;
+    let counted = Arc::new(AtomicUsize::new(0));
+
+    let mut registry = registry(Arc::clone(&counted));
+    registry.register(Hangs).unwrap();
+    let credentials = credential_store(&db);
+    let cancel = acmecast_pipeline::CancelToken::new();
+
+    // 先取消，再触发一次执行中的取消：两路都验证。
+    let runner = PipelineRunner::new(&registry, &credentials, &state).with_cancel(&cancel);
+
+    // 场景一：执行前已取消（边界检查拦下，步骤从未执行）。
+    cancel.cancel();
+    let outcome = runner
+        .run(
+            &pipeline(vec![step(0, "test.counted"), step(1, "test.counted")]),
+            1,
+        )
+        .await
+        .unwrap();
+    assert_eq!(outcome.status, RunStatus::Failed);
+    let failure = outcome.failure.expect("应失败");
+    assert!(
+        failure.reason.contains("运行被人工终止"),
+        "失败原因应说明是人工终止: {failure:?}"
+    );
+    assert_eq!(
+        counted.load(Ordering::SeqCst),
+        0,
+        "已取消的运行不应执行任何步骤"
+    );
+
+    // 场景二：步骤执行中被取消——挂死步骤与取消等待赛跑，取消应胜出。
+    // 取消触发侧只把令牌的 owned 克隆 move 进子任务，runner 留在主任务，
+    // 借用不跨任务。
+    let cancel2 = acmecast_pipeline::CancelToken::new();
+    let cancel_for_trigger = cancel2.clone();
+    let trigger = tokio::spawn(async move {
+        // 等执行真正进入挂死步骤，再触发取消。
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        cancel_for_trigger.cancel();
+    });
+    let runner2 = PipelineRunner::new(&registry, &credentials, &state).with_cancel(&cancel2);
+    let outcome = runner2
+        .run(
+            &pipeline(vec![step(0, "test.hangs"), step(1, "test.counted")]),
+            2,
+        )
+        .await
+        .unwrap();
+    trigger.await.unwrap();
+
+    assert_eq!(outcome.status, RunStatus::Failed);
+    let failure = outcome.failure.expect("应失败");
+    assert_eq!(failure.step_order, 0, "取消应终止正在执行的那一步");
+    assert!(
+        failure.reason.contains("运行被人工终止"),
+        "失败原因应说明是人工终止: {failure:?}"
+    );
+    assert_eq!(
+        counted.load(Ordering::SeqCst),
+        0,
+        "取消后的后续步骤不应再执行"
+    );
+    // 已有步骤记录保留：只有失败的那一步，且它记在案。
+    assert_eq!(outcome.steps.len(), 1);
+    assert_eq!(outcome.steps[0].order_index, 0);
+}
+
+/// 不接取消令牌的运行器行为不变：永远等步骤自己结束。
+#[tokio::test]
+async fn a_runner_without_a_cancel_token_completes_normally() {
+    let db = database().await;
+    let state = NoState;
+    let counted = Arc::new(AtomicUsize::new(0));
+    let registry = registry(Arc::clone(&counted));
+    let credentials = credential_store(&db);
+
+    let runner = PipelineRunner::new(&registry, &credentials, &state);
+    let outcome = runner
+        .run(&pipeline(vec![step(0, "test.counted")]), 1)
+        .await
+        .unwrap();
+    assert_eq!(outcome.status, RunStatus::Succeeded);
+    assert_eq!(counted.load(Ordering::SeqCst), 1);
+}

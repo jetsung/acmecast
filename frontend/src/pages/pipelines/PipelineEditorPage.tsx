@@ -179,7 +179,12 @@ export function PipelineEditorPage() {
     setSteps(loaded);
     form.setFieldsValue({
       inputs: Object.fromEntries(
-        loaded.map((step, index) => [step.id, (copyFrom.steps[index].input ?? {}) as Record<string, unknown>]),
+        loaded.map((step, index) => [
+          step.id,
+          step.type_id === "cert.deploy"
+            ? migrateLegacyDeployInput((copyFrom.steps[index].input ?? {}) as Record<string, unknown>)
+            : ((copyFrom.steps[index].input ?? {}) as Record<string, unknown>),
+        ]),
       ),
     });
   }, [editingId, copyFrom, form, steps.length]);
@@ -210,10 +215,17 @@ export function PipelineEditorPage() {
       }));
       setSteps(loaded);
       // 把已存的步骤输入回填到表单 store：SchemaForm 按 ["inputs", id] 读取，
-      // 与步骤顺序解耦（所以排序、删除都不会让输入错位）。
+      // 与步骤顺序解耦（所以排序、删除都不会让输入错位）。cert.deploy 步骤
+      // 先过存量别名回显：仅含 cert_path/cert_filename 的旧步骤把值回显到
+      // fullchain_*，保存后新字段落库。
       form.setFieldsValue({
         inputs: Object.fromEntries(
-          loaded.map((step, index) => [step.id, (full.steps[index].input ?? {}) as Record<string, unknown>]),
+          loaded.map((step, index) => [
+            step.id,
+            step.type_id === "cert.deploy"
+              ? migrateLegacyDeployInput((full.steps[index].input ?? {}) as Record<string, unknown>)
+              : ((full.steps[index].input ?? {}) as Record<string, unknown>),
+          ]),
         ),
       });
     })();
@@ -521,14 +533,21 @@ function TaskSchemaFields({
  * （host/port/user）与认证材料在执行时从档案取，权限位用档案值或系统缺省；
  * 其余三个是部署输入，绑定「证书装到哪、怎么重载」，档案不携带。
  */
-const SSH_FIELDS = ["credential_id", "cert_path", "key_path", "reload_command"] as const;
+const SSH_FIELDS = [
+  "credential_id",
+  "fullchain_path",
+  "ca_path",
+  "key_path",
+  "reload_command",
+] as const;
 
 /**
- * local 变体的字段渲染顺序：路径与其权限位成对相邻（两字段半宽即同行），
- * uid/gid 成对在后；重载命令最后。字段全部保留，仅声明顺序。
+ * local 变体的字段渲染顺序：fullchain/ca/key 路径与其权限位成对相邻
+ * （路径字段半宽即同行），uid/gid 成对在后；重载命令最后。字段全部保留，仅声明顺序。
  */
 const LOCAL_FIELD_ORDER = [
-  "cert_path",
+  "fullchain_path",
+  "ca_path",
   "cert_mode",
   "key_path",
   "key_mode",
@@ -548,7 +567,7 @@ const SSH_LABELS: Record<string, string> = {
 /**
  * 收紧 SSH 变体 schema：只保留 `SSH_FIELDS` 声明的字段，并注入展示标签与
  * 行尾标记——「SSH 主机档案」与「重载命令」各独占一行（右侧空列占位），
- * `cert_path`/`key_path` 成对同行。连接、认证、权限字段从表单剔除——后端
+ * fullchain/ca/key 路径成对同行。连接、认证、权限字段从表单剔除——后端
  * `SshInput` 仍接受它们（兼容旧数据），但界面上不再提供入口。
  */
 function tightenSshSchema(schema: Record<string, unknown>): Record<string, unknown> {
@@ -690,4 +709,30 @@ function SchemaFormBridge({
 }) {
   const form = Form.useFormInstance();
   return <SchemaForm schema={schema} form={form} namePrefix={prefix} />;
+}
+
+/**
+ * 存量 `cert.deploy` 步骤的别名回显：文件类目标（local/ssh/webdav 的 `cert_path`、
+ * s3 的 `cert_filename`）在新 3 文件语义下视为 fullchain 的别名——打开仅含旧字段的
+ * 步骤时把值回显到 `fullchain_*`，保存后新字段落库；`ca_path`/`ca_filename` 留空由
+ * 后端按 fullchain 路径派生。仅在新字段缺失时回填，不覆盖用户显式值。
+ */
+function migrateLegacyDeployInput(input: unknown): Record<string, unknown> {
+  const root = (input ?? {}) as Record<string, unknown>;
+  const config = root["config"];
+  if (typeof config !== "object" || config === null) return root;
+  const next: Record<string, unknown> = { ...(config as Record<string, unknown>) };
+  for (const [legacy, modern] of [
+    ["cert_path", "fullchain_path"],
+    ["cert_filename", "fullchain_filename"],
+  ] as const) {
+    const legacyValue = next[legacy];
+    const modernValue = next[modern];
+    const hasLegacy =
+      typeof legacyValue === "string" && (legacyValue as string).trim() !== "";
+    const modernMissing =
+      typeof modernValue !== "string" || (modernValue as string).trim() === "";
+    if (hasLegacy && modernMissing) next[modern] = legacyValue;
+  }
+  return { ...root, config: next };
 }

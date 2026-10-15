@@ -141,10 +141,14 @@ pub use acmecast_core::{
 /// `proxy_mode=direct` 直连；`inherit` 读 `global`（全局代理，非空则走代理，
 /// 未配仍直连）；`custom` 读凭据 `proxy_url`（校验后走代理）。
 /// 三种模式都未取到代理时沿用 `fallback`（默认直连，或测试注入的伪传输层）。
+///
+/// `timeout` 施加到新建的 reqwest 客户端上（请求级超时），与部署链路的
+/// `[network] timeout_secs` 同一口径；`fallback` 自身的超时在装配时已定。
 pub fn transport_for_credentials(
     credentials: &Value,
     fallback: &Arc<dyn HttpTransport>,
     global: Option<&str>,
+    timeout: std::time::Duration,
 ) -> Result<Arc<dyn HttpTransport>> {
     // custom 分支先取 owned 值（`proxy_url_from_credentials` 返回 `Option<String>`），
     // 另两个分支是借来的 `&str`，因此这里统一收成 owned。
@@ -157,7 +161,7 @@ pub fn transport_for_credentials(
         ProxyMode::Custom => proxy_url_from_credentials(credentials),
     };
     match proxy_url.as_deref() {
-        Some(url) => Ok(Arc::new(ReqwestTransport::with_proxy(url)?)),
+        Some(url) => Ok(Arc::new(ReqwestTransport::with_proxy(url, timeout)?)),
         // 三态都没取到代理（含 custom 但凭据 proxy_url 留空）→ 直连。
         // custom 留空本该在保存时就被 validate_proxy_url_field 拦下；这里
         // 直连而非报错，是为了让存量脏数据不至于让整条流水线崩在传输层。
@@ -176,9 +180,10 @@ pub struct ReqwestTransport {
 
 impl ReqwestTransport {
     /// 建一个默认客户端（直连）。
-    pub fn new() -> Result<Self> {
+    pub fn new(timeout: std::time::Duration) -> Result<Self> {
         let client = reqwest::Client::builder()
             .user_agent(concat!("acmecast/", env!("CARGO_PKG_VERSION")))
+            .timeout(timeout)
             .build()
             .map_err(|e| Error::provider(format!("无法构造 HTTP 客户端: {e}")))?;
         Ok(Self {
@@ -190,14 +195,15 @@ impl ReqwestTransport {
     /// 建一个走指定代理的客户端。
     ///
     /// 支持 `socks5://`、`http://`、`https://`（`socks` feature 已启用）；
-    /// 其余 scheme 或无法解析的 URL 被拒绝。
-    pub fn with_proxy(proxy_url: &str) -> Result<Self> {
+    /// 其余 scheme 或无法解析的 URL 被拒绝。超时从请求发送后开始计算。
+    pub fn with_proxy(proxy_url: &str, timeout: std::time::Duration) -> Result<Self> {
         validate_proxy_url(proxy_url)?;
         let parsed = reqwest::Url::parse(proxy_url).expect("validate_proxy_url 已确保可解析");
         let proxy = reqwest::Proxy::all(proxy_url)
             .map_err(|e| Error::provider(format!("代理 URL `{proxy_url}` 不合法: {e}")))?;
         let client = reqwest::Client::builder()
             .user_agent(concat!("acmecast/", env!("CARGO_PKG_VERSION")))
+            .timeout(timeout)
             .proxy(proxy)
             .build()
             .map_err(|e| Error::provider(format!("无法构造带代理的 HTTP 客户端: {e}")))?;
@@ -215,7 +221,7 @@ impl ReqwestTransport {
 impl Default for ReqwestTransport {
     fn default() -> Self {
         // 构造只可能因为 TLS 后端初始化失败而失败，那种情况下整个进程也跑不起来。
-        Self::new().expect("HTTP 客户端应能构造")
+        Self::new(acmecast_core::NETWORK_TIMEOUT).expect("HTTP 客户端应能构造")
     }
 }
 
@@ -266,14 +272,14 @@ mod tests {
             "http://127.0.0.1:8080",
             "https://proxy.example.com:443",
         ] {
-            ReqwestTransport::with_proxy(url).unwrap_or_else(|e| panic!("{url} 应能构建: {e}"));
+            ReqwestTransport::with_proxy(url, acmecast_core::NETWORK_TIMEOUT).unwrap_or_else(|e| panic!("{url} 应能构建: {e}"));
         }
     }
 
     #[test]
     fn an_invalid_proxy_url_is_rejected() {
-        assert!(ReqwestTransport::with_proxy("not-a-url").is_err());
-        assert!(ReqwestTransport::with_proxy("ftp://127.0.0.1:21").is_err());
+        assert!(ReqwestTransport::with_proxy("not-a-url", acmecast_core::NETWORK_TIMEOUT).is_err());
+        assert!(ReqwestTransport::with_proxy("ftp://127.0.0.1:21", acmecast_core::NETWORK_TIMEOUT).is_err());
     }
 
     #[test]
@@ -285,7 +291,7 @@ mod tests {
         );
         // 构建成功即选择了代理路径（非法 URL 会在构建时报错）。
         let fallback: Arc<dyn HttpTransport> = Arc::new(ReqwestTransport::default());
-        transport_for_credentials(&credentials, &fallback, None).expect("带代理应能构建 transport");
+        transport_for_credentials(&credentials, &fallback, None, acmecast_core::NETWORK_TIMEOUT).expect("带代理应能构建 transport");
     }
 
     #[test]
@@ -298,7 +304,7 @@ mod tests {
         ] {
             assert_eq!(proxy_url_from_credentials(&credentials), None);
             // 返回的是 fallback 本身（直连），且不会因代理构建失败报错。
-            transport_for_credentials(&credentials, &fallback, None).expect("直连应直接复用注入层");
+            transport_for_credentials(&credentials, &fallback, None, acmecast_core::NETWORK_TIMEOUT).expect("直连应直接复用注入层");
         }
     }
 
@@ -307,6 +313,7 @@ mod tests {
     fn proxy_mode_selects_the_transport_per_branch() {
         let global = Some("socks5://127.0.0.1:7890");
         let fallback: Arc<dyn HttpTransport> = Arc::new(ReqwestTransport::default());
+        let timeout = acmecast_core::NETWORK_TIMEOUT;
 
         // direct：即使全局已配也直连（复用注入层）。
         assert_eq!(
@@ -317,6 +324,7 @@ mod tests {
             &serde_json::json!({ "proxy_mode": "direct" }),
             &fallback,
             global,
+            timeout,
         )
         .expect("direct 应直连");
 
@@ -329,18 +337,21 @@ mod tests {
             &serde_json::json!({ "proxy_mode": "inherit" }),
             &fallback,
             global,
+            timeout,
         )
         .expect("inherit 已配全局应能构建代理 transport");
         transport_for_credentials(
             &serde_json::json!({ "proxy_mode": "inherit" }),
             &fallback,
             None,
+            timeout,
         )
         .expect("inherit 未配全局应直连");
         transport_for_credentials(
             &serde_json::json!({ "proxy_mode": "inherit" }),
             &fallback,
             Some("   "),
+            timeout,
         )
         .expect("inherit 全局留空应直连");
 
@@ -359,6 +370,7 @@ mod tests {
             }),
             &fallback,
             global,
+            timeout,
         )
         .expect("custom 应走凭据代理");
         // custom 但 proxy_url 留空：保存校验会拦；传输层退化为直连，
@@ -367,6 +379,7 @@ mod tests {
             &serde_json::json!({ "proxy_mode": "custom" }),
             &fallback,
             global,
+            timeout,
         )
         .expect("custom 缺 proxy_url 应退化为直连而非报错");
     }

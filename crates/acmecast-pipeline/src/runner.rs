@@ -8,6 +8,7 @@ use acmecast_store::entity::pipeline::TriggerSource;
 use tracing::{info, warn};
 
 use crate::artifacts::Artifacts;
+use crate::cancel::CancelToken;
 use crate::error::Result;
 use crate::event::{EventSink, PipelineEvent};
 use crate::registry::StepRegistry;
@@ -125,6 +126,9 @@ struct RunScope {
     run_id: i64,
 }
 
+/// 外部取消时写进失败原因的文案：运行历史与 SSE 失败事件都用它。
+const CANCEL_REASON: &str = "运行被人工终止";
+
 /// 运行过程中累积下来的状态。
 ///
 /// 打包成一个结构是为了让「收尾」这类需要完整现场的操作有个明确的入参，
@@ -143,6 +147,8 @@ pub struct PipelineRunner<'a> {
     state: &'a dyn PipelineStateStore,
     events: Option<&'a dyn EventSink>,
     trigger_source: TriggerSource,
+    /// 外部取消令牌；不接即不可取消（既有行为不变）。
+    cancel: Option<&'a CancelToken>,
 }
 
 impl<'a> PipelineRunner<'a> {
@@ -159,6 +165,7 @@ impl<'a> PipelineRunner<'a> {
             state,
             events: None,
             trigger_source: TriggerSource::Manual,
+            cancel: None,
         }
     }
 
@@ -182,6 +189,17 @@ impl<'a> PipelineRunner<'a> {
         self
     }
 
+    /// 接上取消令牌，让本次运行可以被外部终止（如终止运行接口）。
+    ///
+    /// 取消走正常的中止路径：当前步骤记为失败、终态写回 `failed`，
+    /// 已完成的步骤与日志原样保留。取消感知点在步骤边界与每步执行内部——
+    /// 步骤内的网络操作受自身超时约束，取消最迟在超时时长内生效。
+    #[must_use]
+    pub fn with_cancel(mut self, cancel: &'a CancelToken) -> Self {
+        self.cancel = Some(cancel);
+        self
+    }
+
     /// 发布一个事件；没有订阅者时什么也不做。
     async fn emit(&self, event: PipelineEvent) {
         if let Some(sink) = self.events {
@@ -202,6 +220,26 @@ impl<'a> PipelineRunner<'a> {
         // 顺序由 order_index 决定，不依赖传入数组的排列。
         let mut ordered: Vec<&StepDefinition> = pipeline.steps.iter().collect();
         ordered.sort_by_key(|step| step.order_index);
+
+        // 触发前就已被取消（极端时序）：以第一个启用步骤的名义走失败收尾，
+        // 不把这次运行留成 running。没有任何启用步骤时取消无意义，照常跑完。
+        if self.cancel.is_some_and(CancelToken::is_cancelled) {
+            if let Some(step) = ordered.iter().copied().find(|step| step.enabled) {
+                return Ok(self
+                    .abort(
+                        RunState {
+                            steps,
+                            artifacts,
+                        },
+                        scope,
+                        step,
+                        CANCEL_REASON.to_owned(),
+                        Vec::new(),
+                        start_time.elapsed(),
+                    )
+                    .await);
+            }
+        }
 
         info!(
             pipeline_id = pipeline.id,
@@ -280,6 +318,21 @@ impl<'a> PipelineRunner<'a> {
                     .await);
             }
 
+            // 2.5) 步骤边界感知取消：还没开始的步骤不再开始，走正常失败收尾——
+            // 已完成步骤的记录与日志原样保留，终态照常写回。
+            if self.cancel.is_some_and(CancelToken::is_cancelled) {
+                return Ok(self
+                    .abort(
+                        RunState { steps, artifacts },
+                        scope,
+                        step,
+                        CANCEL_REASON.to_owned(),
+                        Vec::new(),
+                        start_time.elapsed(),
+                    )
+                    .await);
+            }
+
             // 3) 声明的产物必须齐备。与输入校验同样是执行前的事：让步骤
             //    「跑到一半才发现缺东西」既浪费前面的工作，也把失败现场搅浑。
             for name in implementation.required_artifacts() {
@@ -314,6 +367,18 @@ impl<'a> PipelineRunner<'a> {
                     let exec_future = implementation.execute(&mut ctx);
                     tokio::pin!(exec_future);
 
+                    // 取消等待 future：无令牌时以永不完成的 pending 占位，
+                    // 保证 select! 三个分支类型一致。取消先到就放弃执行中的
+                    // 步骤——网络操作在 drop 时中断（传输层已各自受超时约束），
+                    // 走正常失败收尾写回终态。
+                    let cancel_wait = async {
+                        match self.cancel {
+                            Some(token) => token.cancelled().await,
+                            None => std::future::pending().await,
+                        }
+                    };
+                    tokio::pin!(cancel_wait);
+
                     loop {
                         tokio::select! {
                             Some(log_record) = rx.recv() => {
@@ -325,6 +390,11 @@ impl<'a> PipelineRunner<'a> {
                             }
                             res = &mut exec_future => {
                                 break res;
+                            }
+                            _ = &mut cancel_wait => {
+                                break Err(crate::error::Error::Cancelled(
+                                    CANCEL_REASON.to_owned(),
+                                ));
                             }
                         }
                     }
