@@ -358,7 +358,7 @@ SSE 实时推送与终态持久化遵循双轨：
 
 ### 表单页排序和布局（凭据页新建/编辑）
 
-以下 8 类凭据的字段顺序、分组与宽度标注为唯一真实来源，前端按此渲染，不在渲染器内写类型分支。
+以下 8 类凭据的字段顺序、分组与宽度标注为唯一真实来源，前端按此渲染，不在渲染器内写类型分支。`仅一行`均指独占一行（`x-full-width` 整行或半宽 `x-end-row` 右侧空占位，见宽度标注）。
 
 #### `acme.account` — ACME 账号
 
@@ -366,10 +366,10 @@ SSE 实时推送与终态持久化遵循双轨：
 
 | 行 | 字段 | 宽度标注 |
 |---|---|---|
-| 1 | `ca` | 半宽 + `x-end-row`（下拉半列独占一行，右侧空占位承载 `x-help-links`） |
-| 2 | `directory_url` | `x-full-width` 整行（长 URL） + `x-required-when: ca=custom` |
+| 1 | `ca` | 仅一行：半宽 + `x-end-row`（下拉半列独占一行，右侧空占位承载 `x-help-links`） |
+| 2 | `directory_url` | 仅一行：`x-full-width` 整行（长 URL） + `x-required-when: ca=custom` |
 | 3 | `eab_kid` ｜ `eab_hmac_key` | 半宽同行 |
-| 4 | `credentials` | `x-multiline` textarea 整行 |
+| 4 | `credentials` | 一行 `x-multiline` textarea 整行 |
 | 5 | `proxy_mode` ｜ `proxy_url` | 半宽同行，`proxy_url` 联动显隐；`credentials` 为整行，前驱无需 `x-end-row` |
 
 #### `deploy.webdav` — WebDAV
@@ -391,7 +391,7 @@ SSE 实时推送与终态持久化遵循双轨：
 | 1 | `access_key` ｜ `secret_key` | 半宽同行（密钥对） |
 | 2 | `endpoint` ｜ `bucket` | 半宽同行（接入与桶） |
 | 3 | `region` ｜ `prefix` | 半宽同行（区域与前缀） |
-| 4 | `session_token` | 半宽 + `x-end-row`（由代理注入自动补列，独占一行左侧，右侧空占位） |
+| 4 | `session_token` | 仅一行：半宽 + `x-end-row`（由代理注入自动补列，独占一行左侧，右侧空占位） |
 | 5 | `proxy_mode` ｜ `proxy_url` | 半宽同行 |
 
 #### `deploy.ssh` — SSH 主机
@@ -403,7 +403,7 @@ SSE 实时推送与终态持久化遵循双轨：
 | 1 | `cert_mode` ｜ `key_mode` | 半宽同行（文件权限缺省 `0644`/`0600`） |
 | 2 | `host` ｜ `port` | 半宽同行 |
 | 3 | `user` ｜ `password` | 半宽同行 |
-| 4 | `private_key` | `x-multiline` textarea 整行 |
+| 4 | `private_key` | 一行 `x-multiline` textarea 整行 |
 | 5 | `proxy_mode` ｜ `proxy_url` | 半宽同行；`private_key` 为整行，前驱无需 `x-end-row` |
 
 #### `cloud.tencent` — 腾讯云
@@ -412,7 +412,7 @@ SSE 实时推送与终态持久化遵循双轨：
 
 | 行 | 字段 | 宽度标注 |
 |---|---|---|
-| 1 | `account_site` | 半宽 + `x-end-row`（站点选择独占一行左侧，右侧空占位） |
+| 1 | `account_site` | 仅一行：半宽 + `x-end-row`（站点选择独占一行左侧，右侧空占位） |
 | 2 | `secret_id` ｜ `secret_key` | 半宽同行 |
 | 3 | `proxy_mode` ｜ `proxy_url` | 半宽同行；`secret_id`｜`secret_key` 已占满一行，自然换行无需 `secret_key` 补 `x-end-row` |
 
@@ -422,7 +422,7 @@ SSE 实时推送与终态持久化遵循双轨：
 
 | 行 | 字段 | 宽度标注 |
 |---|---|---|
-| 1 | `api_token` | 半宽 + `x-end-row`（Token 独占一行左侧，右侧空占位） |
+| 1 | `api_token` | 仅一行：半宽 + `x-end-row`（Token 独占一行左侧，右侧空占位） |
 | 2 | `proxy_mode` ｜ `proxy_url` | 半宽同行 |
 
 #### `cloud.aliyun` — 阿里云
@@ -436,7 +436,7 @@ SSE 实时推送与终态持久化遵循双轨：
 
 #### `dns.tencent-eo` — 腾讯云 EdgeOne
 
-与 `cloud.tencent` 完全一致，共用 `tencent_credentials_schema`：`account_site`（半宽 + `x-end-row` 独占一行）｜ `secret_id`｜`secret_key` ｜ `proxy_mode`｜`proxy_url`。
+与 `cloud.tencent` 完全一致，共用 `tencent_credentials_schema`：`account_site` 仅一行（半宽 + `x-end-row` 独占一行）｜ `secret_id`｜`secret_key` ｜ `proxy_mode`｜`proxy_url`。
 
 ### 实现索引
 
@@ -450,7 +450,6 @@ SSE 实时推送与终态持久化遵循双轨：
 - `crates/acmecast-dns/src/providers/tencent_eo.rs` — 复用 `tencent_credentials_schema`
 - `crates/acmecast-core/src/proxy.rs: inject_proxy_field_annotations` — 代理下拉/联动/中文标签与 `x-end-row` 栅格判定单一来源
 - `frontend/src/components/SchemaForm.tsx: orderedEntries / SchemaForm / ObjectFieldGroup` — `x-field-order` 定序与 `x-*` 渲染
-
 ## 凭据出网代理与全局代理配置
 
 **全部凭据类型**（`cloud.tencent` / `dns.tencent-eo` / `cloud.cloudflare` / `cloud.aliyun` / `deploy.ssh` / `deploy.s3` / `deploy.webdav` / `acme.account`）支持凭据级代理模式（`proxy_mode` 下拉 + `proxy_url` 条件输入），全局代理经 `config.toml` 的 `[proxy]` 段或环境变量 `ACMECAST_PROXY_URL` 设一次，供凭据 `inherit` 继承（DNS 与部署链路同口径）与 DoH 代理回退共用。存量凭据缺字段视为 `direct`（直连），无需数据库迁移。
