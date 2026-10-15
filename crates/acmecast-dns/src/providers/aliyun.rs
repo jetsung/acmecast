@@ -417,13 +417,12 @@ mod tests {
                 "proxy_mode 应标注中文展示名 {label}: {rendered}"
             );
         }
-        // 前驱字段（access_key_secret）带 x-end-row，使 proxy_mode 从新行首列开始、
-        // 与 proxy_url 同行（左下拉、右输入框）。
+        // aliyun 仅 access_key_id|access_key_secret 一行，proxy_mode 已在新行首列，
+        // 无需前驱 x-end-row（自然换行无需补空列）。
         let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
-        assert_eq!(
-            value["properties"]["access_key_secret"]["x-end-row"],
-            serde_json::json!(true),
-            "access_key_secret 应带 x-end-row 把 proxy_mode 推到新行: {rendered}"
+        assert!(
+            value["properties"]["access_key_secret"]["x-end-row"].is_null(),
+            "access_key_secret 已在行尾、proxy_mode 自然换行，不应带 x-end-row: {rendered}"
         );
     }
 

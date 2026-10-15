@@ -477,8 +477,9 @@ pub fn tencent_credentials_schema() -> RootSchema {
         "x-field-order".to_owned(),
         serde_json::json!(["account_site", "secret_id", "secret_key", "proxy_mode", "proxy_url"]),
     );
-    inject_proxy_field_annotations(&mut schema);
-    // account_site 独占第一行但框保持一列宽（x-end-row 补空列占位换行）。
+    // account_site 独占第一行但框保持一列宽（x-end-row 补空列占位换行）：
+    // 必须在 proxy 注入前标注，否则 inject 的栅格模拟会误判 secret_key 需补空列，
+    // 导致 secret_id|secret_key 已占满一行后仍多出空行、proxy 行被挤错。
     if let Some(validation) = schema.schema.object.as_mut()
         && let Some(schemars::schema::Schema::Object(site)) =
             validation.properties.get_mut("account_site")
@@ -486,6 +487,7 @@ pub fn tencent_credentials_schema() -> RootSchema {
         site.extensions
             .insert("x-end-row".to_owned(), serde_json::Value::Bool(true));
     }
+    inject_proxy_field_annotations(&mut schema);
     schema
 }
 
@@ -621,29 +623,28 @@ mod tests {
     fn the_schema_keeps_the_declared_field_order() {
         let rendered = serde_json::to_string(&tencent_credentials_schema()).unwrap();
         // Map 会把 properties 按字母序重排，布局全靠 x-field-order 钉住：
-        // 站点选择打头，两半密钥成对随后；account_site 挂 x-end-row——
-        // 半宽框独占一行（行尾空列占位），不做整行宽度标注。
+        // 站点选择打头（x-end-row 独占一行半宽），两半密钥成对随后；
+        // 代理行独立（secret_key 已在行尾，proxy 自然新行起，不补 x-end-row）。
         assert!(
             rendered.contains(
                 r#""x-field-order":["account_site","secret_id","secret_key","proxy_mode","proxy_url"]"#
             ),
             "应注入声明顺序: {rendered}"
         );
-        assert!(
-            rendered.contains(r#""x-end-row":true"#),
-            "account_site 应标注行尾换行: {rendered}"
+        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(
+            value["properties"]["account_site"]["x-end-row"],
+            serde_json::json!(true),
+            "account_site 应标注 x-end-row 独占一行半宽: {rendered}"
         );
         assert!(
             !rendered.contains("x-full-width"),
             "不做整行标注，框保持一列宽: {rendered}"
         );
-        // 前驱字段（secret_key）带 x-end-row，使 proxy_mode 从新行首列开始、
-        // 与 proxy_url 同行成对。
-        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
-        assert_eq!(
-            value["properties"]["secret_key"]["x-end-row"],
-            serde_json::json!(true),
-            "secret_key 应带 x-end-row 把 proxy_mode 推到新行: {rendered}"
+        // secret_id|secret_key 已占满一行，proxy 行自然新行起，无需 secret_key 补 x-end-row。
+        assert!(
+            value["properties"]["secret_key"]["x-end-row"].is_null(),
+            "secret_key 已在行尾、proxy 自然换行，不应带 x-end-row: {rendered}"
         );
         // proxy_mode 是枚举下拉：三候选 + 中文展示名，schemars 对
         // Option<String> 不产 enum 数组，由注入函数手动补。
@@ -661,14 +662,6 @@ mod tests {
         assert!(
             rendered.contains(r#""x-visible-when":{"Equals":{"field":"proxy_mode","values":["custom"]}}"#),
             "proxy_url 应仅在 custom 模式显隐: {rendered}"
-        );
-        // 前驱字段（secret_key）带 x-end-row，使 proxy_mode 从新行首列开始、
-        // 与 proxy_url 同行（左下拉、右输入框）。
-        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
-        assert_eq!(
-            value["properties"]["secret_key"]["x-end-row"],
-            serde_json::json!(true),
-            "secret_key 应带 x-end-row 把 proxy_mode 推到新行: {rendered}"
         );
     }
 }

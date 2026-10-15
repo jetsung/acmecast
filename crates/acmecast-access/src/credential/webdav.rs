@@ -58,6 +58,9 @@ pub fn webdav_fields_schema() -> RootSchema {
         obj.extensions.insert("x-multiline".into(), serde_json::Value::Bool(false));
     }
     acmecast_core::inject_proxy_field_annotations(&mut schema);
+    // url|base_path、username|password 各占一行——password 已在行尾,
+    // proxy 行自然新行起，无需 x-end-row（由 inject 内部判断）。
+    // 这里无需再手动移除；保留仅为文档可见性，实际已由 inject 判定不注入。
     schema
 }
 
@@ -207,7 +210,9 @@ mod tests {
         }
     }
 
-    /// 代理字段注入：枚举候选 + 中文标签 + custom 联动 + 前驱行尾换行。
+    /// 代理字段注入：枚举候选 + 中文标签 + custom 联动；代理行单独成行
+    /// （`url|base_path` / `username|password` 已各占一行，password 不补 `x-end-row`，
+    /// 否则空列会把 proxy_mode 挤到行尾右侧、proxy_url 另起一行）。
     #[test]
     fn webdav_fields_schema_injects_proxy_annotations() {
         let rendered = serde_json::to_string(&webdav_fields_schema()).unwrap();
@@ -223,10 +228,9 @@ mod tests {
             "proxy_url 应联动 custom: {rendered}"
         );
         let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
-        assert_eq!(
-            value["properties"]["password"]["x-end-row"],
-            serde_json::json!(true),
-            "前驱字段（password）应带 x-end-row: {rendered}"
+        assert!(
+            value["properties"]["password"]["x-end-row"].is_null(),
+            "password 不应带 x-end-row（已在行尾自然换行，补空列会错位）: {rendered}"
         );
     }
 

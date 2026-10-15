@@ -858,7 +858,8 @@ mod tests {
         );
     }
 
-    /// schema 注入代理字段：枚举候选 + 中文标签 + custom 联动 + 前驱换行。
+    /// schema 注入代理字段：枚举候选 + 中文标签 + custom 联动；
+    /// credentials 为整行多行文本域已在新行首列，无需前驱 `x-end-row`。
     #[test]
     fn acme_schema_injects_proxy_annotations() {
         let rendered = serde_json::to_string(&AcmeAccountType::new().fields_schema()).unwrap();
@@ -874,10 +875,9 @@ mod tests {
             "proxy_url 应联动 custom: {rendered}"
         );
         let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
-        assert_eq!(
-            value["properties"]["credentials"]["x-end-row"],
-            serde_json::json!(true),
-            "前驱字段（credentials）应带 x-end-row: {rendered}"
+        assert!(
+            value["properties"]["credentials"]["x-end-row"].is_null(),
+            "credentials 为整行多行文本域，proxy_mode 已在新行首列，不应再带 x-end-row: {rendered}"
         );
     }
 

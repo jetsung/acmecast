@@ -354,30 +354,106 @@ SSE 实时推送与终态持久化遵循双轨：
 
 ## 凭据字段表单布局约定
 
-凭据字段表单由后端 schema（`schemars::JsonSchema` + `x-*` 扩展）驱动，前端 `SchemaForm` 为通用渲染引擎。默认标量字段半宽（`span 12`）两列一行；带 `x-full-width` 的字段独占整行；带 `x-end-row` 的半宽字段行尾补空占位列换行；`x-field-order` 钉字段渲染顺序，对抗 `serde_json::Map` 按字母序重排 `properties`。
+凭据字段表单由后端 schema（`schemars::JsonSchema` + `x-*` 扩展）驱动，前端 `SchemaForm` 为通用渲染引擎。默认标量字段半宽（`span 12`）两列一行；带 `x-full-width` 的字段独占整行；带 `x-multiline` 的字段渲染为 textarea 并独占整行；带 `x-end-row` 的半宽字段行尾补空占位列换行；`x-field-order` 钉字段渲染顺序，对抗 `serde_json::Map` 按字母序重排 `properties`；`proxy_url` 统一带 `x-visible-when: Equals(field=proxy_mode, values=["custom"])` 仅在 `proxy_mode=custom` 时显隐；`proxy_mode` 统一注入 `enum ["direct","inherit","custom"]` 与 `x-enum-labels {直连,继承全局,自定义}`。代理行（`proxy_mode` 左下拉｜`proxy_url` 右输入框）是否需前驱 `x-end-row` 由 `acmecast_core::inject_proxy_field_annotations` 按 24 栅格流式模拟自动判定：仅当前驱处于左列（`col==12`）时补空列把代理推到新行，处于行尾或整行后自然换行则不补。
 
-### S3 兼容存储凭据字段分组
+### 表单页排序和布局（凭据页新建/编辑）
 
-`S3 兼容存储`（`type_id: deploy.s3`）凭据字段按业务语义分组为三行、每行两列，顺序固定为 `access_key` → `secret_key` → `endpoint` → `bucket` → `region` → `prefix`，`session_token` 置于末尾。
+以下 8 类凭据的字段顺序、分组与宽度标注为唯一真实来源，前端按此渲染，不在渲染器内写类型分支。
 
-| 行 | 字段 |
-|---|---|
-| 第一行 | `access_key` ｜ `secret_key`（密钥对） |
-| 第二行 | `endpoint` ｜ `bucket`（接入与桶） |
-| 第三行 | `region` ｜ `prefix`（区域与前缀） |
-| 末尾 | `session_token`（半宽） |
+#### `acme.account` — ACME 账号
 
-三行均为未标注的标量半宽字段、两两一行的默认流式布局（`span 12`），不注入 `x-full-width` 或 `x-end-row`；`session_token` 保持默认半宽、排在所有分组之后，不影响前三行成对布局。
+`x-field-order: ["ca","directory_url","eab_kid","eab_hmac_key","credentials","proxy_mode","proxy_url"]`
+
+| 行 | 字段 | 宽度标注 |
+|---|---|---|
+| 1 | `ca` | 半宽 + `x-end-row`（下拉半列独占一行，右侧空占位承载 `x-help-links`） |
+| 2 | `directory_url` | `x-full-width` 整行（长 URL） + `x-required-when: ca=custom` |
+| 3 | `eab_kid` ｜ `eab_hmac_key` | 半宽同行 |
+| 4 | `credentials` | `x-multiline` textarea 整行 |
+| 5 | `proxy_mode` ｜ `proxy_url` | 半宽同行，`proxy_url` 联动显隐；`credentials` 为整行，前驱无需 `x-end-row` |
+
+#### `deploy.webdav` — WebDAV
+
+`x-field-order: ["url","base_path","username","password","proxy_mode","proxy_url"]`
+
+| 行 | 字段 | 宽度标注 |
+|---|---|---|
+| 1 | `url` ｜ `base_path` | 半宽同行 |
+| 2 | `username` ｜ `password` | 半宽同行 |
+| 3 | `proxy_mode` ｜ `proxy_url` | 半宽同行；`password` 已在行尾自然换行，无需 `x-end-row` |
+
+#### `deploy.s3` — S3 兼容存储
+
+`x-field-order: ["access_key","secret_key","endpoint","bucket","region","prefix","session_token","proxy_mode","proxy_url"]`
+
+| 行 | 字段 | 宽度标注 |
+|---|---|---|
+| 1 | `access_key` ｜ `secret_key` | 半宽同行（密钥对） |
+| 2 | `endpoint` ｜ `bucket` | 半宽同行（接入与桶） |
+| 3 | `region` ｜ `prefix` | 半宽同行（区域与前缀） |
+| 4 | `session_token` | 半宽 + `x-end-row`（由代理注入自动补列，独占一行左侧，右侧空占位） |
+| 5 | `proxy_mode` ｜ `proxy_url` | 半宽同行 |
+
+#### `deploy.ssh` — SSH 主机
+
+`x-field-order: ["cert_mode","key_mode","host","port","user","password","private_key","proxy_mode","proxy_url"]`
+
+| 行 | 字段 | 宽度标注 |
+|---|---|---|
+| 1 | `cert_mode` ｜ `key_mode` | 半宽同行（文件权限缺省 `0644`/`0600`） |
+| 2 | `host` ｜ `port` | 半宽同行 |
+| 3 | `user` ｜ `password` | 半宽同行 |
+| 4 | `private_key` | `x-multiline` textarea 整行 |
+| 5 | `proxy_mode` ｜ `proxy_url` | 半宽同行；`private_key` 为整行，前驱无需 `x-end-row` |
+
+#### `cloud.tencent` — 腾讯云
+
+`x-field-order: ["account_site","secret_id","secret_key","proxy_mode","proxy_url"]`（与 `dns.tencent-eo` 共用 `tencent_credentials_schema`）
+
+| 行 | 字段 | 宽度标注 |
+|---|---|---|
+| 1 | `account_site` | 半宽 + `x-end-row`（站点选择独占一行左侧，右侧空占位） |
+| 2 | `secret_id` ｜ `secret_key` | 半宽同行 |
+| 3 | `proxy_mode` ｜ `proxy_url` | 半宽同行；`secret_id`｜`secret_key` 已占满一行，自然换行无需 `secret_key` 补 `x-end-row` |
+
+#### `cloud.cloudflare` — Cloudflare
+
+`x-field-order: ["api_token","proxy_mode","proxy_url"]`
+
+| 行 | 字段 | 宽度标注 |
+|---|---|---|
+| 1 | `api_token` | 半宽 + `x-end-row`（Token 独占一行左侧，右侧空占位） |
+| 2 | `proxy_mode` ｜ `proxy_url` | 半宽同行 |
+
+#### `cloud.aliyun` — 阿里云
+
+`x-field-order: ["access_key_id","access_key_secret","proxy_mode","proxy_url"]`
+
+| 行 | 字段 | 宽度标注 |
+|---|---|---|
+| 1 | `access_key_id` ｜ `access_key_secret` | 半宽同行 |
+| 2 | `proxy_mode` ｜ `proxy_url` | 半宽同行；密钥对已占满一行，自然换行无需 `access_key_secret` 补 `x-end-row` |
+
+#### `dns.tencent-eo` — 腾讯云 EdgeOne
+
+与 `cloud.tencent` 完全一致，共用 `tencent_credentials_schema`：`account_site`（半宽 + `x-end-row` 独占一行）｜ `secret_id`｜`secret_key` ｜ `proxy_mode`｜`proxy_url`。
 
 ### 实现索引
 
-- `crates/acmecast-access/src/credential/s3.rs: s3_fields_schema` — 注入 `x-field-order: ["access_key","secret_key","endpoint","bucket","region","prefix","session_token"]`
-- `crates/acmecast-server/src/credentials.rs: tencent_credentials_schema` — 参考既有注入模式
-- `frontend/src/components/SchemaForm.tsx: orderedEntries` — `x-field-order` 定序渲染
+- `crates/acmecast-access/src/credential/acme_account.rs: AcmeAccountType::fields_schema` — `x-field-order` + `ca.x-end-row` + `directory_url.x-full-width` + `credentials.x-multiline`
+- `crates/acmecast-access/src/credential/webdav.rs: webdav_fields_schema` — `x-field-order: ["url","base_path","username","password","proxy_mode","proxy_url"]`
+- `crates/acmecast-access/src/credential/s3.rs: s3_fields_schema` — `x-field-order` 8 字段 + `session_token` 由代理注入补 `x-end-row`
+- `crates/acmecast-deploy/src/ssh_host.rs: ssh_host_fields_schema` — `x-field-order` 9 字段 + `private_key.x-multiline`
+- `crates/acmecast-dns/src/providers/tencent.rs: tencent_credentials_schema` — `account_site.x-end-row` 先于代理注入，`secret_id`｜`secret_key` 同行
+- `crates/acmecast-dns/src/providers/cloudflare.rs: cloudflare_credentials_schema` — `api_token.x-end-row`
+- `crates/acmecast-dns/src/providers/aliyun.rs: aliyun_credentials_schema` — 密钥对同行，代理自然换行
+- `crates/acmecast-dns/src/providers/tencent_eo.rs` — 复用 `tencent_credentials_schema`
+- `crates/acmecast-core/src/proxy.rs: inject_proxy_field_annotations` — 代理下拉/联动/中文标签与 `x-end-row` 栅格判定单一来源
+- `frontend/src/components/SchemaForm.tsx: orderedEntries / SchemaForm / ObjectFieldGroup` — `x-field-order` 定序与 `x-*` 渲染
 
 ## 凭据出网代理与全局代理配置
 
-**全部凭据类型**（`cloud.tencent` / `dns.tencent-eo` / `cloud.cloudflare` / `cloud.aliyun` / `deploy.ssh` / `deploy.s3` / `deploy.webdav` / `acme.account`）支持凭据级代理模式（`proxy_mode` 下拉 + `proxy_url` 条件输入），全局代理经 `config.toml` 的 `[proxy]` 段或环境变量 `ACMECAST_PROXY_URL` 设一次，供凭据 `inherit` 继承与 DoH 代理回退共用。存量凭据缺字段视为 `direct`（直连），无需数据库迁移。
+**全部凭据类型**（`cloud.tencent` / `dns.tencent-eo` / `cloud.cloudflare` / `cloud.aliyun` / `deploy.ssh` / `deploy.s3` / `deploy.webdav` / `acme.account`）支持凭据级代理模式（`proxy_mode` 下拉 + `proxy_url` 条件输入），全局代理经 `config.toml` 的 `[proxy]` 段或环境变量 `ACMECAST_PROXY_URL` 设一次，供凭据 `inherit` 继承（DNS 与部署链路同口径）与 DoH 代理回退共用。存量凭据缺字段视为 `direct`（直连），无需数据库迁移。
 
 ### 全局代理（`ACMECAST_PROXY_URL` / `[proxy]` 段）
 
@@ -403,6 +479,30 @@ SSE 实时推送与终态持久化遵循双轨：
 - 取值 MUST 经 `validate_proxy_url` 校验（仅 `socks5://` / `http://` / `https://` + 可解析）；env 非法值在启动时被拒绝并提示支持的 scheme，文件非法值在 `apply_file` 校验时拒绝启动；未配置 / 空串 / 仅空白 MUST 维持直连（现状行为）。
 - 合并废弃 `ACMECAST_DOH_PROXY_URL`：原 DoH 专用代理环境变量不再独立存在，DoH 与凭据共用同一全局代理（`[proxy] url` / `ACMECAST_PROXY_URL`）。
 - 标准 `HTTPS_PROXY` 等环境变量 MUST NOT 被隐式读取而波及未配代理的凭据（凭据级 `proxy_mode=direct` 保持显式直连）。
+
+### 网络操作超时（`[network]` 段 / `ACMECAST_NETWORK_TIMEOUT_SECS`）
+
+流水线各步骤的网络操作（SSH 连接/传输、S3 PUT、WebDAV PUT/MKCOL、腾讯云 API 调用、DNS 提供商 API 调用）MUST 受可配置超时约束，默认 30 秒，超时以可读错误返回而非永久挂起。已有独立超时的路径不受影响：ACME 轮询（120 秒）、DNS 传播等待（默认 300 秒）、通知渠道（10 秒）、凭据连通性测试（10 秒）。
+
+| 优先级 | 来源 | 键 | 说明 |
+|---|---|---|---|
+| 1（内置） | — | — | 30 秒 |
+| 2（文件） | `config.toml` | `[network]` 段 `timeout_secs` | 正整数秒 |
+| 3（env） | 环境变量 | `ACMECAST_NETWORK_TIMEOUT_SECS` | 覆盖文件值 |
+
+- `config.toml` 新增 `[network]` 段（`deny_unknown_fields`）：
+
+```toml
+[network]
+# 流水线网络操作超时（秒）：SSH 连接/传输、S3/WebDAV 上传、腾讯云 API、DNS API。
+# 默认 30；环境变量 ACMECAST_NETWORK_TIMEOUT_SECS 可覆盖此值。
+timeout_secs = 30
+```
+
+- `ServerConfig` 新增 `network_timeout: Duration` 字段，`apply_file` 从 `[network]` 段读取、`apply_env` 从 `ACMECAST_NETWORK_TIMEOUT_SECS` 覆盖，传递给 `default_dns_registry` 与 `default_deploy_registry`，再透传到各 DNS 提供商（`with_global_proxy_and_timeout`）与部署目标（`SshTarget::live` / `S3Target::new` / `WebdavTarget::new` / `TencentSslTarget::new`）。`acmecast_core::NETWORK_TIMEOUT`（30 秒）保留为编译期兜底默认值，运行时被配置值覆盖。
+- 值为 0、负数或非数字时 MUST 在启动时拒绝并提示期望正整数（比 `[propagation]` 段的静默忽略更严）。
+- `ReqwestTransport::new(timeout)` / `with_proxy(url, timeout)` 在 reqwest 客户端构建链上加 `.timeout(timeout)`，覆盖 DNS 提供商 API 调用与腾讯云 SSL API 调用。WebDAV `webdav_put` 的 reqwest 客户端同样加 `.timeout()`。S3 `s3_put` 用 `tokio::time::timeout` 包裹 AWS SDK 的 `put_object().send()`。SSH 的 `connect_ssh`/`open_proxy_stream`/`run_channel` 各用 `tokio::time::timeout` 包裹。
+- 超时从代理隧道建立后开始计算：当凭据生效代理 URL 非空时（`custom` 自带或 `inherit` 全局非空），超时计时从代理隧道 TCP 流建立完成后开始（代理 TCP 连接阶段有操作系统级 TCP 超时兜底，不计入）。直连时从连接发起后开始计时。
 
 ### 凭据级代理模式（`proxy_mode` + `proxy_url`）
 
@@ -437,7 +537,7 @@ SSE 实时推送与终态持久化遵循双轨：
 
 ### 出网路径与连通性测试
 
-- 各凭据类型的出网按 `proxy_mode` 选传输层（`direct` 直连 / `inherit` 读 `ServerConfig.proxy_url` / `custom` 读凭据 `proxy_url`）：
+- 各凭据类型的出网按 `proxy_mode` 选传输层（`direct` 直连 / `inherit` 读 `ServerConfig.proxy_url` / `custom` 读凭据 `proxy_url`）。`inherit` 对 DNS 与部署链路均继承全局代理，此前部署链路 `inherit` 等同直连的限制已移除：
 
 | 凭据类型 | 出网路径 | 代理接入方式 |
 |---|---|---|
@@ -446,6 +546,7 @@ SSE 实时推送与终态持久化遵循双轨：
 | `deploy.s3` | `PutObject`/`DeleteObject` 探测与部署上传 | `aws_smithy_http_client::proxy::ProxyConfig`（http/https；socks5 用 reqwest 包装自定义 `HttpClient`） |
 | `acme.account` | ACME 目录/下单/校验 | `acmecast_acme::ProxyConfig`（socks5/http/https） |
 | `deploy.ssh` | SSH 连接与主机探测 | SOCKS5/HTTP-CONNECT 隧道 + `russh::client::connect_stream` |
+| `deploy.tencent-ssl` | 腾讯云 SSL API 调用 | `ReqwestTransport`（经 `transport_for_credentials` 按 `proxy_mode` 选层） |
 
 - 配置了代理（`inherit` 全局非空 或 `custom`）的凭据，其对应出网 MUST 经该代理发送；代理连接失败 MUST 以可读错误呈现（HTTP 类为 `provider_api_error`，SSH 类为连接错误）且含代理主机以便排障，含凭据的代理 URL 在日志与错误呈现前经 `redact` 脱敏（`socks5://user:pass@host:port` 不明文外泄）。
 - 各类型的连通性测试（`CredentialType::test_connectivity`）MUST 走与正式调用相同的（按 `proxy_mode` 构建的）代理；错误同样经 `redact` 脱敏后呈现。
@@ -454,14 +555,18 @@ SSE 实时推送与终态持久化遵循双轨：
 
 ### 实现索引
 
-- `crates/acmecast-core/src/proxy.rs: validate_proxy_url / ProxyMode / proxy_url_from_credentials / inject_proxy_field_annotations` — 代理工具下沉共享（`acmecast-access` 不依赖 `acmecast-dns`）；`acmecast-dns` 保留 re-export
-- `crates/acmecast-dns/src/http.rs: ReqwestTransport::with_proxy / new / default` — 直连与带代理 Client 构建
-- `crates/acmecast-dns/src/http.rs: transport_for_credentials` — 按 `proxy_mode` 选传输层
-- `crates/acmecast-server/src/config.rs: ServerConfig.proxy_url / ProxySection / apply_file / apply_env / template_content` — 全局代理字段、`[proxy]` 段反序列化与模板
-- `crates/acmecast-dns/src/providers/{cloudflare,tencent,aliyun,tencent_eo}.rs: http_for` — DNS 提供商凭据代理接线（`global_proxy_url` 成员 + `with_global_proxy`）
+- `crates/acmecast-core/src/proxy.rs: validate_proxy_url / ProxyMode / proxy_url_from_credentials / effective_proxy_url / inject_proxy_field_annotations` — 代理工具下沉共享（`acmecast-access` 不依赖 `acmecast-dns`）；`acmecast-dns` 保留 re-export；`effective_proxy_url` 为 DNS 与部署链路共用的 `inherit` 判定单一来源
+- `crates/acmecast-dns/src/http.rs: ReqwestTransport::with_proxy / new / default` — 直连与带代理 Client 构建；`new(timeout)` / `with_proxy(url, timeout)` 接收网络超时参数
+- `crates/acmecast-dns/src/http.rs: transport_for_credentials` — 按 `proxy_mode` 选传输层（DNS 与部署链路共用）
+- `crates/acmecast-server/src/config.rs: ServerConfig.proxy_url / ProxySection / NetworkSection / apply_file / apply_env / template_content` — 全局代理字段、`[proxy]` 段、`[network]` 段反序列化与模板
+- `crates/acmecast-dns/src/providers/{cloudflare,tencent,aliyun,tencent_eo}.rs: http_for` — DNS 提供商凭据代理接线（`global_proxy_url` 成员 + `with_global_proxy_and_timeout`）
 - `crates/acmecast-access/src/credential/{s3,webdav,acme_account}.rs: {s3,webdav}_fields_schema / fields_schema` — 非 DNS 凭据 schema 注入代理字段
 - `crates/acmecast-deploy/src/ssh_host.rs: ssh_host_fields_schema` — SSH 主机档案 schema 注入代理字段
-- `crates/acmecast-deploy/src/targets/{s3,webdav,ssh}.rs` — 部署上传/连接经代理
+- `crates/acmecast-deploy/src/targets/ssh.rs: SshTarget::live(proxy_url, timeout)` — SSH 部署持有 `global_proxy_url`，`resolve_input` 与 `probe_host` 按 `effective_proxy_url(profile, global_proxy_url)` 选代理
+- `crates/acmecast-deploy/src/targets/s3.rs: S3Target::new(proxy_url, timeout)` — S3 部署持有 `global_proxy_url`，`s3_put` 按 `effective_proxy_url(fields, global_proxy_url)` 选 `s3_http_client`
+- `crates/acmecast-deploy/src/targets/webdav.rs: WebdavTarget::new(proxy_url, timeout)` — WebDAV 部署持有 `global_proxy_url`，`credential_proxy` 改为 `effective_proxy_url(fields, global_proxy_url)`
+- `crates/acmecast-deploy/src/targets/tencent.rs: TencentSslTarget::new(proxy_url, timeout)` — 腾讯云 SSL 部署持有 `global_proxy_url` 与 `fallback_http`，`call` 经 `transport_for_credentials` 按凭据选层
+- `crates/acmecast-server/src/steps/mod.rs: default_dns_registry(proxy_url, timeout) / default_deploy_registry(proxy_url, timeout)` — DNS 与部署注册表均接收全局代理与超时，透传到各提供商/目标
 - `crates/acmecast-server/src/credentials.rs: validate_proxy_url_field` — 凭据保存校验（`proxy_mode=custom` 时校验 `proxy_url`，全类型）
 - `crates/acmecast-server/src/handlers.rs` — 各凭据类型注册处 `with_global_proxy`
 - `crates/acmecast-server/src/steps/apply.rs: complete_challenge` — `doh_transport_from(proxy_url)` 注入传播等待的解析器传输层；写 `proxy: via` 日志行

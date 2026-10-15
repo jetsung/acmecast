@@ -32,6 +32,11 @@ fn default_user() -> String {
 
 /// 档案字段 Schema：`private_key` 标注 `x-multiline`，前端据此渲染多行文本框。
 ///
+/// 布局（`x-field-order` 钉顺序，前端 24 栅格流式两列）：
+/// `cert_mode|key_mode` / `host|port` / `user|password` / `private_key` 整行 /
+/// `proxy_mode|proxy_url`（`proxy_url` 仅 `custom` 时显隐）。
+/// `private_key` 为整行多行域，`proxy` 行自然另起一行，无需前驱 `x-end-row`。
+///
 /// schemars 0.8 的宏不支持任意扩展属性，注入在这里统一做——凭据页与测试
 /// 共用这一份 schema，不会出现「实现改了、标注丢了」的漂移。
 #[must_use]
@@ -45,13 +50,13 @@ pub fn ssh_host_fields_schema() -> RootSchema {
     schema.schema.extensions.insert(
         "x-field-order".to_owned(),
         serde_json::json!([
+            "cert_mode",
+            "key_mode",
             "host",
             "port",
             "user",
-            "private_key",
             "password",
-            "cert_mode",
-            "key_mode",
+            "private_key",
             "proxy_mode",
             "proxy_url"
         ]),
@@ -66,8 +71,8 @@ pub fn ssh_host_fields_schema() -> RootSchema {
             .extensions
             .insert("x-multiline".to_owned(), serde_json::Value::Bool(true));
     }
-    // 代理字段独占一行：枚举下拉 + 联动输入框，前驱字段（key_mode）
-    // 自动挂 x-end-row。
+    // 代理字段独占一行：枚举下拉 + 联动输入框；前驱是否为整行/行尾由
+    // inject 内部按栅格模拟判定，`private_key` 整行后已在新行首列，无需补 `x-end-row`。
     acmecast_core::inject_proxy_field_annotations(&mut schema);
     schema
 }
@@ -370,6 +375,34 @@ mod tests {
             "私钥字段应标注多行: {}",
             rendered["properties"]["private_key"]
         );
+    }
+
+    #[test]
+    fn the_field_schema_lays_out_proxy_on_its_own_row_and_keeps_host_port_together() {
+        // 目标布局：cert_mode|key_mode / host|port / user|password / private_key 整行 / proxy_mode|proxy_url
+        let rendered = serde_json::to_value(ssh_host_fields_schema()).expect("Schema 应可序列化");
+        let order = rendered["x-field-order"].as_array().expect("应有 x-field-order");
+        let order: Vec<&str> = order.iter().map(|v| v.as_str().unwrap()).collect();
+        assert_eq!(
+            order,
+            ["cert_mode", "key_mode", "host", "port", "user", "password", "private_key", "proxy_mode", "proxy_url"],
+            "字段顺序应满足 cert_mode|key_mode / host|port / user|password / private_key 整行 / proxy 行"
+        );
+        // private_key 整行后 proxy 自然新行首列，前驱不应补 x-end-row。
+        assert!(
+            rendered["properties"]["private_key"]["x-end-row"].is_null(),
+            "private_key 为整行，proxy 行已在新行首列，不应补 x-end-row: {}",
+            rendered["properties"]["private_key"]
+        );
+        // host/port、user/password 为同行半宽，不做 x-full-width/x-multiline/x-end-row。
+        for name in ["host", "port", "user", "password", "cert_mode", "key_mode"] {
+            let node = &rendered["properties"][name];
+            assert!(node["x-full-width"].is_null(), "{name} 不应 x-full-width: {node}");
+            assert!(node["x-multiline"].is_null(), "{name} 不应 x-multiline: {node}");
+        }
+        // 代理下拉与联动仍注入。
+        assert!(rendered.to_string().contains(r#""enum":["direct","inherit","custom"]"#));
+        assert!(rendered.to_string().contains(r#""x-visible-when":{"Equals":{"field":"proxy_mode","values":["custom"]}}"#));
     }
 
     #[test]

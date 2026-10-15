@@ -175,8 +175,9 @@ pub fn inject_proxy_field_annotations(schema: &mut schemars::schema::RootSchema)
         );
     }
     // 布局：proxy_mode 与 proxy_url 独占一行（proxy_mode 左、proxy_url 右）。
-    // 流式布局中 proxy_mode 会与前一字段排在同一行，给 proxy_mode 前一个字段
-    // 注入 x-end-row（半宽行尾补空占位列），使 proxy_mode 从新行首列开始。
+    // 仅当 proxy_mode 前一个字段处于行首（左列）时，才给它注入 x-end-row
+    // 补空占位列把 proxy_mode 推到新行；若前一字段已在行尾（右列/整行），
+    // 自然换行无需补列，否则空列会把 proxy_mode 挤到行尾右侧、proxy_url 另起一行。
     let order: Vec<String> = schema
         .schema
         .extensions
@@ -186,11 +187,54 @@ pub fn inject_proxy_field_annotations(schema: &mut schemars::schema::RootSchema)
     if let Some(pos) = order.iter().position(|f| f == "proxy_mode")
         && pos > 0
     {
-        let prev = &order[pos - 1];
-        if let Some(schemars::schema::Schema::Object(field)) = validation.properties.get_mut(prev) {
-            field
-                .extensions
-                .insert("x-end-row".to_owned(), serde_json::Value::Bool(true));
+        // 模拟 SchemaForm 的流式布局：半宽 12、整行 24，x-end-row 在半宽左列时补空列占满。
+        let mut col: u8 = 0; // 当前行已占用宽度 0/12，24 即换行归零
+        for name in &order[..pos] {
+            let field = validation.properties.get(name);
+            // 凭据字段均为字符串标量，仅 x-full-width / x-multiline 视为整行。
+            let is_full = field.is_some_and(|f| match f {
+                schemars::schema::Schema::Object(o) => {
+                    o.extensions.contains_key("x-full-width")
+                        || o.extensions.contains_key("x-multiline")
+                }
+                schemars::schema::Schema::Bool(_) => false,
+            });
+            let span: u8 = if is_full { 24 } else { 12 };
+            if span == 24 {
+                // 整行独占：若当前行有半列残留，先换行再占整行，行满后归零。
+                if col == 12 {
+                    col = 0;
+                }
+                col = 0;
+            } else {
+                // 半宽：若放不下则换行
+                if col + span > 24 {
+                    col = 0;
+                }
+                col += span;
+                let has_end_row = field.is_some_and(|f| match f {
+                    schemars::schema::Schema::Object(o) => {
+                        o.extensions.get("x-end-row") == Some(&serde_json::Value::Bool(true))
+                    }
+                    schemars::schema::Schema::Bool(_) => false,
+                });
+                if has_end_row && col == 12 {
+                    col = 24;
+                }
+                if col == 24 {
+                    col = 0;
+                }
+            }
+        }
+        // col==12 意味着前驱占据左列，proxy_mode 会挤在同一行右侧——需补空列推新行。
+        // col==0 意味着前驱已在行尾或整行后，proxy_mode 已在新行首列，无需补。
+        if col == 12 {
+            let prev = &order[pos - 1];
+            if let Some(schemars::schema::Schema::Object(field)) = validation.properties.get_mut(prev) {
+                field
+                    .extensions
+                    .insert("x-end-row".to_owned(), serde_json::Value::Bool(true));
+            }
         }
     }
 }
