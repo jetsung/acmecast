@@ -279,14 +279,14 @@ impl SshTarget {
     /// 走真实 SSH（用 russh）。
     #[must_use]
     pub fn live() -> Self {
-        Self::with_connector(Arc::new(RusshConnector))
+        Self::with_connector(Arc::new(RusshConnector::default()))
     }
 
     /// 供 ServerConfig 注入全局代理与网络超时（与 DNS 侧 with_global_proxy_and_timeout 同口径）。
     #[must_use]
     pub fn live_with_proxy(proxy_url: Option<&str>, network_timeout: std::time::Duration) -> Self {
         let _global_proxy_url = proxy_url.map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned);
-        Self { connector: Arc::new(RusshConnector), _global_proxy_url, _network_timeout: network_timeout }
+        Self { connector: Arc::new(RusshConnector { network_timeout }), _global_proxy_url, _network_timeout: network_timeout }
     }
 }
 
@@ -294,6 +294,8 @@ impl std::fmt::Debug for SshTarget {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SshTarget")
             .field("connector", &self.connector)
+            .field("_global_proxy_url", &self._global_proxy_url)
+            .field("_network_timeout", &self._network_timeout)
             .finish()
     }
 }
@@ -405,21 +407,32 @@ async fn connect_ssh(
     host: &str,
     port: u16,
     proxy_url: Option<&str>,
+    timeout: std::time::Duration,
 ) -> Result<russh::client::Handle<ClientHandler>> {
-    let Some(proxy_url) = proxy_url else {
-        return russh::client::connect(settings, (host, port), ClientHandler)
+    if let Some(proxy_url) = proxy_url {
+        let stream = open_proxy_stream(proxy_url, host, port, timeout).await?;
+        return tokio::time::timeout(timeout, russh::client::connect_stream(settings, stream, ClientHandler))
             .await
+            .map_err(|_| Error::Remote(format!("连接 {host}:{port} 超时（{} 秒无响应，经代理 {}）", timeout.as_secs(), acmecast_core::proxy_log_target(proxy_url))))?
             .map_err(|e| Error::Remote(e.to_string()));
-    };
-    let stream = open_proxy_stream(proxy_url, host, port).await?;
-    russh::client::connect_stream(settings, stream, ClientHandler)
+    }
+    tokio::time::timeout(timeout, russh::client::connect(settings, (host, port), ClientHandler))
         .await
+        .map_err(|_| Error::Remote(format!("连接 {host}:{port} 超时（{} 秒无响应）", timeout.as_secs())))?
         .map_err(|e| Error::Remote(e.to_string()))
 }
 
 /// 走 russh 的连接器。
-#[derive(Debug, Default)]
-pub struct RusshConnector;
+#[derive(Debug)]
+pub struct RusshConnector {
+    network_timeout: std::time::Duration,
+}
+
+impl Default for RusshConnector {
+    fn default() -> Self {
+        Self { network_timeout: acmecast_core::NETWORK_TIMEOUT }
+    }
+}
 
 /// 经代理隧道建立到目标主机的 TCP 流：
 ///
@@ -433,7 +446,9 @@ async fn open_proxy_stream(
     proxy_url: &str,
     host: &str,
     port: u16,
+    timeout: std::time::Duration,
 ) -> Result<tokio::net::TcpStream> {
+    let fut = async {
     let parsed = url::Url::parse(proxy_url)
         .map_err(|e| Error::Remote(format!("代理 URL 非法: {e}")))?;
     let (proxy_host, proxy_port) = match parsed.host_str() {
@@ -463,6 +478,10 @@ async fn open_proxy_stream(
         "socks5" => socks5_connect(stream, host, port).await,
         _ => http_connect(stream, host, port).await,
     }
+    };
+    tokio::time::timeout(timeout, fut)
+        .await
+        .map_err(|_| Error::Remote(format!("代理 {} 到 {}:{} 握手超时（{} 秒无响应）", acmecast_core::proxy_log_target(proxy_url), host, port, timeout.as_secs())))?
 }
 
 /// SOCKS5（RFC 1928）握手 + CONNECT：无认证，支持域名（ATYP=3）与 IPv4（ATYP=1）。
@@ -610,7 +629,7 @@ impl SshConnector for RusshConnector {
         credentials: &CredentialStore<'_>,
     ) -> Result<Box<dyn SshTransport>> {
         let settings = Arc::new(russh::client::Config::default());
-        let session = connect_ssh(settings, &config.host, config.port, config.proxy_url.as_deref())
+        let session = connect_ssh(settings, &config.host, config.port, config.proxy_url.as_deref(), self.network_timeout)
             .await
             .map_err(|e| {
                 Error::Remote(format!("连接 {}:{} 失败: {e}", config.host, config.port))
@@ -618,6 +637,8 @@ impl SshConnector for RusshConnector {
         let mut session = session;
 
         // 三种材料来源各读各的：凭据缺哪个字段就报哪个，比一句「认证失败」有用。
+        // 认证也受网络超时约束（与 connect_ssh 同口径，超时展示目标主机）。
+        let auth_fut = async {
         match &config.auth {
             SshAuthSource::Credential(auth) => {
                 let credential = resolve_auth_credential(auth, credentials).await?;
@@ -639,8 +660,14 @@ impl SshConnector for RusshConnector {
                 authenticate_with_password(&mut session, &config.user, password).await?;
             }
         }
+        Ok::<(), Error>(())
+        };
+        tokio::time::timeout(self.network_timeout, auth_fut)
+            .await
+            .map_err(|_| Error::Remote(format!("认证 {}@{}:{} 超时（{} 秒无响应）", config.user, config.host, config.port, self.network_timeout.as_secs())))?
+            .map_err(|e| Error::Remote(format!("认证 {}@{}:{} 失败: {e}", config.user, config.host, config.port)))?;
 
-        Ok(Box::new(RusshTransport { session }))
+        Ok(Box::new(RusshTransport { session, network_timeout: self.network_timeout }))
     }
 }
 
@@ -746,7 +773,7 @@ pub async fn probe_host(fields: &SshHostFields, global_proxy_url: Option<&str>) 
         &serde_json::to_value(fields).expect("SshHostFields 必可序列化"),
         global_proxy_url,
     );
-    let connect = connect_ssh(settings, &fields.host, fields.port, proxy_url.as_deref());
+    let connect = connect_ssh(settings, &fields.host, fields.port, proxy_url.as_deref(), PROBE_TIMEOUT);
     let mut session = tokio::time::timeout(PROBE_TIMEOUT, connect)
         .await
         .map_err(|_| {
@@ -796,6 +823,7 @@ impl russh::client::Handler for ClientHandler {
 /// 已认证的 russh 会话。
 struct RusshTransport {
     session: russh::client::Handle<ClientHandler>,
+    network_timeout: std::time::Duration,
 }
 
 /// 把一段文本转成带引号的 shell 参数。
@@ -825,7 +853,11 @@ impl SshTransport for RusshTransport {
             mode = shell_quote(mode),
         );
 
-        let (exit_code, output) = run_channel(&self.session, &script).await?;
+        let fut = run_channel(&self.session, &script);
+        let (exit_code, output) = tokio::time::timeout(self.network_timeout, fut)
+            .await
+            .map_err(|_| Error::Remote(format!("写入 {path} 超时（{} 秒无响应）", self.network_timeout.as_secs())))?
+            .map_err(|e| Error::Remote(format!("写入 {path} 失败: {e}")))?;
         if exit_code != 0 {
             return Err(Error::Write {
                 path: path.to_owned(),
@@ -836,7 +868,11 @@ impl SshTransport for RusshTransport {
     }
 
     async fn exec(&self, command: &str) -> Result<(i32, String)> {
-        run_channel(&self.session, command).await
+        let fut = run_channel(&self.session, command);
+        tokio::time::timeout(self.network_timeout, fut)
+            .await
+            .map_err(|_| Error::Remote(format!("执行命令超时（{} 秒无响应，命令: {}）", self.network_timeout.as_secs(), command.chars().take(80).collect::<String>())))?
+            .map_err(|e| Error::Remote(format!("执行命令失败: {e}")))
     }
 }
 
@@ -927,6 +963,7 @@ mod tests {
             &format!("socks5://{proxy_addr}"),
             "target.example.com",
             2222,
+            std::time::Duration::from_secs(5),
         )
         .await
         .expect("SOCKS5 隧道应建立成功");
@@ -964,6 +1001,7 @@ mod tests {
             &format!("http://{proxy_addr}"),
             "target.example.com",
             2222,
+            std::time::Duration::from_secs(5),
         )
         .await
         .expect("HTTP CONNECT 隧道应建立成功");
@@ -991,6 +1029,7 @@ mod tests {
             &format!("http://{proxy_addr}"),
             "target.example.com",
             2222,
+            std::time::Duration::from_secs(5),
         )
         .await;
         let Err(e) = result else {
