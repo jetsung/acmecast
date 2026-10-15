@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Alert, Card, Descriptions, Space, Spin, Tag, Typography } from "antd";
 import type { components } from "@/api/schema";
-import { useParams } from "react-router";
+import { Link, useParams } from "react-router";
 import { client } from "@/api/client";
 import { formatTime, unwrapData } from "@/api/helpers";
 import { useEffect, useState } from "react";
@@ -239,7 +239,7 @@ export function HistoryDetailPage() {
 
       <Card style={{ marginBottom: 24 }}>
         <Descriptions bordered size="small" column={2}>
-          <Descriptions.Item label="流水线">#{history.pipeline_id}</Descriptions.Item>
+          <Descriptions.Item label="流水线"><Link to={`/pipelines/${history.pipeline_id}`}>#{history.pipeline_id}</Link></Descriptions.Item>
           <Descriptions.Item label="触发来源">{history.trigger_source}</Descriptions.Item>
           <Descriptions.Item label="开始">{formatTime(history.started_at)}</Descriptions.Item>
           <Descriptions.Item label="结束">{formatTime(history.finished_at)}</Descriptions.Item>
