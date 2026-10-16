@@ -25,6 +25,8 @@ fn message() -> NotificationMessage {
         occurred_at: Utc::now(),
         domains: vec!["a.example.com".to_owned()],
         target: None,
+        failure: None,
+        summary: None,
     }
 }
 

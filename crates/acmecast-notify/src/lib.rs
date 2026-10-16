@@ -6,8 +6,9 @@
 //! 与可观测日志。引擎只保证「事件已交给订阅者」，投递在本 crate 内自行
 //! spawn，不阻塞流水线。
 //!
-//! 本期事件词汇：`cert.apply`（证书申请成功）与 `cert.deploy`（部署成功）；
-//! 订阅模型按事件标识列表设计，新增事件只需扩常量与标题映射。
+//! 本期事件词汇：`cert.apply`（证书申请成功）、`cert.deploy`（部署成功）
+//! 与 `pipeline.failed`（流水线失败）；订阅模型按事件标识列表设计，新增
+//! 事件只需扩常量与标题映射。
 
 #![allow(missing_docs)]
 
@@ -21,6 +22,7 @@ pub mod generic;
 pub mod message;
 pub mod sign;
 pub mod sink;
+pub mod summary;
 
 pub use channel::{ChannelConfig, ChannelRegistry, NotificationChannel, default_registry};
 pub use delivery::{DEFAULT_TIMEOUT, DeliveryOptions, deliver, http_client};
@@ -29,6 +31,11 @@ pub use email::{EmailChannel, SmtpSettings, TlsMode};
 pub use error::{Error, Result};
 pub use feishu::FeishuChannel;
 pub use generic::{ALLOWED_METHODS, GenericChannel, TEMPLATE_VARIABLES, validate_channel};
-pub use message::NotificationMessage;
+pub use message::{
+    FailureDetail, NotificationMessage, SummaryDetail, SummaryStep, SummaryStepStatus,
+};
 pub use sign::{SIGN_DINGTALK, SIGN_FEISHU, SIGN_KINDS, SignKind};
-pub use sink::{EVENT_CERT_APPLY, EVENT_CERT_DEPLOY, WebhookEventSink, event_title};
+pub use sink::{
+    EVENT_CERT_APPLY, EVENT_CERT_DEPLOY, EVENT_PIPELINE_FAILED, WebhookEventSink, event_title,
+};
+pub use summary::{NotifySummaryInput, NotifySummaryStep};

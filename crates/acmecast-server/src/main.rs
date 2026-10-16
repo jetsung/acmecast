@@ -158,22 +158,25 @@ async fn run(config_override: Option<&str>) -> Result<(), Box<dyn std::error::Er
         interval: std::time::Duration::from_secs(config.propagation.interval_secs),
         timeout: std::time::Duration::from_secs(config.propagation.timeout_secs),
     };
-    let mut runtime = acmecast_server::RuntimeState::from_environment_with_steps_and_redis_url(
-        std::sync::Arc::new(acmecast_server::steps::default_steps(
-            db.clone(),
-            config.data_dir.clone(),
-            acmecast_server::steps::default_dns_registry(
-                config.proxy_url.as_deref(),
-                config.network_timeout,
-            ),
-            acmecast_server::steps::default_deploy_registry(
-                config.proxy_url.as_deref(),
-                config.network_timeout,
-            ),
-            propagation,
-            config.resolvers.clone(),
+    let step_registry = acmecast_server::steps::default_steps(
+        db.clone(),
+        config.data_dir.clone(),
+        acmecast_server::steps::default_dns_registry(
             config.proxy_url.as_deref(),
-        )),
+            config.network_timeout,
+        ),
+        acmecast_server::steps::default_deploy_registry(
+            config.proxy_url.as_deref(),
+            config.network_timeout,
+        ),
+        propagation,
+        config.resolvers.clone(),
+        config.proxy_url.as_deref(),
+        config.notifications.clone(),
+    );
+    tracing::info!(types = ?step_registry.type_ids(), "已注册流水线任务类型");
+    let mut runtime = acmecast_server::RuntimeState::from_environment_with_steps_and_redis_url(
+        std::sync::Arc::new(step_registry),
         config.redis_url.as_deref(),
         config.proxy_url.as_deref(),
     )

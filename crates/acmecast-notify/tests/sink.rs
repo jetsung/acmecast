@@ -6,7 +6,8 @@
 use std::time::Duration;
 
 use acmecast_notify::{
-    ChannelConfig, DeliveryOptions, EVENT_CERT_APPLY, EVENT_CERT_DEPLOY, WebhookEventSink,
+    ChannelConfig, DeliveryOptions, EVENT_CERT_APPLY, EVENT_CERT_DEPLOY, EVENT_PIPELINE_FAILED,
+    WebhookEventSink,
 };
 use acmecast_pipeline::{EventSink, PipelineEvent};
 use acmecast_store::entity::{history, pipeline, pipeline_step};
@@ -143,6 +144,16 @@ fn step_finished(pipeline_id: i64, run_id: i64, type_id: &str, skipped: bool) ->
     }
 }
 
+fn failed_event(pipeline_id: i64, run_id: i64, type_id: &str, reason: &str) -> PipelineEvent {
+    PipelineEvent::Failed {
+        pipeline_id,
+        run_id,
+        step_order: 1,
+        type_id: type_id.to_owned(),
+        reason: reason.to_owned(),
+    }
+}
+
 #[tokio::test]
 async fn apply_success_delivers_full_material() {
     let server = mock_server().await;
@@ -220,12 +231,76 @@ async fn skipped_unsubscribed_and_non_step_events_never_deliver() {
     // 订阅词汇之外的事件标识：不触发。
     sink.publish(step_finished(pipeline_id, run_id, "cert.store", false))
         .await;
-    // 非步骤事件（开始/成功/失败）：不触发。
+    // 开始/成功事件不在推送词汇内：不触发。
     sink.publish(PipelineEvent::Started {
         pipeline_id,
         run_id,
         trigger_source: "manual".to_owned(),
     })
+    .await;
+    sink.publish(PipelineEvent::Succeeded {
+        pipeline_id,
+        run_id,
+        succeeded_steps: 2,
+    })
+    .await;
+
+    assert_no_requests(&server).await;
+}
+
+/// 订阅 `pipeline.failed` 的渠道收到失败通知：含失败步骤标识与原因。
+#[tokio::test]
+async fn pipeline_failure_delivers_step_and_reason() {
+    let server = mock_server().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+
+    let db = database().await;
+    let pipeline_id = insert_pipeline(&db).await;
+    let run_id = insert_history(&db, pipeline_id, "manual").await;
+
+    let sink = sink(db, &server.uri(), &[EVENT_PIPELINE_FAILED]).await;
+    sink.publish(failed_event(
+        pipeline_id,
+        run_id,
+        EVENT_CERT_DEPLOY,
+        "连接超时",
+    ))
+    .await;
+
+    let requests = wait_for_requests(&server, 1).await;
+    let body: Value = serde_json::from_slice(&requests[0].body).expect("应为 JSON");
+    assert_eq!(body["event"], "pipeline.failed");
+    assert_eq!(body["title"], "流水线失败");
+    assert_eq!(body["pipeline"], "example-pipeline");
+    assert_eq!(body["trigger"], "manual", "触发来源应取自运行历史");
+    assert_eq!(body["failure"]["step_type"], "cert.deploy");
+    assert_eq!(body["failure"]["step"], 2, "序号对外从 1 起");
+    assert_eq!(body["failure"]["reason"], "连接超时");
+}
+
+/// 未订阅 `pipeline.failed` 的渠道不收到失败通知。
+#[tokio::test]
+async fn pipeline_failure_not_delivered_when_unsubscribed() {
+    let server = mock_server().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+
+    let db = database().await;
+    let pipeline_id = insert_pipeline(&db).await;
+    let run_id = insert_history(&db, pipeline_id, "manual").await;
+
+    let sink = sink(db, &server.uri(), &[EVENT_CERT_APPLY]).await;
+    sink.publish(failed_event(
+        pipeline_id,
+        run_id,
+        EVENT_CERT_DEPLOY,
+        "连接超时",
+    ))
     .await;
 
     assert_no_requests(&server).await;

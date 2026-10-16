@@ -154,6 +154,8 @@ dependencies = [
 name = "acmecast-notify"
 version = "0.1.0"
 dependencies = [
+ "acmecast-access",
+ "acmecast-core",
  "acmecast-pipeline",
  "acmecast-store",
  "async-trait",
@@ -162,6 +164,7 @@ dependencies = [
  "hmac 0.12.1",
  "lettre",
  "reqwest",
+ "schemars",
  "sea-orm",
  "serde",
  "serde_json",

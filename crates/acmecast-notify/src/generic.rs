@@ -247,6 +247,8 @@ fn sample_message() -> NotificationMessage {
         occurred_at: chrono::Utc::now(),
         domains: vec!["a.example.com".to_owned()],
         target: Some("SSH web.example.com".to_owned()),
+        failure: None,
+        summary: None,
     }
 }
 
@@ -266,6 +268,8 @@ mod tests {
             occurred_at: chrono::Utc.with_ymd_and_hms(2026, 10, 4, 12, 0, 0).unwrap(),
             domains: vec!["a.example.com".to_owned()],
             target: None,
+            failure: None,
+            summary: None,
         }
     }
 

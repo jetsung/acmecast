@@ -118,6 +118,8 @@ pub fn default_deploy_registry(
 /// 传给 `cert.apply`——DoH 解析器直连失败时经它回退；提供商侧
 /// `proxy_mode=inherit` 的凭据则经调用方构建的 DNS 注册表继承同一份取值
 /// （见 [`default_dns_registry`]）。
+/// `notifications` 是 `config.toml` 声明的通知渠道（含未启用的），注入
+/// `notify.summary` 步骤供简讯投递按名选取。
 #[must_use]
 pub fn default_steps(
     db: DatabaseConnection,
@@ -127,6 +129,7 @@ pub fn default_steps(
     propagation: acmecast_dns::PropagationPolicy,
     resolver_entries: Vec<acmecast_dns::ResolverEntry>,
     proxy_url: Option<&str>,
+    notifications: Vec<acmecast_notify::ChannelConfig>,
 ) -> StepRegistry {
     let mut steps = StepRegistry::new();
     steps
@@ -141,9 +144,17 @@ pub fn default_steps(
     steps
         .register(CertStoreStep::new(db.clone(), data_dir))
         .expect("内置步骤不应重复注册");
-    let state = Arc::new(DatabaseDeploymentState::new(db));
+    let state = Arc::new(DatabaseDeploymentState::new(db.clone()));
     steps
         .register(CertDeployStep::new(deploy, state).with_proxy_url(proxy_url))
+        .expect("内置步骤不应重复注册");
+    steps
+        .register(acmecast_notify::NotifySummaryStep::new(
+            notifications,
+            Arc::new(acmecast_notify::default_registry()),
+            db,
+            acmecast_notify::http_client(),
+        ))
         .expect("内置步骤不应重复注册");
     steps
 }

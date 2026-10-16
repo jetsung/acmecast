@@ -81,6 +81,10 @@ pub(crate) fn routes() -> Router<HttpState> {
         )
         .route("/api/credentials/{id}/test", post(test_credential))
         .route("/api/credential-types", get(list_credential_types))
+        .route(
+            "/api/notifications/channels",
+            get(list_notification_channels),
+        )
         .route("/api/notifications/test", post(test_notifications))
         .route("/api/schedules", get(list_schedules).post(create_schedule))
         .route("/api/schedules/{pipeline_id}", delete(delete_schedule))
@@ -1991,6 +1995,8 @@ async fn test_notifications(
         occurred_at: Utc::now(),
         domains: Vec::new(),
         target: None,
+        failure: None,
+        summary: None,
     };
 
     let mut results = Vec::with_capacity(targets.len());
@@ -2038,6 +2044,38 @@ pub(crate) struct NotificationTestRequest {
 pub(crate) struct NotificationTestResponse {
     /// 每个被测渠道一条结果，顺序与配置一致。
     pub results: Vec<NotificationTestResult>,
+}
+
+/// 通知渠道列表项。
+///
+/// 脱敏视图：只暴露辨识与启用状态，不含 `url`/`secret`/`headers` 等可用于
+/// 投递的字段——渠道列表供前端渲染选项，不需要也不应携带投递凭据。
+#[derive(Debug, Serialize, ToSchema)]
+pub(crate) struct NotificationChannelResponse {
+    /// 渠道名。
+    pub name: String,
+    /// 适配器类型。
+    pub provider: String,
+    /// 是否启用；未启用的渠道也列出，供用户辨识「配了但没投递」。
+    pub enabled: bool,
+}
+
+/// 列出全部已声明的通知渠道（含未启用）。
+async fn list_notification_channels(
+    State(state): State<HttpState>,
+) -> Result<ApiResponse<Vec<NotificationChannelResponse>>, ApiError> {
+    let channels = state
+        .app
+        .config
+        .notifications
+        .iter()
+        .map(|channel| NotificationChannelResponse {
+            name: channel.name.clone(),
+            provider: channel.provider.clone(),
+            enabled: channel.enabled,
+        })
+        .collect();
+    Ok(ApiResponse::new(channels))
 }
 
 /// 调度配置响应。

@@ -132,6 +132,8 @@ mod tests {
             occurred_at: chrono::Utc::now(),
             domains: vec![],
             target: None,
+            failure: None,
+            summary: None,
         }
     }
 

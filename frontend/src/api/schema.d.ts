@@ -233,6 +233,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/notifications/channels": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 通知渠道列表的文档占位函数。 */
+        get: operations["list_notification_channels"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/notifications/test": {
         parameters: {
             query?: never;
@@ -462,7 +479,7 @@ export interface components {
                 /** @description 归档后的私钥相对路径。 */
                 key_pem_path: string;
                 /** @description 证书材料缺失时的降级标记：本次未移动文件，记录已降级为本地标记吊销终态。 */
-                material_missing: boolean;
+                material_missing?: boolean;
             };
         };
         /** @description 统一成功响应。 */
@@ -972,6 +989,8 @@ export interface components {
                  * @description 证书记录标识。
                  */
                 cert_id: number;
+                /** @description 证书材料缺失时的降级标记：本次跳过 CA 吊销与文件移动，仅本地标记吊销终态。 */
+                material_missing?: boolean;
                 /**
                  * Format: date-time
                  * @description 本地记录的吊销时间。
@@ -979,8 +998,6 @@ export interface components {
                 revoked_at: string;
                 /** @description 是否本次调用完成了吊销（`false` 表示 CA 侧早已吊销，本次只是同步状态）。 */
                 revoked_now: boolean;
-                /** @description 证书材料缺失时的降级标记：本次跳过 CA 吊销与文件移动，仅本地标记吊销终态。 */
-                material_missing: boolean;
             };
         };
         /** @description 统一成功响应。 */
@@ -1066,6 +1083,17 @@ export interface components {
             }[];
         };
         /** @description 统一成功响应。 */
+        ApiResponse_Vec_NotificationChannelResponse: {
+            data: {
+                /** @description 是否启用；未启用的渠道也列出，供用户辨识「配了但没投递」。 */
+                enabled: boolean;
+                /** @description 渠道名。 */
+                name: string;
+                /** @description 适配器类型。 */
+                provider: string;
+            }[];
+        };
+        /** @description 统一成功响应。 */
         ApiResponse_Vec_ScheduleResponse: {
             data: {
                 /** @description 停机补跑策略。 */
@@ -1117,7 +1145,7 @@ export interface components {
             /** @description 归档后的私钥相对路径。 */
             key_pem_path: string;
             /** @description 证书材料缺失时的降级标记：本次未移动文件，记录已降级为本地标记吊销终态。 */
-            material_missing: boolean;
+            material_missing?: boolean;
         };
         /** @description 证书备注更新 DTO（PATCH /api/certificates/{id}）。 */
         CertificateDescriptionRequest: {
@@ -1389,6 +1417,20 @@ export interface components {
             token: string;
             /** @description 令牌类型，固定 `Bearer`。 */
             token_type: string;
+        };
+        /**
+         * @description 通知渠道列表项。
+         *
+         *     脱敏视图：只暴露辨识与启用状态，不含 `url`/`secret`/`headers` 等可用于
+         *     投递的字段——渠道列表供前端渲染选项，不需要也不应携带投递凭据。
+         */
+        NotificationChannelResponse: {
+            /** @description 是否启用；未启用的渠道也列出，供用户辨识「配了但没投递」。 */
+            enabled: boolean;
+            /** @description 渠道名。 */
+            name: string;
+            /** @description 适配器类型。 */
+            provider: string;
         };
         /** @description 通知渠道测试请求。 */
         NotificationTestRequest: {
@@ -1767,6 +1809,8 @@ export interface components {
              * @description 证书记录标识。
              */
             cert_id: number;
+            /** @description 证书材料缺失时的降级标记：本次跳过 CA 吊销与文件移动，仅本地标记吊销终态。 */
+            material_missing?: boolean;
             /**
              * Format: date-time
              * @description 本地记录的吊销时间。
@@ -1774,8 +1818,6 @@ export interface components {
             revoked_at: string;
             /** @description 是否本次调用完成了吊销（`false` 表示 CA 侧早已吊销，本次只是同步状态）。 */
             revoked_now: boolean;
-            /** @description 证书材料缺失时的降级标记：本次跳过 CA 吊销与文件移动，仅本地标记吊销终态。 */
-            material_missing: boolean;
         };
         /** @description 手动触发一次流水线运行的响应。 */
         RunResponse: {
@@ -2530,6 +2572,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    list_notification_channels: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 全部已声明渠道（含未启用；不含敏感字段） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_Vec_NotificationChannelResponse"];
                 };
             };
         };

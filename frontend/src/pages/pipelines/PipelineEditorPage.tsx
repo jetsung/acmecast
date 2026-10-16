@@ -5,6 +5,7 @@ import { useLocation, useNavigate, useParams } from "react-router";
 import type { components } from "@/api/schema";
 import { client } from "@/api/client";
 import { unwrapData } from "@/api/helpers";
+import { listNotificationChannels, type NotificationChannel } from "@/api/notifications";
 import { SchemaForm } from "@/components/SchemaForm";
 import { PageHeader } from "@/components/PageHeader";
 
@@ -12,6 +13,8 @@ import { PageHeader } from "@/components/PageHeader";
 const ACME_ACCOUNT_TYPE_ID = "acme.account";
 /** SSH 主机档案凭据：cert.deploy 的 SSH 配置按标识引用它。 */
 const SSH_HOST_TYPE_ID = "deploy.ssh";
+/** 运行简讯步骤：`channels` 字段注入通知渠道多选选项。 */
+const NOTIFY_SUMMARY_TYPE_ID = "notify.summary";
 
 const DNS_CREDENTIAL_TYPE_IDS: Record<string, true> = {
   "cloud.cloudflare": true,
@@ -516,6 +519,14 @@ function TaskSchemaFields({
     enabled: typeId !== "",
   });
 
+  // 通知渠道列表：notify.summary 的 channels 多选选项来源；只有该类型步骤
+  // 需要时才拉取（同一键并发挂载由 react-query 去重）。
+  const { data: channels } = useQuery({
+    queryKey: ["notification-channels"],
+    queryFn: listNotificationChannels,
+    enabled: typeId === NOTIFY_SUMMARY_TYPE_ID,
+  });
+
   // 当前选中的目标主机档案：跳板下拉按它动态排除，切换目标后立即重算。
   const form = Form.useFormInstance();
   const selectedHostCredentialId = Form.useWatch(
@@ -524,8 +535,12 @@ function TaskSchemaFields({
   );
 
   const decorated = useMemo(
-    () => withFieldOptions(schema, fieldOptions, rawCredentials, selectedHostCredentialId),
-    [schema, fieldOptions, rawCredentials, selectedHostCredentialId],
+    () =>
+      withChannelOptions(
+        withFieldOptions(schema, fieldOptions, rawCredentials, selectedHostCredentialId),
+        channels,
+      ),
+    [schema, fieldOptions, rawCredentials, selectedHostCredentialId, channels],
   );
 
   if (!schema) {
@@ -751,6 +766,38 @@ function withFieldOptions(
   return changed
     ? { ...root, properties: next, ...(order ? { "x-field-order": order } : {}) }
     : schema;
+}
+
+/**
+ * 给 `notify.summary` 的 `channels` 字段注入渠道多选选项（`x-options`）：
+ * 选项含全部已声明渠道——包括 `enabled = false` 的（运行时会被跳过并告警），
+ * 标签在渠道名后附带 provider 与启用状态，让「选了却不投递」在界面上可解释。
+ * 渠道列表尚未加载时原样返回（字段退化为 tags 输入，不阻塞表单）。
+ */
+function withChannelOptions(
+  schema: unknown,
+  channels: NotificationChannel[] | undefined,
+): unknown {
+  if (!channels) return schema;
+  const root = schema as
+    | { properties?: Record<string, Record<string, unknown>> }
+    | undefined;
+  const properties = root?.properties;
+  const node = properties?.["channels"];
+  if (!properties || !node) return schema;
+  return {
+    ...root,
+    properties: {
+      ...properties,
+      channels: {
+        ...node,
+        "x-options": channels.map((channel) => ({
+          value: channel.name,
+          label: `${channel.name}（${channel.provider}，${channel.enabled ? "已启用" : "已停用"}）`,
+        })),
+      },
+    },
+  };
 }
 
 /** `withFieldOptions` 递归时用到的最小节点形状（完整 schema 由变体自身保证）。 */

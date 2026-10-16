@@ -527,14 +527,15 @@ fn validate_notification(
         }
     };
     if entry.events.is_empty() {
-        return Err("events 不能为空（可订阅：cert.apply、cert.deploy）".to_owned());
+        return Err("events 不能为空（可订阅：cert.apply、cert.deploy、pipeline.failed）".to_owned());
     }
     for event in &entry.events {
         if acmecast_notify::event_title(event).is_none() {
             return Err(format!(
-                "未知订阅事件: {event}（可用：{cert_apply}、{cert_deploy}）",
+                "未知订阅事件: {event}（可用：{cert_apply}、{cert_deploy}、{pipeline_failed}）",
                 cert_apply = acmecast_notify::EVENT_CERT_APPLY,
                 cert_deploy = acmecast_notify::EVENT_CERT_DEPLOY,
+                pipeline_failed = acmecast_notify::EVENT_PIPELINE_FAILED,
             ));
         }
     }
@@ -821,7 +822,8 @@ pub fn template_content() -> String {
     out.push_str("#          email（SMTP 邮件）。\n");
     out.push_str("# generic 可配 sign（feishu/dingtalk 签名方式）、method、headers、\n");
     out.push_str("# body_template（占位符如 {{title}}、{{domains}}）。\n");
-    out.push_str("# events 可订阅: cert.apply（申请成功）、cert.deploy（部署成功）。\n");
+    out.push_str("# events 可订阅: cert.apply（申请成功）、cert.deploy（部署成功）、\n");
+    out.push_str("#              pipeline.failed（流水线失败）。\n");
     out.push_str("# 渠道缺省不启用（enabled 缺省 false）：确认配置无误后显式写\n");
     out.push_str("# enabled = true 开始投递；修改后需重启生效。\n");
     out.push_str("# [[notifications]]\n");
@@ -1469,6 +1471,42 @@ mod tests {
     }
 
     #[test]
+    fn pipeline_failed_event_is_subscribable() {
+        let entry = NotificationEntry {
+            name: "ops".to_owned(),
+            provider: "feishu".to_owned(),
+            url: Some("https://a.example.com/hook".to_owned()),
+            secret: None,
+            events: vec![
+                "cert.apply".to_owned(),
+                acmecast_notify::EVENT_PIPELINE_FAILED.to_owned(),
+            ],
+            enabled: None,
+            sign: None,
+            method: None,
+            headers: None,
+            body_template: None,
+            host: None,
+            port: None,
+            from: None,
+            to: None,
+            username: None,
+            password: None,
+            tls: None,
+        };
+        let channel = validate_notification(&entry, &acmecast_notify::default_registry())
+            .expect("pipeline.failed 应可订阅");
+        assert!(
+            channel
+                .events
+                .iter()
+                .any(|event| event == acmecast_notify::EVENT_PIPELINE_FAILED),
+            "订阅列表应保留 pipeline.failed: {:?}",
+            channel.events
+        );
+    }
+
+    #[test]
     fn invalid_notification_entries_are_skipped() {
         // 三类非法条目：缺 url 形态、未知 provider、未知事件——各自跳过并保留有效条目。
         let entries = vec![
@@ -1515,7 +1553,7 @@ mod tests {
                 provider: "dingtalk".to_owned(),
                 url: Some("https://oapi.dingtalk.com/robot/send".to_owned()),
                 secret: None,
-                events: vec!["pipeline.failed".to_owned()],
+                events: vec!["cert.store".to_owned()],
                 enabled: None,
                 sign: None,
                 method: None,

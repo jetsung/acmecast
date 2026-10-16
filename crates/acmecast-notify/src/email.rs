@@ -247,6 +247,8 @@ mod tests {
             occurred_at: chrono::Utc::now(),
             domains: vec!["a.example.com".to_owned()],
             target: None,
+            failure: None,
+            summary: None,
         }
     }
 

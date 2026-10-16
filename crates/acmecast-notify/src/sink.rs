@@ -1,9 +1,9 @@
 //! 事件订阅端：把流水线事件翻译成通知并旁路投递。
 //!
-//! `WebhookEventSink` 只对「步骤成功完成」感兴趣（被停用而跳过的步骤
-//! 不算成功，失败走引擎的 `Failed` 事件，本期不在订阅词汇内）。过滤、
-//! 组装都在 spawn 出的任务里做——`publish` 本身必须立刻返回，这是
-//! `EventSink` 的约定。
+//! `WebhookEventSink` 对两类事件感兴趣：步骤成功完成（`cert.apply` /
+//! `cert.deploy`，被停用而跳过的步骤不算）与运行因某步失败中止
+//! （`pipeline.failed`）。过滤、组装都在 spawn 出的任务里做——`publish`
+//! 本身必须立刻返回，这是 `EventSink` 的约定。
 
 use acmecast_pipeline::{EventSink, PipelineEvent};
 use acmecast_store::entity::history;
@@ -14,13 +14,16 @@ use std::sync::Arc;
 
 use crate::channel::{ChannelConfig, ChannelRegistry, default_registry};
 use crate::delivery::{DeliveryOptions, deliver, http_client};
-use crate::message::NotificationMessage;
+use crate::message::{FailureDetail, NotificationMessage};
 
 /// 证书申请成功事件：`cert.apply` 步骤成功完成。
 pub const EVENT_CERT_APPLY: &str = "cert.apply";
 
 /// 证书部署成功事件：`cert.deploy` 步骤成功完成。
 pub const EVENT_CERT_DEPLOY: &str = "cert.deploy";
+
+/// 流水线失败事件：运行因某步骤失败而中止。
+pub const EVENT_PIPELINE_FAILED: &str = "pipeline.failed";
 
 /// 事件标识 → 消息标题。
 ///
@@ -31,6 +34,7 @@ pub fn event_title(event: &str) -> Option<&'static str> {
     match event {
         EVENT_CERT_APPLY => Some("证书申请成功"),
         EVENT_CERT_DEPLOY => Some("证书部署成功"),
+        EVENT_PIPELINE_FAILED => Some("流水线失败"),
         _ => None,
     }
 }
@@ -98,43 +102,79 @@ impl WebhookEventSink {
             .cloned()
             .collect()
     }
+    /// 把素材查询与投递挪到旁路：引擎只等「事件已受理」。
+    ///
+    /// 单渠道内部带重试；渠道之间顺序发送，避免多渠道同时失败时的
+    /// 退避任务并发膨胀。
+    fn spawn_delivery(
+        &self,
+        pipeline_id: i64,
+        run_id: i64,
+        event: String,
+        failure: Option<FailureDetail>,
+        targets: Vec<ChannelConfig>,
+    ) {
+        let db = self.db.clone();
+        let registry = Arc::clone(&self.registry);
+        let options = self.options.clone();
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            let message = assemble_message(&db, pipeline_id, run_id, &event, failure).await;
+            for channel in &targets {
+                let _ = deliver(&client, &registry, channel, &message, &options).await;
+            }
+        });
+    }
 }
 
 #[async_trait::async_trait]
 impl EventSink for WebhookEventSink {
     async fn publish(&self, event: PipelineEvent) {
-        // 只关心「步骤成功完成」；开始/成功/失败事件本期不在推送词汇内。
-        let PipelineEvent::StepFinished {
-            pipeline_id,
-            run_id,
-            type_id,
-            skipped,
-            ..
-        } = event
-        else {
-            return;
-        };
-        if skipped || event_title(&type_id).is_none() {
-            return;
-        }
-        let targets = self.targets_for(&type_id);
-        if targets.is_empty() {
-            return;
-        }
-
-        let db = self.db.clone();
-        let registry = Arc::clone(&self.registry);
-        let options = self.options.clone();
-        let client = self.client.clone();
-        // 素材查询与投递都挪到旁路：引擎只等「事件已受理」。
-        tokio::spawn(async move {
-            let message = assemble_message(&db, pipeline_id, run_id, &type_id).await;
-            for channel in &targets {
-                // 单渠道内部带重试；渠道之间顺序发送，避免多渠道同时
-                // 失败时的退避任务并发膨胀。
-                let _ = deliver(&client, &registry, channel, &message, &options).await;
+        // 只关心步骤成功完成与运行失败两类；开始/成功/日志事件不在推送词汇内。
+        match event {
+            PipelineEvent::StepFinished {
+                pipeline_id,
+                run_id,
+                type_id,
+                skipped,
+                ..
+            } => {
+                if skipped || event_title(&type_id).is_none() {
+                    return;
+                }
+                let targets = self.targets_for(&type_id);
+                if targets.is_empty() {
+                    return;
+                }
+                self.spawn_delivery(pipeline_id, run_id, type_id, None, targets);
             }
-        });
+            PipelineEvent::Failed {
+                pipeline_id,
+                run_id,
+                step_order,
+                type_id,
+                reason,
+            } => {
+                let targets = self.targets_for(EVENT_PIPELINE_FAILED);
+                if targets.is_empty() {
+                    return;
+                }
+                let failure = FailureDetail {
+                    // 事件里的序号从 0 起；对外展示统一从 1 起（与运行历史一致）。
+                    step: step_order + 1,
+                    step_type: type_id,
+                    reason,
+                };
+                self.spawn_delivery(
+                    pipeline_id,
+                    run_id,
+                    EVENT_PIPELINE_FAILED.to_owned(),
+                    Some(failure),
+                    targets,
+                );
+            }
+            _ => {}
+        }
     }
 }
 
@@ -147,6 +187,7 @@ async fn assemble_message(
     pipeline_id: i64,
     run_id: i64,
     event: &str,
+    failure: Option<FailureDetail>,
 ) -> NotificationMessage {
     let pipeline = PipelineRepository::new(db)
         .find(pipeline_id)
@@ -191,6 +232,8 @@ async fn assemble_message(
         occurred_at: Utc::now(),
         domains,
         target,
+        failure,
+        summary: None,
     }
 }
 
@@ -309,8 +352,8 @@ mod tests {
     fn event_title_covers_known_events_only() {
         assert_eq!(event_title(EVENT_CERT_APPLY), Some("证书申请成功"));
         assert_eq!(event_title(EVENT_CERT_DEPLOY), Some("证书部署成功"));
+        assert_eq!(event_title(EVENT_PIPELINE_FAILED), Some("流水线失败"));
         assert_eq!(event_title("cert.store"), None);
-        assert_eq!(event_title("pipeline.failed"), None);
     }
 
     #[test]

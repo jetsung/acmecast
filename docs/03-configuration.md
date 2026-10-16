@@ -129,8 +129,9 @@ ACMECAST_PROXY_URL=socks5://127.0.0.1:7890
 ## webhook 通知
 
 config.toml 支持 `[[notifications]]` 段声明通知渠道：`cert.apply`
-（证书申请成功）、`cert.deploy`（部署成功）后向 IM 群机器人推送文本消息，
-或以邮件方式送达指定收件人。内置四种适配器：
+（证书申请成功）、`cert.deploy`（部署成功）与 `pipeline.failed`
+（流水线因某步骤失败中止）后向 IM 群机器人推送文本消息，或以邮件方式
+送达指定收件人。内置四种适配器：
 
 | provider | 平台 | 消息格式 | 签名/认证 |
 |---|---|---|---|
@@ -145,7 +146,7 @@ name = "ops-feishu"          # 渠道名，须唯一（日志与测试端点用�
 provider = "feishu"          # feishu / dingtalk / generic
 url = "https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx"
 secret = "..."               # 可选；启用机器人签名校验时填写
-events = ["cert.apply", "cert.deploy"]   # 订阅事件，不能为空
+events = ["cert.apply", "cert.deploy", "pipeline.failed"]   # 订阅事件，不能为空
 enabled = true               # 必须显式开启；缺省 false（不投递）
 ```
 
@@ -206,8 +207,10 @@ events = ["cert.apply", "cert.deploy"]
   仅 `generic` 渠道可用——`feishu` / `dingtalk` 渠道配置这些字段会被
   视为非法条目跳过（它们的请求形态写死）。把渠道从专用适配器迁到
   `generic` 时，复制原有字段并加上 `sign` 即可，消息格式不变。
-- **事件词汇**：`cert.apply`（证书申请成功）、`cert.deploy`（部署成功）。
-  申请消息含域名列表；部署消息含部署目标（SSH 主机 / 本地路径）与域名。
+- **事件词汇**：`cert.apply`（证书申请成功）、`cert.deploy`（部署成功）、
+  `pipeline.failed`（流水线因某步骤失败而中止）。申请消息含域名列表；
+  部署消息含部署目标（SSH 主机 / 本地路径）与域名；失败消息含失败步骤的
+  `type_id` 与失败原因。只关心失败时可写 `events = ["pipeline.failed"]`。
 - **平台接入**：在飞书/钉钉群里添加「自定义机器人」（webhook），钉钉建议
   选择「加签」安全设置并把密钥填入 `secret`；飞书同理可开启签名校验。
 - **校验语义**：非法条目（`provider` 不在内置之列、`events` 含未知事件、
@@ -313,6 +316,25 @@ events = ["cert.apply", "cert.deploy"]
 `secret` 明文存于 config.toml（数据目录权限受限 `0700`），请勿把该文件
 提交进版本控制；泄露后果限于向对应群机器人发送消息，风险远低于 DNS /
 SSH 凭据。
+
+### 运行简讯步骤（notify.summary）
+
+除事件订阅推送外，可以在流水线末尾加一个 `notify.summary` 步骤，把本次
+运行的结果（总耗时与各步骤状态）**直接投递**给步骤选中的渠道——不经过
+渠道 `events` 订阅过滤，适合「每次运行结束都在群里播报一声」。步骤输入的
+`channels` 为渠道名列表（`[[notifications]]` 的 `name`），缺省空数组：
+
+```json
+{ "channels": ["lark", "ntfy"] }
+```
+
+- 渠道名必须已在 `[[notifications]]` 中声明：写错会让该步骤失败并中止后续
+  步骤（错误定位到 `channels` 字段）。
+- 选中的渠道未启用（`enabled = false`）时跳过并记警告；全部选中渠道均未
+  启用、或 `channels` 为空时不投递（步骤仍成功）。
+- 简讯消息（标题「运行简讯」）含流水线名称、触发来源、时间、域名列表、
+  总耗时与各步骤状态（成功 / 跳过 / 未执行）；投递失败只记警告，不影响
+  运行结果。
 
 ## 最小可用配置示例
 

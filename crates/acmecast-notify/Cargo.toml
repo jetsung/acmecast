@@ -20,6 +20,8 @@ hmac.workspace = true
 # SMTP 邮件渠道的传输与消息构建（rustls 后端，见 workspace 依赖注释）。
 lettre.workspace = true
 reqwest.workspace = true
+# 步骤输入 schema 从结构体推导（`notify.summary` 的 channels 字段）。
+schemars.workspace = true
 sea-orm.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -32,6 +34,9 @@ tracing.workspace = true
 wiremock.workspace = true
 # `start_paused`：退避重试的用例在虚拟时钟下秒级完成。
 tokio = { workspace = true, features = ["test-util"] }
+# 步骤单测要构造执行上下文：凭据存储与密钥体系来自这两个 crate。
+acmecast-access.workspace = true
+acmecast-core.workspace = true
 
 [lints]
 workspace = true

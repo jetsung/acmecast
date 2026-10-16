@@ -18,7 +18,8 @@ import type { ReactNode } from "react";
  * 显隐联动遵循后端扩展：`x-visible-when: {"Equals": {field, values}}`、`x-hidden: bool`；
  * 必填联动同理（`x-required-when`，支持 `Equals` 与数组长度下限 `MinItems`，
  * 后者用于 cert.apply 的「多域名时 dns_zone 必填」）；
- * 另有调用方注入的 `x-options`，把「资源 ID」字段渲染成按名称选择的下拉；
+ * 另有调用方注入的 `x-options`，把「资源 ID」字段渲染成按名称选择的下拉，
+ * `array<string>` 字段（如 notify.summary 的 channels）则渲染成多选下拉；
  * `x-multiline`（后端 schema 注入，如 SSH 档案的私钥）：string 字段渲染成多行文本域；
  * `x-target-schemas`（cert.deploy 的 config）：按同级 `target` 的取值渲染成
  * 所选部署目标的**结构化子表单**，未选 target 时提示先选。
@@ -68,7 +69,8 @@ interface Extension {
   "x-multiline"?: boolean;
   /**
    * 下拉选项，由调用方注入（后端 schema 里没有）。用于「字段值是某个资源的 ID」
-   * 的场景：把裸数字输入换成按名称选择，选项的 value 保持原始类型。
+   * 的场景：把裸数字输入换成按名称选择，选项的 value 保持原始类型；
+   * `array<string>` 字段带选项时渲染成多选下拉，提交选中的字符串数组。
    */
   "x-options"?: Array<{ value: string | number; label: string }>;
   /**
@@ -486,6 +488,7 @@ function SchemaField({
   disabled?: boolean;
 } & Record<string, unknown>) {
   const type = Array.isArray(node.type) ? node.type[0] : node.type;
+  const itemType = Array.isArray(node.items?.type) ? node.items?.type[0] : node.items?.type;
 
   // Form.Item 会把受控属性注入到它的直接子元素——这里是自定义组件而非具体控件，
   // 必须原样透传给真正的控件，否则控件是非受控的，用户输入进不了表单 store，
@@ -497,11 +500,25 @@ function SchemaField({
   // 免得退化成裸数字输入后又不知道为什么填了不生效。
   const options = node["x-options"];
   if (Array.isArray(options)) {
+    const selectOptions = options.map((option) => ({ value: option.value, label: option.label }));
+    // `array<string>` + 选项（如 notify.summary 的 channels 渠道）：候选是
+    // 封闭集合，渲染成多选下拉而不是 tags 自由输入；无选项时仍走 tags。
+    if (type === "array" && itemType !== "object") {
+      return (
+        <Select
+          disabled={disabled}
+          mode="multiple"
+          placeholder={options.length === 0 ? "暂无可选项" : undefined}
+          options={selectOptions}
+          {...control}
+        />
+      );
+    }
     return (
       <Select
         disabled={disabled}
         placeholder={options.length === 0 ? "暂无可选项" : undefined}
-        options={options.map((option) => ({ value: option.value, label: option.label }))}
+        options={selectOptions}
         {...control}
       />
     );
@@ -529,7 +546,6 @@ function SchemaField({
     case "boolean":
       return <Switch disabled={disabled} {...control} />;
     case "array": {
-      const itemType = Array.isArray(node.items?.type) ? node.items?.type[0] : node.items?.type;
       if (itemType === "object") {
         // 一层嵌套对象数组：以 JSON 文本编辑，store 里存解析后的数组。
         return (

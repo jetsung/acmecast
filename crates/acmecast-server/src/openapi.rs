@@ -47,6 +47,7 @@ use crate::response::ApiResponse;
         test_credential,
         list_credential_types,
         test_notifications,
+        list_notification_channels,
         list_tasks,
         task_schema,
         list_histories,
@@ -93,6 +94,7 @@ use crate::response::ApiResponse;
             crate::handlers::NotificationTestRequest,
             crate::handlers::NotificationTestResponse,
             crate::handlers::NotificationTestResult,
+            crate::handlers::NotificationChannelResponse,
             PageResponse<crate::handlers::PipelineSummaryResponse>,
             PageResponse<crate::handlers::CertificateResponse>,
             PageResponse<crate::handlers::CredentialResponse>,
@@ -190,6 +192,10 @@ fn list_credential_types() {}
 /// 通知渠道测试的文档占位函数。
 #[utoipa::path(post, path = "/api/notifications/test", request_body = Option<crate::handlers::NotificationTestRequest>, responses((status = 200, body = ApiResponse<crate::handlers::NotificationTestResponse>, description = "逐渠道投递结果"), (status = 404, body = crate::response::ApiErrorBody), (status = 409, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
 fn test_notifications() {}
+
+/// 通知渠道列表的文档占位函数。
+#[utoipa::path(get, path = "/api/notifications/channels", responses((status = 200, body = ApiResponse<Vec<crate::handlers::NotificationChannelResponse>>, description = "全部已声明渠道（含未启用；不含敏感字段）")), security(("bearerAuth" = [])))]
+fn list_notification_channels() {}
 
 #[utoipa::path(get, path = "/api/tasks", responses((status = 200, description = "任务类型列表")), security(("bearerAuth" = [])))]
 fn list_tasks() {}

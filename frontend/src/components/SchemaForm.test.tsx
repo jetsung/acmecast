@@ -530,6 +530,60 @@ describe("SchemaForm", () => {
     expect(screen.getByText("暂无可选项")).toBeTruthy();
   });
 
+  it("x-options：array<string> 渲染为多选下拉，提交选中的字符串数组", async () => {
+    const onFinish = vi.fn();
+    render(
+      <Harness
+        onFinish={onFinish}
+        schema={objectSchema(
+          {
+            channels: {
+              type: "array",
+              items: { type: "string" },
+              "x-options": [
+                { value: "lark", label: "lark（feishu，已启用）" },
+                { value: "ntfy", label: "ntfy（generic，已启用）" },
+              ],
+            },
+          },
+          ["channels"],
+        )}
+      />,
+    );
+
+    // 多选下拉：依次勾选两个选项（勾选后下拉不收起）。
+    fireEvent.mouseDown(screen.getByRole("combobox"));
+    const optionOf = async (title: string) =>
+      (await screen.findAllByTitle(title)).find((element) =>
+        element.className.includes("ant-select-item-option"),
+      );
+    fireEvent.click((await optionOf("lark（feishu，已启用）"))!);
+    fireEvent.click((await optionOf("ntfy（generic，已启用）"))!);
+
+    expect(await submitAndGet(onFinish)).toEqual({ fields: { channels: ["lark", "ntfy"] } });
+  });
+
+  it("x-options：array<string> 未选择渠道时按 schema default 提交空数组", async () => {
+    const onFinish = vi.fn();
+    render(
+      <Harness
+        onFinish={onFinish}
+        schema={objectSchema({
+          channels: {
+            type: "array",
+            items: { type: "string" },
+            // 后端 schemars 对 `#[serde(default)]` 的产物：挂载时预填空数组，
+            // 用户不选也提交 `channels: []`（而不是缺字段）。字段非必填。
+            default: [],
+            "x-options": [{ value: "lark", label: "lark" }],
+          },
+        })}
+      />,
+    );
+
+    expect(await submitAndGet(onFinish)).toEqual({ fields: { channels: [] } });
+  });
+
   it("无类型字段（如 serde_json::Value）按 JSON 文本处理，而不是单行输入", async () => {
     const onFinish = vi.fn();
     render(
