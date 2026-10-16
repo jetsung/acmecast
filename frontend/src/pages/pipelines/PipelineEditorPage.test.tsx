@@ -49,8 +49,9 @@ vi.mock("@/api/client", () => ({
                 { id: 30, name: "腾讯云 SSL", type_id: "cloud.tencent", remark: "生产 DNS" },
                 { id: 31, name: "EdgeOne DNS", type_id: "dns.tencent-eo", remark: "" },
                 { id: 40, name: "SSH 主机", type_id: "deploy.ssh", remark: "" },
+                { id: 41, name: "jump-01", type_id: "deploy.ssh", remark: "" },
               ],
-              total: 7,
+              total: 8,
               page: 1,
               page_size: 100,
             },
@@ -175,6 +176,12 @@ vi.mock("@/api/client", () => ({
                                 credential_id: {
                                   type: ["integer", "null"],
                                   description: "SSH 主机档案凭据的标识。",
+                                },
+                                bastion_credential_id: {
+                                  type: ["integer", "null"],
+                                  description: "跳板机凭据的标识。",
+                                  default: null,
+                                  format: "int64",
                                 },
                                 auth: {
                                   description: "登录远程主机的方式。",
@@ -421,7 +428,9 @@ describe("PipelineEditorPage", () => {
       dns_provider: "cloud.aliyun",
       target: "ssh",
       acme_account_credential_id: 7,
-      config: { credential_id: 10, cert_path: "/srv/ssl/site.crt" },
+      // 目标档案非空,跳板字段渲染后 SchemaDefault 把 default null 写入 store,
+      // 保存时随 config 提交(null 与缺失等价)。
+      config: { credential_id: 10, bastion_credential_id: null, cert_path: "/srv/ssl/site.crt" },
     });
   });
 
@@ -576,6 +585,8 @@ describe("PipelineEditorPage", () => {
     expect(screen.getByLabelText("ca_path")).toBeTruthy();
     expect(screen.getByLabelText("key_path")).toBeTruthy();
     expect(screen.getByLabelText("reload_command")).toBeTruthy();
+    // 目标主机档案选定后跳板字段渲染出来（未选档案时隐藏，见联动用例）。
+    expect(screen.getByLabelText("跳板机")).toBeTruthy();
 
     // 根级顺序:target 决策字段排最前,config(SSH 主机档案)跟后;
     // force 已被注入 x-hidden,不再渲染。
@@ -586,18 +597,19 @@ describe("PipelineEditorPage", () => {
     expect(rootOrder).not.toContain("force");
     expect(rootOrder.indexOf("target")).toBeLessThan(rootOrder.indexOf("SSH 主机档案"));
 
-    // 布局:SSH 主机档案与 reload_command 各独占一行(右侧空列占位),
+    // 布局:SSH 主机档案、跳板机与 reload_command 各独占一行(右侧空列占位),
     // fullchain/ca/key 路径成对同行(半宽)。
     const colOf = (label: string) =>
       allItems.find((item) => item.querySelector("label")?.textContent === label)
         ?.closest(".ant-col");
     expect(colOf("SSH 主机档案")?.className).toContain("ant-col-12");
+    expect(colOf("跳板机")?.className).toContain("ant-col-12");
     expect(colOf("fullchain_path")?.className).toContain("ant-col-12");
     expect(colOf("key_path")?.className).toContain("ant-col-12");
     expect(colOf("reload_command")?.className).toContain("ant-col-12");
-    // 空列占位:档案与重载命令所在行的行尾各有一个无 label 的空列。
+    // 空列占位:档案、跳板与重载命令所在行的行尾各有一个无 label 的空列。
     const emptyCols = document.querySelectorAll<HTMLElement>(".ant-col[aria-hidden]");
-    expect(emptyCols.length).toBe(2);
+    expect(emptyCols.length).toBe(3);
 
     fireEvent.change(screen.getByLabelText("fullchain_path"), { target: { value: "/srv/ssl/site.fullchain.cer" } });
     fireEvent.change(screen.getByLabelText("key_path"), { target: { value: "/srv/ssl/site.key" } });
@@ -606,9 +618,102 @@ describe("PipelineEditorPage", () => {
     expect(body.steps[0].input).toEqual({
       target: "ssh",
       acme_account_credential_id: 7,
-      // 提交只含档案引用与部署输入,连接/权限字段由档案在执行时提供。
-      config: { credential_id: 10, fullchain_path: "/srv/ssl/site.fullchain.cer", key_path: "/srv/ssl/site.key" },
+      // 提交只含档案引用与部署输入,连接/权限字段由档案在执行时提供;
+      // 跳板字段渲染后 SchemaDefault 把 default null 写入 store,随保存提交。
+      config: {
+        credential_id: 10,
+        bastion_credential_id: null,
+        fullchain_path: "/srv/ssl/site.fullchain.cer",
+        key_path: "/srv/ssl/site.key",
+      },
     });
+  });
+
+  it("跳板机字段随目标主机档案联动：未选隐藏、选中出现、切换目标刷新选项", async () => {
+    posted.length = 0;
+    const queryClient = renderPage();
+    await waitForTasks(queryClient);
+    await waitFor(() => expect(queryClient.getQueryState(["credentials"])?.status).toBe("success"));
+    fireEvent.change(screen.getByLabelText("名称"), { target: { value: "p" } });
+
+    await addStep("任务 F");
+
+    const target = await screen.findByLabelText("target");
+    fireEvent.mouseDown(target);
+    fireEvent.click(await screen.findByTitle("SSH 远程主机"));
+
+    // 未选目标主机档案：跳板字段不渲染。
+    await screen.findByLabelText("SSH 主机档案");
+    expect(screen.queryByLabelText("跳板机")).toBeNull();
+
+    /**
+     * 打开某个 Select 的下拉面板：用 combobox 的 aria-owns 找到它自己的
+     * listbox，再取所属面板——关闭的下拉会留在 DOM（jsdom 里退场动画不结束），
+     * 不能用「可见面板」来猜归属。
+     */
+    const openPanel = async (trigger: HTMLElement) => {
+      fireEvent.mouseDown(trigger);
+      return await waitFor(() => {
+        const listId = trigger.getAttribute("aria-owns");
+        expect(listId).toBeTruthy();
+        const list = document.getElementById(listId!);
+        expect(list).toBeTruthy();
+        const panel = list!.closest<HTMLElement>(".ant-select-dropdown");
+        expect(panel).toBeTruthy();
+        return panel!;
+      });
+    };
+
+    /** 打开 Select 并在它自己的面板里点选 option（选项由虚拟列表异步渲染，需重试）。 */
+    const chooseOption = async (trigger: HTMLElement, title: string) => {
+      const panel = await openPanel(trigger);
+      const option = await waitFor(() => {
+        const found = panel.querySelector<HTMLElement>(
+          `.ant-select-item-option[title="${title}"]`,
+        );
+        expect(found).toBeTruthy();
+        return found!;
+      });
+      fireEvent.click(option);
+    };
+
+    // 选 web-01（id=10）后跳板字段出现。
+    const hostCredential = screen.getByLabelText("SSH 主机档案");
+    await chooseOption(hostCredential, "web-01（id=10）");
+    const bastion = await screen.findByLabelText("跳板机");
+    expect(bastion.getAttribute("role")).toBe("combobox");
+
+    // 跳板选项：排除当前目标档案 id=10，列出其他 SSH 档案 id=40/41。
+    const bastionPanel = await openPanel(bastion);
+    await waitFor(() => {
+      expect(
+        bastionPanel.querySelector('.ant-select-item-option[title="SSH 主机（id=40）"]'),
+      ).toBeTruthy();
+    });
+    expect(
+      bastionPanel.querySelector('.ant-select-item-option[title="web-01（id=10）"]'),
+    ).toBeNull();
+    fireEvent.click(
+      bastionPanel.querySelector('.ant-select-item-option[title="jump-01（id=41）"]')!,
+    );
+
+    // 切换目标档案到 id=40：跳板选项即时刷新——排除新的目标、纳入原目标。
+    await chooseOption(hostCredential, "SSH 主机（id=40）");
+    const refreshedPanel = await openPanel(bastion);
+    await waitFor(() => {
+      expect(
+        refreshedPanel.querySelector('.ant-select-item-option[title="web-01（id=10）"]'),
+      ).toBeTruthy();
+    });
+    expect(
+      refreshedPanel.querySelector('.ant-select-item-option[title="SSH 主机（id=40）"]'),
+    ).toBeNull();
+
+    const body = await save();
+    const config = body.steps[0].input.config as Record<string, unknown>;
+    // 已选跳板值保留：目标引用切换不影响跳板选择。
+    expect(config["credential_id"]).toBe(40);
+    expect(config["bastion_credential_id"]).toBe(41);
   });
 
   it("cert.deploy 的腾讯云 SSL 变体渲染备注与替换开关", async () => {

@@ -776,3 +776,66 @@ ORDER BY (archived_at IS NULL) DESC,  -- 活跃 (1) 排前，已归档 (0) 排�
 - `crates/acmecast-deploy/src/targets/webdav.rs: WebdavInput` — `fullchain_path`/`ca_path`/`key_path` 与 `cert_path` 别名
 - `crates/acmecast-deploy/src/targets/tencent.rs` — 2 文件上传（`CertificatePublicKey=chain_pem` + `CertificatePrivateKey=key_pem`），不拆 `ca.cer`
 - `docs/07-deploy-targets.md` — 各目标字段表与共享 3 文件语义
+
+## SSH 部署跳板机（bastion / jump host）
+
+当目标主机不在公网或被防火墙隔离、仅可通过一台跳板机访问时，`cert.deploy(ssh)` 支持引用另一份 `deploy.ssh` 凭据作为跳板机，经跳板机的 SSH `direct-tcpip` channel 转发到目标主机。跳板是流水线步骤层面的组合，`deploy.ssh` 凭据类型与 `SshHostFields` 字段不变。
+
+### 跳板凭据引用（`bastion_credential_id`）
+
+- `SshInput` 新增可选字段 `bastion_credential_id: Option<i64>`（`#[serde(default)]`），引用另一份 `deploy.ssh` 凭据作为跳板机。留空或缺失表示不使用跳板，部署直连目标主机。
+- `bastion_credential_id` 与顶层 `credential_id`（目标主机档案）SHALL NOT 引用同一份凭据；相同时部署 MUST 在执行前失败，错误指出「目标与跳板不可引用同一份凭据」并定位到 `bastion_credential_id` 字段。
+- 跳板凭据提供跳板机的连接信息（host/port/user）与认证材料；目标凭据提供目标主机的连接信息与认证材料，二者独立解析、独立认证。
+- 跳板凭据不存在时部署执行前 MUST 失败，报错包含被引用的凭据标识并定位到 `bastion_credential_id` 字段。
+
+### 独立解析与认证
+
+- 执行时系统分别解析跳板凭据与目标凭据，各自取出 `SshHostFields`（host/port/user/auth/proxy_url），互不影响。跳板凭据的认证材料在执行时从凭据系统解出，MUST NOT 出现在流水线配置或运行历史中。
+- 跳板路径与目标路径各自使用对应凭据的出网代理配置（`proxy_mode` / `proxy_url`）。跳板凭据配了代理时先经代理隧道连跳板机，再从跳板机转发到目标主机；跳板到目标的 `direct-tcpip` 转发段不走代理。
+- 跳板凭据字段校验复用 `SshHostFields::validate`，校验报错口径独立指向 `bastion_credential_id.*`，与目标档案的问题分开报。
+- `resolve_input` 签名新增 `bastion_profile: Option<&SshHostFields>` 参数，非空时构建 `BastionConfig`（host/port/user/auth/proxy_url）。
+
+### 连接流程
+
+配置了跳板机时 SSH 连接分两步：
+
+1. 先 SSH 连接跳板机并用跳板凭据的材料认证（如有代理则先建代理隧道）。
+2. 在跳板机会话上开 `direct-tcpip` channel（RFC 4254）转发到目标主机，channel 转为双向流后在其上建立目标 SSH 会话并用目标凭据的材料认证。
+3. 目标会话完成文件写入与重载命令执行。
+
+跳板 Handle 随 transport 一起存活（`_bastion_session: Option<Handle>`），防止跳板会话被提前 drop 导致转发流断开。直连路径 `_bastion_session` 为 `None`，行为不变。
+
+### 超时口径
+
+- 跳板连接 + 跳板认证：单个 timeout（与既有 `connect_ssh` + 认证口径一致）。
+- `direct-tcpip` channel 开 + `connect_stream` + 目标认证：单个 timeout。
+- 文件写入 / 命令执行：各自 timeout（既有逻辑不变）。
+- 叠加代理时，代理 TCP 连接阶段不计时（既有行为），计时从代理隧道 TCP 流建立完成后开始。
+- 超时错误 MUST 包含跳板机与目标主机信息（地址 + 端口）以助排障，跳板失败含「跳板机」前缀，目标失败含「目标主机」前缀。
+
+### 前端步骤表单联动
+
+- SSH 变体子表单新增 `bastion_credential_id` 字段（标签「跳板机」），排在 `credential_id`（SSH 主机档案）之后、路径字段之前，设 `x-end-row`（独占一行右侧空列）。
+- 该字段仅在 `credential_id` 已选择后显示（`x-visible-when: { Not: { Empty: "credential_id" } }`，`Condition` 新增 `Not` 变体取反）；未选目标时不渲染。
+- 跳板下拉选项列出所有 `deploy.ssh` 凭据，SHALL 排除当前已选为目标（`credential_id`）的那一项；目标切换时选项刷新（`Form.useWatch` 监听 `credential_id` 变化重算 `x-options`）。
+- `bastion_credential_id` 默认留空（不使用跳板），SHALL NOT 为必填。保存时留空则写入 null。
+- 连通性测试（`probe_host`）不涉及跳板——测的是单台主机档案。
+
+### 作用域与不变量
+
+- 不支持多级跳板（ProxyJump 链），仅单级。
+- 不在凭据中新增跳板字段——跳板是部署时的组合。
+- 不引入 known_hosts / 主机指纹校验。
+- 跳板功能不改变 3 文件布局、别名回填、原子写入与权限校验等既有逻辑。
+
+### 实现索引
+
+- `crates/acmecast-deploy/src/targets/ssh.rs: SshInput` — `bastion_credential_id: Option<i64>` 字段
+- `crates/acmecast-deploy/src/targets/ssh.rs: BastionConfig` — 跳板执行配置（host/port/user/auth/proxy_url）
+- `crates/acmecast-deploy/src/targets/ssh.rs: ResolvedSshConfig` — 新增 `bastion: Option<BastionConfig>`
+- `crates/acmecast-deploy/src/targets/ssh.rs: resolve_input` — 新增 `bastion_profile` 参数，构建 `BastionConfig`，校验报错指向 `bastion_credential_id.*`
+- `crates/acmecast-deploy/src/targets/ssh.rs: SshTarget::deploy` — 解析跳板凭据、校验不可与目标相同、传给 `resolve_input`
+- `crates/acmecast-deploy/src/targets/ssh.rs: RusshTransport` — `_bastion_session: Option<Handle>` 持有跳板会话
+- `crates/acmecast-deploy/src/targets/ssh.rs: RusshConnector::connect_via_bastion` — 两跳连接与认证，错误区分跳板/目标前缀
+- `frontend/src/pages/pipelines/PipelineEditorPage.tsx: SSH_FIELDS / SSH_LABELS / tightenSshSchema / withFieldOptions` — 跳板字段渲染、`x-visible-when`、`x-end-row`、`x-options` 动态排除目标
+- `frontend/src/components/SchemaForm.tsx: Condition` — `Not` 变体与 `conditionSatisfied` 取反

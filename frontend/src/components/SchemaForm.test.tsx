@@ -326,6 +326,35 @@ describe("SchemaForm", () => {
     expect(await submitAndGet(onFinish)).toEqual({ fields: { challenge: "http-01" } });
   });
 
+  it("x-visible-when Not+Empty：条件取反，目标非空才显示", async () => {
+    const onFinish = vi.fn();
+    render(
+      <Harness
+        onFinish={onFinish}
+        schema={objectSchema({
+          credential_id: { type: ["string", "null"] },
+          bastion_credential_id: {
+            type: ["string", "null"],
+            "x-visible-when": { Not: { Empty: "credential_id" } },
+          },
+        })}
+      />,
+    );
+
+    // 目标为空：取反条件不满足，跳板字段不渲染。
+    expect(screen.queryByLabelText("bastion_credential_id")).toBeNull();
+
+    // 填入目标：跳板字段出现。
+    fireEvent.change(screen.getByLabelText("credential_id"), { target: { value: "10" } });
+    expect(await screen.findByLabelText("bastion_credential_id")).toBeTruthy();
+
+    // 清空目标：跳板字段重新隐藏。
+    fireEvent.change(screen.getByLabelText("credential_id"), { target: { value: "" } });
+    await waitFor(() => {
+      expect(screen.queryByLabelText("bastion_credential_id")).toBeNull();
+    });
+  });
+
   it("boolean：Switch 的 checked 能提交", async () => {
     const onFinish = vi.fn();
     render(

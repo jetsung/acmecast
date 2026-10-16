@@ -8,8 +8,8 @@ pub mod webdav;
 
 pub use local::{LocalInput, LocalTarget};
 pub use ssh::{
-    ResolvedSshConfig, RusshConnector, SshAuth, SshAuthSource, SshConnector, SshInput, SshTarget,
-    SshTransport, probe_host,
+    BastionConfig, ResolvedSshConfig, RusshConnector, SshAuth, SshAuthSource, SshConnector,
+    SshInput, SshTarget, SshTransport, probe_host,
 };
 pub use s3::{S3Input, S3Target};
 pub use tencent::{TencentSslInput, TencentSslTarget};

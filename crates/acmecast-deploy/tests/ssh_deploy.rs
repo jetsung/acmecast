@@ -84,6 +84,8 @@ struct FakeConnector {
     /// 记录每次**凭据解析**的标识，用于断言「值确实来自凭据系统」；
     /// 档案自带材料不经过这里。
     used_credentials: Arc<Mutex<Vec<i64>>>,
+    /// 记录每次连接时配置里的跳板主机（`None` 表示直连）。
+    bastions: Arc<Mutex<Vec<Option<String>>>>,
 }
 
 #[async_trait]
@@ -131,6 +133,13 @@ impl SshConnector for FakeConnector {
             // 档案自带材料已经过凭据存储的解密与校验，这里只认它可用。
             SshAuthSource::PrivateKey(_) | SshAuthSource::Password(_) => {}
         }
+
+        // 记录跳板配置是否到达连接层：真实的转发在 russh 连接器里，
+        // 假连接器只负责证明「部署侧确实把跳板拆出来传下去了」。
+        self.bastions
+            .lock()
+            .expect("锁不应中毒")
+            .push(config.bastion.as_ref().map(|bastion| bastion.host.clone()));
 
         Ok(Box::new(FakeTransport {
             remote: Arc::clone(&self.remote),
@@ -258,6 +267,20 @@ fn target(remote: &Arc<Remote>, used: &Arc<Mutex<Vec<i64>>>) -> SshTarget {
     SshTarget::with_connector(Arc::new(FakeConnector {
         remote: Arc::clone(remote),
         used_credentials: Arc::clone(used),
+        bastions: Arc::new(Mutex::new(Vec::new())),
+    }))
+}
+
+/// 同上，但跳板记录由调用方持有，用于断言跳板配置到达连接层。
+fn target_recording_bastions(
+    remote: &Arc<Remote>,
+    used: &Arc<Mutex<Vec<i64>>>,
+    bastions: &Arc<Mutex<Vec<Option<String>>>>,
+) -> SshTarget {
+    SshTarget::with_connector(Arc::new(FakeConnector {
+        remote: Arc::clone(remote),
+        used_credentials: Arc::clone(used),
+        bastions: Arc::clone(bastions),
     }))
 }
 
@@ -524,6 +547,103 @@ async fn a_missing_profile_is_reported_with_its_id() {
     let text = err.to_string();
     assert!(text.contains("4242"), "应包含被引用的标识: {text}");
     assert!(remote.file("/srv/ssl/site.crt").is_none());
+}
+
+// ---- Scenario: 跳板凭据引用 ----
+
+/// 一份跳板机档案字段：连接信息与材料都在档案里，不带目标路径。
+fn bastion_fields() -> Value {
+    json!({
+        "host": "jump.example.com",
+        "port": 2200,
+        "user": "jumper",
+        "password": "jump-secret",
+    })
+}
+
+#[tokio::test]
+async fn a_bastion_credential_reaches_the_connector_as_a_jump_config() {
+    let (db, store, cipher, remote, used) = setup().await;
+    let target_id = seed_credential(db, &cipher, "deploy.ssh", "生产机", profile_fields()).await;
+    let bastion_id = seed_credential(db, &cipher, "deploy.ssh", "跳板机", bastion_fields()).await;
+    let bastions = Arc::new(Mutex::new(Vec::new()));
+
+    let outcome = target_recording_bastions(&remote, &used, &bastions)
+        .deploy(
+            &json!({
+                "credential_id": target_id,
+                "bastion_credential_id": bastion_id,
+                "cert_path": "/srv/ssl/site.crt",
+                "key_path": "/srv/ssl/site.key",
+            }),
+            &materials(),
+            &store,
+            DeployMode::Write,
+        )
+        .await
+        .expect("带跳板应部署成功");
+
+    // 两份档案各自解析：跳板配置以 jump 主机到达连接层，目标写入照常。
+    // 材料都来自档案本身，两跳都不走「按标识取认证凭据」的通道。
+    assert_eq!(
+        *bastions.lock().expect("锁不应中毒"),
+        vec![Some("jump.example.com".to_owned())],
+    );
+    assert_eq!(outcome.paths.len(), 2);
+    assert!(remote.file("/srv/ssl/site.crt").is_some());
+    assert!(used.lock().expect("锁不应中毒").is_empty());
+}
+
+#[tokio::test]
+async fn the_same_credential_cannot_serve_as_target_and_bastion() {
+    let (db, store, cipher, remote, used) = setup().await;
+    let id = seed_credential(db, &cipher, "deploy.ssh", "生产机", profile_fields()).await;
+
+    let err = target(&remote, &used)
+        .deploy(
+            &json!({
+                "credential_id": id,
+                "bastion_credential_id": id,
+                "cert_path": "/srv/ssl/site.crt",
+                "key_path": "/srv/ssl/site.key",
+            }),
+            &materials(),
+            &store,
+            DeployMode::Write,
+        )
+        .await
+        .expect_err("目标与跳板引用同一份凭据应被执行前拒绝");
+
+    let text = err.to_string();
+    assert!(text.contains("bastion_credential_id"), "应指向跳板字段: {text}");
+    assert!(text.contains("同一份凭据"), "应说明目标与跳板不可相同: {text}");
+    assert!(remote.file("/srv/ssl/site.crt").is_none(), "不该写入任何东西");
+}
+
+#[tokio::test]
+async fn a_missing_bastion_credential_is_reported_with_its_id() {
+    let (db, store, cipher, remote, used) = setup().await;
+    let id = seed_credential(db, &cipher, "deploy.ssh", "生产机", profile_fields()).await;
+
+    let err = target(&remote, &used)
+        .deploy(
+            &json!({
+                "credential_id": id,
+                "bastion_credential_id": 4242,
+                "cert_path": "/srv/ssl/site.crt",
+                "key_path": "/srv/ssl/site.key",
+            }),
+            &materials(),
+            &store,
+            DeployMode::Write,
+        )
+        .await
+        .expect_err("跳板凭据不存在应报错");
+
+    let text = err.to_string();
+    assert!(text.contains("bastion_credential_id"), "应指向跳板字段: {text}");
+    assert!(text.contains("4242"), "应包含被引用的标识: {text}");
+    assert!(remote.file("/srv/ssl/site.crt").is_none(), "不该写入任何东西");
 }
 
 // ---- Scenario: 远程写入后重载 ----

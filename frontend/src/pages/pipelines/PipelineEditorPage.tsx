@@ -516,9 +516,16 @@ function TaskSchemaFields({
     enabled: typeId !== "",
   });
 
+  // 当前选中的目标主机档案：跳板下拉按它动态排除，切换目标后立即重算。
+  const form = Form.useFormInstance();
+  const selectedHostCredentialId = Form.useWatch(
+    ["inputs", stepId, "config", "credential_id"],
+    form,
+  );
+
   const decorated = useMemo(
-    () => withFieldOptions(schema, fieldOptions, rawCredentials),
-    [schema, fieldOptions, rawCredentials],
+    () => withFieldOptions(schema, fieldOptions, rawCredentials, selectedHostCredentialId),
+    [schema, fieldOptions, rawCredentials, selectedHostCredentialId],
   );
 
   if (!schema) {
@@ -531,10 +538,12 @@ function TaskSchemaFields({
 /**
  * SSH 变体表单只保留的字段：`credential_id` 引用 SSH 主机档案——连接信息
  * （host/port/user）与认证材料在执行时从档案取，权限位用档案值或系统缺省；
- * 其余三个是部署输入，绑定「证书装到哪、怎么重载」，档案不携带。
+ * `bastion_credential_id` 可选地再引用一份档案作跳板；其余是部署输入，
+ * 绑定「证书装到哪、怎么重载」，档案不携带。
  */
 const SSH_FIELDS = [
   "credential_id",
+  "bastion_credential_id",
   "fullchain_path",
   "ca_path",
   "key_path",
@@ -558,16 +567,19 @@ const LOCAL_FIELD_ORDER = [
 
 /**
  * 保留字段的展示标签（`x-label`）：`credential_id` 不显示裸字段名，
- * 让「从凭据取连接信息」的语义在表单上可读。
+ * 让「从凭据取连接信息」的语义在表单上可读；跳板机与目标主机档案是
+ * 两份独立的凭据，标签必须能区分。
  */
 const SSH_LABELS: Record<string, string> = {
   credential_id: "SSH 主机档案",
+  bastion_credential_id: "跳板机",
 };
 
 /**
  * 收紧 SSH 变体 schema：只保留 `SSH_FIELDS` 声明的字段，并注入展示标签与
- * 行尾标记——「SSH 主机档案」与「重载命令」各独占一行（右侧空列占位），
- * fullchain/ca/key 路径成对同行。连接、认证、权限字段从表单剔除——后端
+ * 行尾标记——「SSH 主机档案」「跳板机」与「重载命令」各独占一行（右侧空列
+ * 占位），fullchain/ca/key 路径成对同行。跳板字段仅在目标主机档案已选后
+ * 渲染（`credential_id` 非空）。连接、认证、权限字段从表单剔除——后端
  * `SshInput` 仍接受它们（兼容旧数据），但界面上不再提供入口。
  */
 function tightenSshSchema(schema: Record<string, unknown>): Record<string, unknown> {
@@ -579,9 +591,17 @@ function tightenSshSchema(schema: Record<string, unknown>): Record<string, unkno
     if (!node) continue;
     const decorated: Record<string, unknown> = { ...node };
     if (SSH_LABELS[field]) decorated["x-label"] = SSH_LABELS[field];
-    // 主引用与重载命令独占一行，右侧空列占位，不让路径字段补位上来。
-    if (field === "credential_id" || field === "reload_command") {
+    // 主引用、跳板与重载命令独占一行，右侧空列占位，不让路径字段补位上来。
+    if (
+      field === "credential_id" ||
+      field === "bastion_credential_id" ||
+      field === "reload_command"
+    ) {
       decorated["x-end-row"] = true;
+    }
+    // 跳板是可选组合：选了目标主机档案后才出现；留空 = 不走跳板。
+    if (field === "bastion_credential_id") {
+      decorated["x-visible-when"] = { Not: { Empty: "credential_id" } };
     }
     next[field] = decorated;
   }
@@ -595,17 +615,38 @@ function tightenSshSchema(schema: Record<string, unknown>): Record<string, unkno
 const CERT_DEPLOY_FIELD_ORDER = ["target", "config"];
 
 /**
+ * 可作跳板的凭据选项：全部 `deploy.ssh` 档案，排除 `exceptId`（当前已选的
+ * 目标主机档案）——同一份凭据既当目标又当跳板会被后端直接拒绝，选项里
+ * 不给出这种组合。
+ */
+function sshHostOptions(
+  rawCredentials: components["schemas"]["CredentialResponse"][],
+  exceptId?: unknown,
+): FieldOption[] {
+  return rawCredentials
+    .filter((credential) => credential.type_id === SSH_HOST_TYPE_ID && credential.id !== exceptId)
+    .map((credential) => ({
+      value: credential.id,
+      label: credential.remark
+        ? `${credential.name}（id=${credential.id}）— ${credential.remark}`
+        : `${credential.name}（id=${credential.id}）`,
+    }));
+}
+
+/**
  * 给「应该选一个」的字段注入 `x-options`（SchemaForm 的客户端扩展），
  * 把裸输入换成下拉；值仍是原来的类型（凭据主键是数字，标识是字符串），后端不用改。
  *
  * `x-target-schemas` 的变体子字段（cert.deploy 的 config）同样按字段名注入：
  * 目标 schema 是后端动态给的，注入必须在这里递归进行。SSH 变体额外注入
- * `x-field-order`，保证 host/port 等成对字段相邻，不依赖后端 schema 键序。
+ * `x-field-order`，保证 host/port 等成对字段相邻，不依赖后端 schema 键序；
+ * 跳板下拉还要按 `selectedHostCredentialId`（当前目标档案）动态排除。
  */
 function withFieldOptions(
   schema: unknown,
   options: FieldOptions,
   rawCredentials: components["schemas"]["CredentialResponse"][],
+  selectedHostCredentialId?: unknown,
 ): unknown {
   const root = schema as
     | { properties?: Record<string, Record<string, unknown>> }
@@ -645,6 +686,26 @@ function withFieldOptions(
           : targetId === "local"
             ? { ...injected, "x-field-order": LOCAL_FIELD_ORDER }
             : injected;
+      // SSH 变体的跳板下拉：候选是全部 SSH 主机档案，排除当前目标档案
+      // （同份凭据既当目标又当跳板会被后端拒绝）；目标切换后重算。
+      if (targetId === "ssh") {
+        const sshProps = tightened.properties as
+          | Record<string, Record<string, unknown>>
+          | undefined;
+        const bastionNode = sshProps?.["bastion_credential_id"];
+        if (sshProps && bastionNode) {
+          tightened = {
+            ...tightened,
+            properties: {
+              ...sshProps,
+              bastion_credential_id: {
+                ...bastionNode,
+                "x-options": sshHostOptions(rawCredentials, selectedHostCredentialId),
+              },
+            },
+          };
+        }
+      }
       // tencent-ssl 变体的 credential_id 后端注入了 x-credential-types 白名单
       // （仅 tencent）：该变体的下拉需按白名单过滤，否则会用 FIELD_OPTIONS 的
       // credential_id（仅 SSH）给 tencent-ssl 注入错误选项。

@@ -77,11 +77,18 @@ impl SshAuth {
 /// 两种写法都合法：**引用主机档案**（顶层 `credential_id`，其余字段可选地
 /// 覆盖档案默认值）或**直填**（主机、用户、认证一样不缺）。合并与校验集中在
 /// [`resolve_input`]——这里的字段全部可选，不等于运行时也宽松。
+///
+/// 可选地再引用另一份 `deploy.ssh` 凭据作为跳板机（`bastion_credential_id`）：
+/// 目标连接经跳板机转发；留空表示不使用跳板，直连目标主机。
 #[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
 pub struct SshInput {
     /// SSH 主机档案凭据的标识；其连接信息、认证材料与远端默认值成为底座。
     #[serde(default)]
     pub credential_id: Option<i64>,
+    /// 跳板机凭据的标识（另一份 `deploy.ssh` 主机档案）：目标连接经它转发。
+    /// 留空表示不使用跳板。与 `credential_id` 不可引用同一份凭据。
+    #[serde(default)]
+    pub bastion_credential_id: Option<i64>,
     /// 目标主机。
     #[serde(default)]
     pub host: Option<String>,
@@ -111,6 +118,24 @@ pub struct SshInput {
     pub reload_command: Option<String>,
 }
 
+/// 跳板机的执行配置：来源是一份独立的 `deploy.ssh` 主机档案。
+///
+/// 与 [`ResolvedSshConfig`] 的差异：跳板只负责「怎么连上去」，不带远端
+/// 路径、权限与重载命令——那些属于目标主机。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BastionConfig {
+    /// 跳板机主机。
+    pub host: String,
+    /// 跳板机 SSH 端口。
+    pub port: u16,
+    /// 跳板机登录用户。
+    pub user: String,
+    /// 跳板机认证材料的来源。
+    pub auth: SshAuthSource,
+    /// 到跳板机的出网代理（`socks5://` 或 `http(s)://`）；`None` 直连。
+    pub proxy_url: Option<String>,
+}
+
 /// 合并档案与输入后得到的完整执行配置。
 ///
 /// 与 [`SshInput`] 的区别：这里没有 `Option`，也没有「档案」概念——
@@ -138,6 +163,8 @@ pub struct ResolvedSshConfig {
     /// 生效的出网代理（`socks5://` 或 `http(s)://`）；`None` 直连。
     /// 仅档案 `proxy_mode=custom` 自带 URL 时生效（deploy 链路无全局来源）。
     pub proxy_url: Option<String>,
+    /// 跳板机配置；`None` 表示不走跳板，直连目标主机。
+    pub bastion: Option<BastionConfig>,
 }
 
 /// 把部署输入与可选的主机档案合并成完整的执行配置。
@@ -148,11 +175,16 @@ pub struct ResolvedSshConfig {
 /// 回退到档案值比照单全收更合理。合并后仍有必填项缺失时报错指出缺哪个
 /// 字段，绝不带着半个配置去连主机。
 ///
+/// `bastion_profile` 是跳板机档案（同构的 [`SshHostFields`]）：非空时按同一
+/// 口径构建 [`BastionConfig`]（连接、材料、代理全来自它），校验报错指向
+/// `bastion_credential_id.*`，与目标档案的问题分开报。
+///
 /// # Errors
 /// 档案字段不合法、必填项缺失或认证来源缺失时返回 [`Error::InvalidInput`]。
 pub fn resolve_input(
     input: &SshInput,
     profile: Option<&SshHostFields>,
+    bastion_profile: Option<&SshHostFields>,
     global_proxy_url: Option<&str>,
 ) -> Result<ResolvedSshConfig> {
     // 档案自身先过一遍校验：字段形态坏掉要指向档案里的字段，
@@ -165,6 +197,39 @@ pub fn resolve_input(
             other => Error::Core(other),
         })?;
     }
+
+    // 跳板档案同样先校验，但报错口径独立指向 `bastion_credential_id.*`——
+    // 两层主机各自排查，不把跳板的问题算到目标头上。
+    let bastion = match bastion_profile {
+        Some(bastion_profile) => {
+            bastion_profile.validate().map_err(|error| match error {
+                acmecast_core::Error::Validation { field, reason } => {
+                    Error::invalid_input(format!("bastion_credential_id.{field}"), reason)
+                }
+                other => Error::Core(other),
+            })?;
+            Some(BastionConfig {
+                host: bastion_profile.host.clone(),
+                port: bastion_profile.port,
+                user: bastion_profile.user.clone(),
+                // validate 之后材料必然恰好其一；仍把字段名重映射到跳板引用，
+                // 万一字段形态坏掉也不会挂到目标的 `credential_id` 上。
+                auth: bastion_profile.auth_material().map_err(|error| match error {
+                    Error::InvalidInput { reason, .. } => {
+                        Error::invalid_input("bastion_credential_id", reason)
+                    }
+                    other => other,
+                })?,
+                // 代理只作用于「本机 → 跳板机」这一段；跳板到目标的
+                // direct-tcpip 转发是 SSH 隧道内部的事，不再走代理。
+                proxy_url: acmecast_core::effective_proxy_url(
+                    &serde_json::to_value(bastion_profile).expect("SshHostFields 必可序列化"),
+                    global_proxy_url,
+                ),
+            })
+        }
+        None => None,
+    };
 
     let missing =
         |field: &str| Error::invalid_input(field, "未提供（输入与引用的主机档案中都没有）");
@@ -234,6 +299,7 @@ pub fn resolve_input(
                 global_proxy_url,
             )
         }),
+        bastion,
     })
 }
 
@@ -334,10 +400,29 @@ impl DeploymentTarget for SshTarget {
 
         // 引用了主机档案就先取出并解密：档案里的材料与默认值从这里来。
         let profile = match input.credential_id {
-            Some(id) => Some(resolve_profile(id, credentials).await?),
+            Some(id) => Some(resolve_profile(id, "credential_id", credentials).await?),
             None => None,
         };
-        let config = resolve_input(&input, profile.as_ref(), self._global_proxy_url.as_deref())?;
+        // 跳板是第二份独立档案。同一份凭据既当目标又当跳板没有意义——
+        // 相当于让跳板机把自己转发给自己；在连接前拦下，别让人等超时。
+        let bastion_profile = match input.bastion_credential_id {
+            Some(id) => {
+                if Some(id) == input.credential_id {
+                    return Err(Error::invalid_input(
+                        "bastion_credential_id",
+                        format!("目标与跳板不可引用同一份凭据 `{id}`"),
+                    ));
+                }
+                Some(resolve_profile(id, "bastion_credential_id", credentials).await?)
+            }
+            None => None,
+        };
+        let config = resolve_input(
+            &input,
+            profile.as_ref(),
+            bastion_profile.as_ref(),
+            self._global_proxy_url.as_deref(),
+        )?;
 
         let transport = self.connector.connect(&config, credentials).await?;
 
@@ -385,16 +470,20 @@ impl DeploymentTarget for SshTarget {
 }
 
 /// 取出输入引用的 SSH 主机档案。
+///
+/// `field` 是输入里引用它的字段名（`credential_id` 或
+/// `bastion_credential_id`）：报错带上它，一眼能分辨问题在目标还是跳板。
 async fn resolve_profile(
     id: i64,
+    field: &str,
     credentials: &CredentialStore<'_>,
 ) -> Result<SshHostFields> {
     let resolved = credentials.resolve(id).await.map_err(|e| {
-        Error::Remote(format!("取 SSH 主机档案 `{id}` 失败: {e}"))
+        Error::Remote(format!("取 SSH 主机档案 `{id}`（{field}）失败: {e}"))
     })?;
     resolved.as_fields().map_err(|e| {
         Error::invalid_input(
-            "credential_id",
+            field,
             format!("SSH 主机档案 `{id}` 的字段不合法: {e}"),
         )
     })
@@ -621,6 +710,137 @@ async fn http_connect(
     Ok(stream)
 }
 
+impl RusshConnector {
+    /// 经跳板机的两跳连接与认证。
+    ///
+    /// 第一跳连跳板机并用其材料认证；随后在跳板机上开一个 RFC 4254
+    /// direct-tcpip channel（相当于让跳板机发起一条到目标主机的 TCP 连接），
+    /// channel 转成的双向流直接喂给 `connect_stream` 建目标会话，再用目标
+    /// 材料认证。跳板 Handle 随 transport 一起存活——它是转发流的地基。
+    ///
+    /// 超时：每段「连接 + 认证」各一次计时。跳板配了出网代理时，代理隧道
+    /// 阶段有它自己的超时，隧道建立后才开始跳板段的计时（既有代理口径）。
+    async fn connect_via_bastion(
+        &self,
+        settings: Arc<russh::client::Config>,
+        config: &ResolvedSshConfig,
+        bastion: &BastionConfig,
+        credentials: &CredentialStore<'_>,
+    ) -> Result<Box<dyn SshTransport>> {
+        // 第一跳：代理隧道（如有）先建——它自带超时，不占「连接 + 认证」
+        // 的这次计时。
+        let tunnel = match bastion.proxy_url.as_deref() {
+            Some(proxy_url) => Some(
+                open_proxy_stream(proxy_url, &bastion.host, bastion.port, self.network_timeout)
+                    .await
+                    .map_err(|e| {
+                        Error::Remote(format!(
+                            "经代理连接跳板机 {}:{} 失败（目标主机 {}:{}）: {e}",
+                            bastion.host, bastion.port, config.host, config.port
+                        ))
+                    })?,
+            ),
+            None => None,
+        };
+        let bastion_session = tokio::time::timeout(self.network_timeout, async {
+            let mut session = match tunnel {
+                Some(stream) => {
+                    russh::client::connect_stream(Arc::clone(&settings), stream, ClientHandler).await
+                }
+                None => {
+                    russh::client::connect(
+                        Arc::clone(&settings),
+                        (bastion.host.as_str(), bastion.port),
+                        ClientHandler,
+                    )
+                    .await
+                }
+            }
+            .map_err(|e| {
+                Error::Remote(format!(
+                    "跳板机 {}:{} 连接失败: {e}",
+                    bastion.host, bastion.port
+                ))
+            })?;
+            authenticate(&mut session, &bastion.auth, &bastion.user, credentials)
+                .await
+                .map_err(|e| {
+                    Error::Remote(format!(
+                        "跳板机 {}@{}:{} 认证失败: {e}",
+                        bastion.user, bastion.host, bastion.port
+                    ))
+                })?;
+            Ok::<_, Error>(session)
+        })
+        .await
+        .map_err(|_| {
+            Error::Remote(format!(
+                "连接或认证跳板机 {}:{} 超时（{} 秒无响应，目标主机 {}:{}）",
+                bastion.host,
+                bastion.port,
+                self.network_timeout.as_secs(),
+                config.host,
+                config.port
+            ))
+        })??;
+
+        // 第二跳：开转发通道，再在通道流上完成目标会话的握手与认证。
+        let target_session = tokio::time::timeout(self.network_timeout, async {
+            let channel = bastion_session
+                .channel_open_direct_tcpip(
+                    config.host.clone(),
+                    u32::from(config.port),
+                    // 源地址只是协议要求的占位：转发请求来自跳板机进程。
+                    "127.0.0.1",
+                    0,
+                )
+                .await
+                .map_err(|e| {
+                    Error::Remote(format!(
+                        "经跳板机 {}:{} 转发到目标主机 {}:{} 失败: {e}",
+                        bastion.host, bastion.port, config.host, config.port
+                    ))
+                })?;
+            let stream = channel.into_stream();
+            let mut session =
+                russh::client::connect_stream(Arc::clone(&settings), stream, ClientHandler)
+                    .await
+                    .map_err(|e| {
+                        Error::Remote(format!(
+                            "目标主机 {}:{} SSH 握手失败（经跳板机 {}:{}）: {e}",
+                            config.host, config.port, bastion.host, bastion.port
+                        ))
+                    })?;
+            authenticate(&mut session, &config.auth, &config.user, credentials)
+                .await
+                .map_err(|e| {
+                    Error::Remote(format!(
+                        "目标主机 {}@{}:{} 认证失败（经跳板机）: {e}",
+                        config.user, config.host, config.port
+                    ))
+                })?;
+            Ok::<_, Error>(session)
+        })
+        .await
+        .map_err(|_| {
+            Error::Remote(format!(
+                "经跳板机 {}:{} 到目标主机 {}:{} 的连接或认证超时（{} 秒无响应）",
+                bastion.host,
+                bastion.port,
+                config.host,
+                config.port,
+                self.network_timeout.as_secs()
+            ))
+        })??;
+
+        Ok(Box::new(RusshTransport {
+            session: target_session,
+            _bastion_session: Some(bastion_session),
+            network_timeout: self.network_timeout,
+        }))
+    }
+}
+
 #[async_trait]
 impl SshConnector for RusshConnector {
     async fn connect(
@@ -629,6 +849,12 @@ impl SshConnector for RusshConnector {
         credentials: &CredentialStore<'_>,
     ) -> Result<Box<dyn SshTransport>> {
         let settings = Arc::new(russh::client::Config::default());
+        if let Some(bastion) = &config.bastion {
+            return self
+                .connect_via_bastion(settings, config, bastion, credentials)
+                .await;
+        }
+
         let session = connect_ssh(settings, &config.host, config.port, config.proxy_url.as_deref(), self.network_timeout)
             .await
             .map_err(|e| {
@@ -636,39 +862,53 @@ impl SshConnector for RusshConnector {
             })?;
         let mut session = session;
 
-        // 三种材料来源各读各的：凭据缺哪个字段就报哪个，比一句「认证失败」有用。
         // 认证也受网络超时约束（与 connect_ssh 同口径，超时展示目标主机）。
-        let auth_fut = async {
-        match &config.auth {
-            SshAuthSource::Credential(auth) => {
-                let credential = resolve_auth_credential(auth, credentials).await?;
-                match auth {
-                    SshAuth::PrivateKey { .. } => {
-                        let pem = credential_field(&credential, "private_key")?;
-                        authenticate_with_key(&mut session, &config.user, &pem).await?;
-                    }
-                    SshAuth::Password { .. } => {
-                        let password = credential_field(&credential, "password")?;
-                        authenticate_with_password(&mut session, &config.user, &password).await?;
-                    }
+        tokio::time::timeout(
+            self.network_timeout,
+            authenticate(&mut session, &config.auth, &config.user, credentials),
+        )
+        .await
+        .map_err(|_| Error::Remote(format!("认证 {}@{}:{} 超时（{} 秒无响应）", config.user, config.host, config.port, self.network_timeout.as_secs())))?
+        .map_err(|e| Error::Remote(format!("认证 {}@{}:{} 失败: {e}", config.user, config.host, config.port)))?;
+
+        Ok(Box::new(RusshTransport {
+            session,
+            _bastion_session: None,
+            network_timeout: self.network_timeout,
+        }))
+    }
+}
+
+/// 在会话上完成认证：三种材料来源各读各的，凭据缺哪个字段就报哪个，
+/// 比一句「认证失败」有用。直连与跳板两跳共用这一份。
+async fn authenticate(
+    session: &mut russh::client::Handle<ClientHandler>,
+    auth: &SshAuthSource,
+    user: &str,
+    credentials: &CredentialStore<'_>,
+) -> Result<()> {
+    match auth {
+        SshAuthSource::Credential(auth) => {
+            let credential = resolve_auth_credential(auth, credentials).await?;
+            match auth {
+                SshAuth::PrivateKey { .. } => {
+                    let pem = credential_field(&credential, "private_key")?;
+                    authenticate_with_key(session, user, &pem).await?;
+                }
+                SshAuth::Password { .. } => {
+                    let password = credential_field(&credential, "password")?;
+                    authenticate_with_password(session, user, &password).await?;
                 }
             }
-            SshAuthSource::PrivateKey(pem) => {
-                authenticate_with_key(&mut session, &config.user, pem).await?;
-            }
-            SshAuthSource::Password(password) => {
-                authenticate_with_password(&mut session, &config.user, password).await?;
-            }
         }
-        Ok::<(), Error>(())
-        };
-        tokio::time::timeout(self.network_timeout, auth_fut)
-            .await
-            .map_err(|_| Error::Remote(format!("认证 {}@{}:{} 超时（{} 秒无响应）", config.user, config.host, config.port, self.network_timeout.as_secs())))?
-            .map_err(|e| Error::Remote(format!("认证 {}@{}:{} 失败: {e}", config.user, config.host, config.port)))?;
-
-        Ok(Box::new(RusshTransport { session, network_timeout: self.network_timeout }))
+        SshAuthSource::PrivateKey(pem) => {
+            authenticate_with_key(session, user, pem).await?;
+        }
+        SshAuthSource::Password(password) => {
+            authenticate_with_password(session, user, password).await?;
+        }
     }
+    Ok(())
 }
 
 /// 取出直填认证要用的凭据。
@@ -823,6 +1063,9 @@ impl russh::client::Handler for ClientHandler {
 /// 已认证的 russh 会话。
 struct RusshTransport {
     session: russh::client::Handle<ClientHandler>,
+    /// 跳板会话：目标会话经它的 direct-tcpip channel 转发而来。
+    /// 直连时为 `None`；必须持有——drop 会连带关掉转发流。
+    _bastion_session: Option<russh::client::Handle<ClientHandler>>,
     network_timeout: std::time::Duration,
 }
 
@@ -1054,7 +1297,7 @@ mod tests {
             proxy_url: Some("socks5://10.0.0.1:1080".to_owned()),
             ..test_profile()
         };
-        let resolved = resolve_input(&input, Some(&profile), None).expect("应合并成功");
+        let resolved = resolve_input(&input, Some(&profile), None, None).expect("应合并成功");
         assert_eq!(
             resolved.proxy_url.as_deref(),
             Some("socks5://10.0.0.1:1080"),
@@ -1068,7 +1311,7 @@ mod tests {
                 proxy_url: Some("socks5://10.0.0.1:1080".to_owned()),
                 ..test_profile()
             };
-            let resolved = resolve_input(&input, Some(&profile), None).expect("应合并成功");
+            let resolved = resolve_input(&input, Some(&profile), None, None).expect("应合并成功");
             assert_eq!(resolved.proxy_url, None, "{mode} 应直连");
         }
     }
@@ -1120,6 +1363,11 @@ mod tests {
         assert!(!properties.contains_key("password"), "口令不该成为输入字段");
         assert!(properties.contains_key("auth"), "认证方式应在");
         assert!(properties.contains_key("credential_id"), "档案引用应在");
+        assert!(
+            properties.contains_key("bastion_credential_id"),
+            "跳板凭据引用应在（只带标识，材料不进输入）: {:?}",
+            properties.keys().collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -1154,7 +1402,7 @@ mod tests {
             "key_path": "/srv/ssl/site.key",
         }))
         .expect("应能解析");
-        let config = resolve_input(&input, Some(&profile()), None).expect("档案应补齐连接与认证");
+        let config = resolve_input(&input, Some(&profile()), None, None).expect("档案应补齐连接与认证");
 
         assert_eq!(config.host, "web-1.example.com");
         assert_eq!(config.user, "deploy");
@@ -1178,7 +1426,7 @@ mod tests {
             "credential_id": 1,
         }))
         .expect("应能解析");
-        let err = resolve_input(&input, Some(&profile()), None).expect_err("档案不含路径应报错");
+        let err = resolve_input(&input, Some(&profile()), None, None).expect_err("档案不含路径应报错");
 
         let text = err.to_string();
         assert!(text.contains("cert_path"), "应指出缺证书路径: {text}");
@@ -1199,7 +1447,7 @@ mod tests {
             "reload_command": "systemctl reload caddy",
         }))
         .expect("应能解析");
-        let config = resolve_input(&input, Some(&profile()), None).expect("合并应成功");
+        let config = resolve_input(&input, Some(&profile()), None, None).expect("合并应成功");
 
         assert_eq!(config.port, 2223, "输入显式端口应覆盖档案");
         assert_eq!(config.cert_path, "/override/site.crt");
@@ -1219,7 +1467,7 @@ mod tests {
             "key_path": "/k.pem",
         }))
         .expect("应能解析");
-        let config = resolve_input(&input, None, None).expect("直填应完整");
+        let config = resolve_input(&input, None, None, None).expect("直填应完整");
 
         assert_eq!(config.host, "10.0.0.9");
         assert_eq!(config.port, 22);
@@ -1232,7 +1480,7 @@ mod tests {
     #[test]
     fn missing_fields_are_named_after_the_merge() {
         let input: SshInput = serde_json::from_value(serde_json::json!({})).expect("应能解析");
-        let err = resolve_input(&input, None, None).expect_err("既无档案也无直填应报错");
+        let err = resolve_input(&input, None, None, None).expect_err("既无档案也无直填应报错");
         assert!(
             err.to_string().contains("host"),
             "应指出缺主机: {err}",
@@ -1246,7 +1494,7 @@ mod tests {
             "key_path": "/k.pem",
         }))
         .expect("应能解析");
-        let err = resolve_input(&input, None, None).expect_err("缺认证应报错");
+        let err = resolve_input(&input, None, None, None).expect_err("缺认证应报错");
         assert!(err.to_string().contains("auth"), "{err}");
 
         let input: SshInput = serde_json::from_value(serde_json::json!({
@@ -1255,7 +1503,7 @@ mod tests {
         .expect("应能解析");
         let mut broken = profile();
         broken.private_key = None;
-        let err = resolve_input(&input, Some(&broken), None).expect_err("档案缺认证材料应报错");
+        let err = resolve_input(&input, Some(&broken), None, None).expect_err("档案缺认证材料应报错");
         assert!(err.to_string().contains("credential_id.private_key"), "{err}");
     }
 
@@ -1267,9 +1515,87 @@ mod tests {
         .expect("应能解析");
         let mut broken = profile();
         broken.private_key = None;
-        let err = resolve_input(&input, Some(&broken), None).expect_err("档案缺认证材料应报错");
+        let err = resolve_input(&input, Some(&broken), None, None).expect_err("档案缺认证材料应报错");
         let text = err.to_string();
         assert!(text.contains("credential_id.private_key"), "{err}");
+    }
+
+    #[test]
+    fn a_bastion_profile_resolves_into_a_jump_config() {
+        let input: SshInput = serde_json::from_value(serde_json::json!({
+            "credential_id": 1,
+            "bastion_credential_id": 2,
+            "cert_path": "/srv/ssl/site.crt",
+            "key_path": "/srv/ssl/site.key",
+        }))
+        .expect("应能解析");
+        let bastion = SshHostFields {
+            host: "jump.example.com".to_owned(),
+            port: 2200,
+            user: "jumper".to_owned(),
+            private_key: None,
+            password: Some("jump-secret".to_owned()),
+            cert_mode: None,
+            key_mode: None,
+            proxy_mode: Some("custom".to_owned()),
+            proxy_url: Some("socks5://127.0.0.1:7890".to_owned()),
+        };
+
+        let config =
+            resolve_input(&input, Some(&profile()), Some(&bastion), None).expect("跳板应合并成功");
+
+        let resolved = config.bastion.as_ref().expect("应带跳板配置");
+        assert_eq!(resolved.host, "jump.example.com");
+        assert_eq!(resolved.port, 2200);
+        assert_eq!(resolved.user, "jumper");
+        assert_eq!(
+            resolved.proxy_url.as_deref(),
+            Some("socks5://127.0.0.1:7890"),
+            "跳板代理独立来自跳板档案"
+        );
+        match &resolved.auth {
+            SshAuthSource::Password(password) => assert_eq!(password, "jump-secret"),
+            other => panic!("期望跳板口令，实际 {other:?}"),
+        }
+
+        // 目标一侧不受跳板影响：仍按目标档案解析。
+        assert_eq!(config.host, "web-1.example.com");
+        match config.auth {
+            SshAuthSource::PrivateKey(key) => assert_eq!(key, "PRIVATE-KEY"),
+            other => panic!("期望目标私钥，实际 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn no_bastion_profile_leaves_the_jump_unset() {
+        let input: SshInput = serde_json::from_value(serde_json::json!({
+            "credential_id": 1,
+            "cert_path": "/srv/ssl/site.crt",
+            "key_path": "/srv/ssl/site.key",
+        }))
+        .expect("应能解析");
+        let config = resolve_input(&input, Some(&profile()), None, None).expect("应合并成功");
+        assert!(config.bastion.is_none(), "未配跳板时应直连");
+    }
+
+    #[test]
+    fn a_broken_bastion_profile_is_reported_against_the_bastion_field() {
+        let input: SshInput = serde_json::from_value(serde_json::json!({
+            "credential_id": 1,
+            "bastion_credential_id": 2,
+            "cert_path": "/srv/ssl/site.crt",
+            "key_path": "/srv/ssl/site.key",
+        }))
+        .expect("应能解析");
+        let mut broken = profile();
+        broken.private_key = None; // 跳板缺认证材料
+        let err = resolve_input(&input, Some(&profile()), Some(&broken), None)
+            .expect_err("跳板缺材料应报错");
+        let text = err.to_string();
+        assert!(
+            text.contains("bastion_credential_id.private_key"),
+            "跳板的问题该指向跳板字段: {err}"
+        );
     }
 
     /// 一份指向本地保留端口、带标记材料的档案，供探测测试复用。

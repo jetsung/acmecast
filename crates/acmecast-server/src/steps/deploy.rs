@@ -352,6 +352,11 @@ mod tests {
         // SSH 的示例是档案式写法：一个 `credential_id` 打底，路径可选。
         assert!(targets["ssh"]["example"]["credential_id"].is_i64());
         assert_eq!(targets["ssh"]["schema"]["type"], "object");
+        // 跳板是可选的第二份档案引用：只带标识（可空），材料不进 schema。
+        assert_eq!(
+            targets["ssh"]["schema"]["properties"]["bastion_credential_id"]["type"],
+            serde_json::json!(["integer", "null"])
+        );
         // 腾讯云 SSL 变体：凭据引用、备注、重复开关、替换开关、资源类型与地域，schema 走同一注入通道。
         // display_name 显式声明 2 材料（fullchain+key）语义，与文件类目标 3 文件区分。
         assert_eq!(

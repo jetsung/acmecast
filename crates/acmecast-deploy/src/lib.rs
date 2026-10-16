@@ -22,7 +22,7 @@ pub use state::{
 pub use target::{CertMaterials, DeployMode, DeployOutcome, DeploymentTarget, parse_input};
 pub use targets::{S3Target, WebdavTarget,
     
-    LocalInput, LocalTarget, ResolvedSshConfig, RusshConnector, SshAuth, SshAuthSource,
-    SshConnector, SshInput, SshTarget, SshTransport, TencentSslInput, TencentSslTarget,
-    probe_host,
+    BastionConfig, LocalInput, LocalTarget, ResolvedSshConfig, RusshConnector, SshAuth,
+    SshAuthSource, SshConnector, SshInput, SshTarget, SshTransport, TencentSslInput,
+    TencentSslTarget, probe_host,
 };

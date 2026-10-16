@@ -130,6 +130,8 @@ interface Condition {
   Empty?: string;
   /** 与：全部子条件命中时命中。 */
   And?: Condition[];
+  /** 非：子条件不命中时命中（如「目标已选」= `Not(Empty(credential_id))`）。 */
+  Not?: Condition;
   /**
    * 数组字段的长度下限（后端 schema 注入，如 cert.apply 的 dns_zone）：
    * `domains` 填了至少 `count` 个域名时命中——其余形态（非数组、字段缺失）
@@ -254,6 +256,9 @@ function conditionSatisfied(condition: Condition | undefined, values: Record<str
   if (condition.And) {
     return condition.And.every((c) => conditionSatisfied(c, values));
   }
+  if (condition.Not) {
+    return !conditionSatisfied(condition.Not, values);
+  }
   const equals = condition.Equals;
   if (equals) {
     const actual = values[equals.field];
@@ -303,10 +308,23 @@ function SchemaDefault({
   return null;
 }
 
+/** 显隐条件是否带了已知判定键；纯未知形态按「不隐藏」处理（宁多显示不误隐藏）。 */
+function isKnownCondition(condition: Condition): boolean {
+  return (
+    condition.Equals !== undefined ||
+    condition.In !== undefined ||
+    condition.Empty !== undefined ||
+    condition.And !== undefined ||
+    condition.MinItems !== undefined ||
+    condition.Not !== undefined
+  );
+}
+
 /** 读取一个字段的显隐标记；解析失败按「不隐藏」处理（宁多显示不误隐藏）。 */
 function visibleWhen(node: SchemaObject, values: Record<string, unknown>): boolean {
-  if (!node["x-visible-when"]?.Equals) return true;
-  return conditionSatisfied(node["x-visible-when"], values);
+  const condition = node["x-visible-when"];
+  if (!condition || !isKnownCondition(condition)) return true;
+  return conditionSatisfied(condition, values);
 }
 
 export function SchemaForm({ schema, form, namePrefix = [], disabled }: SchemaFormProps) {
@@ -616,6 +634,11 @@ function ObjectFieldGroup({
     <Row gutter={[16, 0]}>
       {entries.map(([name, rawNode]) => {
         const child = deref(rawNode, root) as SchemaObject;
+        // 显隐联动：条件不满足时整个子字段不渲染；联动值取父对象取值——
+        // 子表单里的同级字段（如 SSH 变体的 credential_id）就是条件里的 field。
+        if (!visibleWhen(child, parentValues ?? {})) {
+          return null;
+        }
         const childPath = [...parentPath, name];
         const childType = Array.isArray(child.type) ? child.type[0] : child.type;
         const rules: Rule[] = [];

@@ -49,6 +49,7 @@
 | 字段 | 来源 | 说明 |
 |---|---|---|
 | `credential_id` | 输入 | 引用 `deploy.ssh` 类型主机档案 |
+| `bastion_credential_id` | **仅输入** | 可选，引用另一份 `deploy.ssh` 主机档案作跳板机：目标连接经跳板转发；留空为直连，不可与 `credential_id` 引用同一份凭据 |
 | `host` / `port` / `user` | 输入或档案 | 连接参数 |
 | `auth` | 输入或档案 | `{"kind": "private_key", "credential_id": N}` 或 `{"kind": "password", "credential_id": N}` |
 | `fullchain_path` / `key_path` | **仅输入** | 远端完整链与私钥路径（档案不含路径——一份档案可服务多条流水线；存量 `cert_path` 视为 `fullchain_path` 别名） |
@@ -62,6 +63,10 @@
   `cat`**（不进命令行参数，避免出现在进程列表）；脚本 `set -e` +
   `trap ... EXIT` 保证失败清理。
 - 私钥支持 OpenSSH 与 PEM 格式。
+- **经跳板连接（可选）**：配置 `bastion_credential_id` 后，先连跳板并认证（认证材料与
+  host/port/proxy 均取自跳板档案），再开 `direct-tcpip` 通道转发到目标；目标认证
+  仍用 `credential_id` 档案。同份凭据既当目标又当跳板会被拒绝；失败信息区分
+  「跳板机 …」与「目标主机 …」并带各自地址。
 - ⚠️ **主机密钥未接入 known_hosts**：接受任何主机密钥，每次连接记 warn 并
   打出 SHA-256 指纹。有中间人风险的环境请配合网络层隔离使用。
 - 凭据的「连通性测试」对 `deploy.ssh` 类型是真实探测（10 秒超时）。
