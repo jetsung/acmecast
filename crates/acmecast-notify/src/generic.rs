@@ -23,7 +23,7 @@ use crate::sign::SignKind;
 pub const ALLOWED_METHODS: [&str; 3] = ["POST", "PUT", "PATCH"];
 
 /// 请求体模板可用的占位符。
-pub const TEMPLATE_VARIABLES: [&str; 10] = [
+pub const TEMPLATE_VARIABLES: [&str; 9] = [
     "event",
     "title",
     "pipeline",
@@ -31,7 +31,6 @@ pub const TEMPLATE_VARIABLES: [&str; 10] = [
     "trigger_label",
     "occurred_at",
     "domains",
-    "target",
     "timestamp",
     "sign",
 ];
@@ -118,10 +117,6 @@ fn template_vars(
         "domains".to_owned(),
         json_escaped(&message.domains.join(", ")),
     );
-    vars.insert(
-        "target".to_owned(),
-        json_escaped(message.target.as_deref().unwrap_or_default()),
-    );
     let (timestamp, sign) = signature.map_or_else(
         || (chrono::Utc::now().timestamp(), String::new()),
         |signature| (signature.timestamp(), signature.value().to_owned()),
@@ -178,10 +173,10 @@ pub fn template_placeholders(template: &str) -> Vec<String> {
     names
 }
 
-/// 校验渠道的扩展字段（方法、请求头、签名与请求体模板）。
+/// 校验渠道的扩展字段（方法、请求头与请求体模板）。
 ///
-/// 供服务端在解析 `[[notifications]]` 时调用：配置错误在启动日志里
-/// 说清楚，不带进投递路径。
+/// 供通知凭据的 `validate` 在保存时调用：配置错误在保存时就说清楚，
+/// 不带进投递路径。
 ///
 /// # Errors
 ///
@@ -237,7 +232,7 @@ pub fn validate_channel(channel: &ChannelConfig) -> std::result::Result<(), Stri
     Ok(())
 }
 
-/// 校验用的样例消息：覆盖全部可选字段，暴露模板对缺省素材的处理。
+/// 校验用的样例消息：覆盖可选字段，暴露模板对缺省素材的处理。
 fn sample_message() -> NotificationMessage {
     NotificationMessage {
         event: crate::EVENT_CERT_APPLY.to_owned(),
@@ -246,7 +241,6 @@ fn sample_message() -> NotificationMessage {
         trigger: "manual".to_owned(),
         occurred_at: chrono::Utc::now(),
         domains: vec!["a.example.com".to_owned()],
-        target: Some("SSH web.example.com".to_owned()),
         failure: None,
         summary: None,
     }
@@ -267,7 +261,6 @@ mod tests {
             trigger: "cron".to_owned(),
             occurred_at: chrono::Utc.with_ymd_and_hms(2026, 10, 4, 12, 0, 0).unwrap(),
             domains: vec!["a.example.com".to_owned()],
-            target: None,
             failure: None,
             summary: None,
         }
@@ -285,6 +278,7 @@ mod tests {
             method: "POST".to_owned(),
             headers: BTreeMap::new(),
             body_template: template.map(str::to_owned),
+            proxy_url: None,
             smtp: None,
         }
     }

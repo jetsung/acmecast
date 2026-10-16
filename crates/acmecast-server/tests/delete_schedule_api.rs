@@ -31,6 +31,7 @@ async fn seeded_app() -> axum::Router {
                 name: "scheduled".to_owned(),
                 enabled: true,
                 description: None,
+                notification_channels: Vec::new(),
                 steps: vec![PipelineStepInput {
                     type_id: "test.placeholder".to_owned(),
                     input: serde_json::json!({}),
@@ -98,9 +99,7 @@ async fn deleting_existing_schedule_returns_ok_and_cleans_trigger_logs() {
     // 调度列表不再包含该流水线。
     let list_response = send(
         &app,
-        Request::get("/api/schedules")
-            .body(Body::empty())
-            .unwrap(),
+        Request::get("/api/schedules").body(Body::empty()).unwrap(),
     )
     .await;
     assert_eq!(list_response.status(), StatusCode::OK);
@@ -127,8 +126,7 @@ async fn deleting_existing_schedule_returns_ok_and_cleans_trigger_logs() {
         .as_array()
         .expect("items 应为数组");
     assert!(
-        logs.iter()
-            .all(|l| l["pipeline_id"].as_i64() != Some(1)),
+        logs.iter().all(|l| l["pipeline_id"].as_i64() != Some(1)),
         "已删除调度的触发记录不应出现在列表中"
     );
 }

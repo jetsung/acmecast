@@ -46,8 +46,6 @@ use crate::response::ApiResponse;
         delete_credential,
         test_credential,
         list_credential_types,
-        test_notifications,
-        list_notification_channels,
         list_tasks,
         task_schema,
         list_histories,
@@ -91,10 +89,6 @@ use crate::response::ApiResponse;
             crate::handlers::HistoryResponse,
             crate::handlers::HistoryLogResponse,
             crate::handlers::ConnectivityResponse,
-            crate::handlers::NotificationTestRequest,
-            crate::handlers::NotificationTestResponse,
-            crate::handlers::NotificationTestResult,
-            crate::handlers::NotificationChannelResponse,
             PageResponse<crate::handlers::PipelineSummaryResponse>,
             PageResponse<crate::handlers::CertificateResponse>,
             PageResponse<crate::handlers::CredentialResponse>,
@@ -173,7 +167,6 @@ fn list_credentials() {}
 #[utoipa::path(post, path = "/api/credentials", request_body = crate::handlers::CredentialRequest, responses((status = 200, body = ApiResponse<crate::handlers::CredentialResponse>), (status = 400, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
 fn create_credential() {}
 
-
 #[utoipa::path(get, path = "/api/credentials/{id}", params(("id" = i64, Path, description = "凭据标识")), responses((status = 200, body = ApiResponse<crate::handlers::CredentialDetailResponse>, description = "凭据详情（含解密字段值，供编辑回填）"), (status = 404, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
 fn get_credential() {}
 
@@ -188,14 +181,6 @@ fn test_credential() {}
 
 #[utoipa::path(get, path = "/api/credential-types", responses((status = 200, description = "凭据类型与字段 Schema")), security(("bearerAuth" = [])))]
 fn list_credential_types() {}
-
-/// 通知渠道测试的文档占位函数。
-#[utoipa::path(post, path = "/api/notifications/test", request_body = Option<crate::handlers::NotificationTestRequest>, responses((status = 200, body = ApiResponse<crate::handlers::NotificationTestResponse>, description = "逐渠道投递结果"), (status = 404, body = crate::response::ApiErrorBody), (status = 409, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
-fn test_notifications() {}
-
-/// 通知渠道列表的文档占位函数。
-#[utoipa::path(get, path = "/api/notifications/channels", responses((status = 200, body = ApiResponse<Vec<crate::handlers::NotificationChannelResponse>>, description = "全部已声明渠道（含未启用；不含敏感字段）")), security(("bearerAuth" = [])))]
-fn list_notification_channels() {}
 
 #[utoipa::path(get, path = "/api/tasks", responses((status = 200, description = "任务类型列表")), security(("bearerAuth" = [])))]
 fn list_tasks() {}
@@ -213,7 +198,6 @@ fn list_schedules() {}
 /// 新建调度的文档占位函数。
 #[utoipa::path(post, path = "/api/schedules", request_body = crate::handlers::ScheduleCreateRequest, responses((status = 200, body = ApiResponse<crate::handlers::ScheduleResponse>, description = "调度配置"), (status = 400, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
 fn create_schedule() {}
-
 
 /// 删除调度的文档占位函数。
 #[utoipa::path(delete, path = "/api/schedules/{pipeline_id}", params(("pipeline_id" = i64, Path, description = "调度绑定的流水线标识")), responses((status = 200, body = ApiResponse<serde_json::Value>, description = "删除成功"), (status = 404, body = crate::response::ApiErrorBody, description = "not_found：调度不存在")), security(("bearerAuth" = [])))]
@@ -254,6 +238,9 @@ mod tests {
         // 直接断言文档 JSON 里含该字段（请求与响应两侧）。
         let doc = ApiDoc::openapi();
         let json = serde_json::to_string(&doc).expect("OpenAPI 文档应可序列化");
-        assert!(json.contains("capabilities"), "OpenAPI 应含 capabilities 字段");
+        assert!(
+            json.contains("capabilities"),
+            "OpenAPI 应含 capabilities 字段"
+        );
     }
 }

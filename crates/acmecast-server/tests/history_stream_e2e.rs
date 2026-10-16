@@ -88,6 +88,7 @@ async fn auth_and_accept_header_validation() {
                 name: "鉴权测试流水线".to_owned(),
                 description: None,
                 enabled: true,
+                notification_channels: Vec::new(),
                 steps: vec![PipelineStepInput {
                     type_id: "cert.apply".to_owned(),
                     input: serde_json::json!({}),
@@ -206,8 +207,14 @@ async fn terminal_history_reconnect_returns_terminal_event_and_closes() {
         .await
         .unwrap();
     let text = String::from_utf8(bytes.to_vec()).unwrap();
-    assert!(text.contains("event: succeeded"), "应包含 succeeded 事件: {text}");
-    assert!(text.contains("\"status\":\"success\""), "载荷包含 success: {text}");
+    assert!(
+        text.contains("event: succeeded"),
+        "应包含 succeeded 事件: {text}"
+    );
+    assert!(
+        text.contains("\"status\":\"success\""),
+        "载荷包含 success: {text}"
+    );
 }
 
 #[tokio::test]
@@ -292,7 +299,10 @@ async fn running_history_stream_and_replay_with_last_event_id() {
         .await
         .unwrap();
     let text = String::from_utf8(bytes.to_vec()).unwrap();
-    assert!(!text.contains("event: started"), "不应包含 id <= 2 的 started");
+    assert!(
+        !text.contains("event: started"),
+        "不应包含 id <= 2 的 started"
+    );
     assert!(!text.contains("event 2 log"), "不应包含 id=2 的 log");
     assert!(text.contains("event 3 log"), "应包含 id=3 的 log");
     assert!(text.contains("event: succeeded"), "应包含 succeeded");

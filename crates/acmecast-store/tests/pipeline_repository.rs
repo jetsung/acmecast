@@ -30,6 +30,7 @@ fn pipeline(name: &str, steps: Vec<PipelineStepInput>) -> PipelineInput {
         name: name.to_owned(),
         description: None,
         enabled: true,
+        notification_channels: Vec::new(),
         steps,
     }
 }
@@ -421,6 +422,34 @@ async fn pipeline_with_one_apply_one_store_and_two_deploys_is_allowed() {
         .expect("合规组合应成功");
 
     assert_eq!(repo.find(id).await.unwrap().unwrap().steps.len(), 4);
+}
+
+// ---- 通知渠道 ----
+
+#[tokio::test]
+async fn notification_channels_round_trip_and_replace_on_update() {
+    let db = setup().await;
+    let repo = PipelineRepository::new(&db);
+
+    let mut input = pipeline("带通知", vec![step("a", &[])]);
+    input.notification_channels = vec![1, 3];
+    let id = repo.save(None, input).await.unwrap();
+
+    let found = repo.find(id).await.unwrap().unwrap();
+    assert_eq!(found.notification_channels, vec![1, 3], "ID 列表应原样往返");
+
+    // 列表概要同样带该字段，列表页无需再查详情。
+    let summaries = repo.list().await.unwrap();
+    assert_eq!(summaries[0].notification_channels, vec![1, 3]);
+
+    // 更新语义与步骤集合一致：以本次输入为准整体替换。
+    let mut updated = pipeline("带通知", vec![step("a", &[])]);
+    updated.notification_channels = vec![7];
+    repo.save(Some(id), updated).await.unwrap();
+    assert_eq!(
+        repo.find(id).await.unwrap().unwrap().notification_channels,
+        vec![7]
+    );
 }
 
 // ---- 列表 ----

@@ -509,11 +509,7 @@ async fn zone_derivation_failure_fails_before_any_dns_call() {
     credential_registry
         .register(MemoryDnsType)
         .expect("内存 DNS 类型不应重复");
-    let credentials = CredentialStore::new(
-        &db,
-        Arc::new(credential_registry),
-        Arc::clone(&cipher),
-    );
+    let credentials = CredentialStore::new(&db, Arc::new(credential_registry), Arc::clone(&cipher));
 
     let account_id = an_acme_account_credential(&db, &cipher, &pebble.directory_url).await;
     let dns_credential_id = a_memory_dns_credential(&db, &cipher).await;
@@ -605,11 +601,7 @@ async fn a_cname_delegated_zone_writes_and_cleans_the_write_name() {
     credential_registry
         .register(MemoryDnsType)
         .expect("内存 DNS 类型不应重复");
-    let credentials = CredentialStore::new(
-        &db,
-        Arc::new(credential_registry),
-        Arc::clone(&cipher),
-    );
+    let credentials = CredentialStore::new(&db, Arc::new(credential_registry), Arc::clone(&cipher));
 
     let account_id = an_acme_account_credential(&db, &cipher, &pebble.directory_url).await;
     let dns_credential_id = a_memory_dns_credential(&db, &cipher).await;
@@ -771,11 +763,22 @@ async fn applies_with_ecdsa_p384_key_algorithm() {
         outcome.failure
     );
 
-    let key_pem: String = serde_json::from_value(outcome.artifacts.get("key_pem").cloned().expect("应有 key_pem 产物"))
-        .expect("key_pem 应是字符串");
-    let cert_pem: String =
-        serde_json::from_value(outcome.artifacts.get("cert_pem").cloned().expect("应有 cert_pem 产物"))
-            .expect("cert_pem 应是字符串");
+    let key_pem: String = serde_json::from_value(
+        outcome
+            .artifacts
+            .get("key_pem")
+            .cloned()
+            .expect("应有 key_pem 产物"),
+    )
+    .expect("key_pem 应是字符串");
+    let cert_pem: String = serde_json::from_value(
+        outcome
+            .artifacts
+            .get("cert_pem")
+            .cloned()
+            .expect("应有 cert_pem 产物"),
+    )
+    .expect("cert_pem 应是字符串");
     assert_eq!(
         acmecast_cert::detect_algorithm(&key_pem).expect("识别私钥算法"),
         acmecast_cert::KeyAlgorithm::EcdsaP384,
@@ -856,6 +859,7 @@ async fn renewal_scan_triggers_a_single_reissue() {
                 name: "续期 e2e.acmecast.test".to_owned(),
                 description: None,
                 enabled: true,
+                notification_channels: Vec::new(),
                 steps: vec![
                     acmecast_store::repository::PipelineStepInput {
                         type_id: "cert.apply".to_owned(),
@@ -931,7 +935,7 @@ async fn renewal_scan_triggers_a_single_reissue() {
                 enabled: true,
                 catch_up: false,
                 renewal_domains: Some(vec!["e2e.acmecast.test".to_owned()]),
-                    renewal_threshold_days: None,
+                renewal_threshold_days: None,
             },
         )
         .await
@@ -969,7 +973,11 @@ async fn renewal_scan_triggers_a_single_reissue() {
         .await
         .expect("应能查询证书");
     assert_eq!(records.items.len(), 2, "重签应归档旧记录并新增一条新记录");
-    let active: Vec<_> = records.items.iter().filter(|row| row.archived_at.is_none()).collect();
+    let active: Vec<_> = records
+        .items
+        .iter()
+        .filter(|row| row.archived_at.is_none())
+        .collect();
     assert_eq!(active.len(), 1, "活跃记录应恰好一条");
     assert_ne!(
         active[0].fingerprint, first_fingerprint,
@@ -1056,6 +1064,7 @@ async fn three_consecutive_reissues_archive_each_previous_active_certificate() {
                 name: "重签归档 e2e.acmecast.test".to_owned(),
                 description: None,
                 enabled: true,
+                notification_channels: Vec::new(),
                 steps: vec![
                     acmecast_store::repository::PipelineStepInput {
                         type_id: "cert.apply".to_owned(),
@@ -1110,7 +1119,7 @@ async fn three_consecutive_reissues_archive_each_previous_active_certificate() {
                 enabled: true,
                 catch_up: false,
                 renewal_domains: Some(vec!["e2e.acmecast.test".to_owned()]),
-                    renewal_threshold_days: None,
+                renewal_threshold_days: None,
             },
         )
         .await
@@ -1152,7 +1161,11 @@ async fn three_consecutive_reissues_archive_each_previous_active_certificate() {
             .expect("应能查询证书");
 
         // 活跃记录恰好一条，且指纹不等于上一张活跃指纹（确实是新签的）。
-        let active: Vec<_> = records.items.iter().filter(|row| row.archived_at.is_none()).collect();
+        let active: Vec<_> = records
+            .items
+            .iter()
+            .filter(|row| row.archived_at.is_none())
+            .collect();
         assert_eq!(active.len(), 1, "第 {round} 轮后活跃记录应恰好一条");
         let new_fingerprint = active[0].fingerprint.clone();
         assert_ne!(
@@ -1161,7 +1174,10 @@ async fn three_consecutive_reissues_archive_each_previous_active_certificate() {
         );
 
         // 上一张活跃证书应出现在 certs/archived/<旧指纹>/ 下。
-        let archived_dir = data_dir.path().join("certs/archived").join(&previous_active_fingerprint);
+        let archived_dir = data_dir
+            .path()
+            .join("certs/archived")
+            .join(&previous_active_fingerprint);
         assert!(
             archived_dir.is_dir(),
             "第 {round} 轮应把上一张活跃证书 {previous_active_fingerprint} 归档到 archived/"
@@ -1173,7 +1189,8 @@ async fn three_consecutive_reissues_archive_each_previous_active_certificate() {
             .filter_map(Result::ok)
             .count();
         assert_eq!(
-            archived_count, round as usize + 0,
+            archived_count,
+            round as usize + 0,
             "第 {round} 轮后 archived/ 下应有 {round} 个指纹目录"
         );
 
@@ -1305,6 +1322,7 @@ async fn revocation_updates_ca_and_local_state() {
                 name: "吊销 e2e.acmecast.test".to_owned(),
                 description: None,
                 enabled: true,
+                notification_channels: Vec::new(),
                 steps: vec![
                     acmecast_store::repository::PipelineStepInput {
                         type_id: "cert.apply".to_owned(),

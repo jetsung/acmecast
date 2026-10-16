@@ -123,218 +123,47 @@ ACMECAST_PROXY_URL=socks5://127.0.0.1:7890
   偏好，后续轮次直接用代理传输层，不再每轮重复直连探测。未配置代理时不做回退，
   直连失败按既有熔断策略计次。
 
-`proxy_mode=direct` 的凭据在任何链路都保持直连；通知渠道不接代理；部署执行
-链路（`cert.deploy`）没有全局代理来源，其中 `inherit` 凭据等同直连。
+`proxy_mode=direct` 的凭据在任何链路都保持直连；通知投递按渠道凭据的
+代理模式出网（`direct` 直连 / `inherit` 继承全局代理 / `custom` 走凭据自带 URL）。
 
-## webhook 通知
+## 通知
 
-config.toml 支持 `[[notifications]]` 段声明通知渠道：`cert.apply`
-（证书申请成功）、`cert.deploy`（部署成功）与 `pipeline.failed`
-（流水线因某步骤失败中止）后向 IM 群机器人推送文本消息，或以邮件方式
-送达指定收件人。内置四种适配器：
+通知由「通知凭据 + 流水线通知字段」驱动，`config.toml` 不再声明渠道：
 
-| provider | 平台 | 消息格式 | 签名/认证 |
-|---|---|---|---|
-| `feishu` | 飞书（Lark）自定义机器人 | text | 配置 `secret` 时启用（`timestamp` + `sign`） |
-| `dingtalk` | 钉钉自定义机器人 | text | 配置 `secret` 时启用官方加签（URL 查询参数） |
-| `generic` | 通用 webhook（统一请求方案） | 可自定义模板 | 可指定 `sign`（feishu / dingtalk） |
-| `email` | SMTP 邮件 | 纯文本邮件 | `username` + `password` 认证（可选） |
+1. 在凭据页创建通知类凭据（`notify.feishu` / `notify.dingtalk` /
+   `notify.generic` / `notify.email`，四类的字段、消息格式与签名方式见
+   [凭据体系](04-credentials.md)）；
+2. 在流水线编辑页的「通知」多选里选中要接收简讯的凭据（可多选，存的是
+   凭据 ID 列表）。
 
-```toml
-[[notifications]]
-name = "ops-feishu"          # 渠道名，须唯一（日志与测试端点用它定位）
-provider = "feishu"          # feishu / dingtalk / generic
-url = "https://open.feishu.cn/open-apis/bot/v2/hook/xxxxxxxx"
-secret = "..."               # 可选；启用机器人签名校验时填写
-events = ["cert.apply", "cert.deploy", "pipeline.failed"]   # 订阅事件，不能为空
-enabled = true               # 必须显式开启；缺省 false（不投递）
-```
+运行结束（成功或失败）时，每个选中渠道各收到一条简讯。原
+`[[notifications]]` 声明、`events` 订阅过滤、`enabled` 开关与
+`notify.summary` 步骤都已移除：渠道是否接收通知完全由流水线的「通知」
+字段决定，未选中任何渠道即不通知。
 
-### generic 统一请求方案
+### 运行结束简讯
 
-`generic` 渠道把 URL、签名方式、请求方法、请求头与请求体模板全部交给
-配置；飞书与钉钉两种签名算法写死在代码中，只需用 `sign` 指定方式：
+| 运行结果 | 标题 | 内容 |
+|---|---|---|
+| 成功 | 流水线运行成功 | 流水线名、触发来源、时间、域名列表、总耗时、各步骤状态（成功 / 跳过） |
+| 失败 | 流水线运行失败 | 上述字段 + 失败步骤（`type_id` 与第几步）与失败原因；步骤状态含失败 / 未执行 / 跳过 |
 
-```toml
-[[notifications]]
-name = "ops-custom"
-provider = "generic"
-url = "https://ops.example.com/api/events"
-secret = "sk-xxx"            # 签名密钥或 API-KEY
-sign = "feishu"              # feishu / dingtalk，缺省不签名
-method = "POST"              # POST / PUT / PATCH，缺省 POST
-headers = { "X-API-Key" = "sk-xxx" }   # 额外静态请求头，可选
-body_template = '{"text": "{{title}}｜{{pipeline}}｜{{domains}}"}'
-events = ["cert.apply", "cert.deploy"]
-```
+- 域名列表取流水线里 `cert.apply` 步骤输入的 `domains`；
+- 每次运行结束至多投递一条简讯；「通知」为空即不投递；
+- 渠道逐个从凭据解密解析：凭据被删、字段非法或解密失败时该渠道跳过并记
+  `warn`，其余渠道照常投递。
 
-- **签名方式**（算法内置，配置只选方式）：`feishu` 以
-  `"{秒级时间戳}\n{secret}"` 为密钥对空串计算 HmacSHA256，签名与时间戳
-  自动合并进请求体顶层字段；`dingtalk` 以 `secret` 为密钥对
-  `"{毫秒级时间戳}\n{secret}"` 计算，经 URL 编码后自动追加到地址查询
-  参数。两种方案都要求 `secret` 必填。
+### 投递行为
 
-ntfy.sh 推送示例（ntfy 的 JSON 发布格式走根路径，`topic` 写在请求体里；
-若直接 POST 到 `/<topic>`，JSON 会被当成纯文本消息）：
+- 异步旁路：事件受理即返回，投递在后台进行；单次请求 10 秒超时，失败按
+  1s / 2s 退避最多 3 次尝试；投递成败不影响流水线运行结果。
+- 通知投递按渠道凭据的代理模式出网（`direct` 直连 / `inherit` 继承全局代理 / `custom` 走凭据自带 URL）：webhook 三类经 `reqwest::Proxy`，邮件经 SOCKS5/HTTP-CONNECT 隧道后完成 SMTP 会话；代理不可达时错误含代理主机。
+- IM 平台有频控（如钉钉约 20 条/分钟），大量流水线同时运行时可能触发限流。
 
-```toml
-[[notifications]]
-name = "ntfy"
-provider = "generic"
-url = "https://ntfy.sh/"      # 自建实例换成你的地址
-method = "POST"
-body_template = '{"topic": "acmecast-换成随机私有主题", "title": "{{title}}", "message": "{{pipeline}}（{{trigger_label}}）\n域名：{{domains}}", "tags": ["white_check_mark"], "priority": 4}'
-# headers = { Authorization = "Bearer tk_xxx" }   # 实例开启访问控制时填写
-events = ["cert.apply", "cert.deploy"]
-```
+### 连通性测试
 
-- 公共实例上 topic 名就是订阅凭据（知道即可订阅与推送），请用随机
-  主题名；部署事件想把目标也带进消息，在 `message` 里追加 `\n{{target}}`。
-- ntfy JSON 格式的字段类型比 HTTP header 方式严格：`priority` 必须是
-  `1`–`5` 的整数（1=min、3=default、4=high、5=urgent/max），写 `high`
-  之类的字符串会被整体拒绝（报 40024 invalid JSON）。
-- **请求体模板**：占位符 `{{var}}` 填充事件素材并做 JSON 转义（值放在
-  引号内使用，如 `"{{domains}}"`）。可用变量：`event`、`title`、
-  `pipeline`、`trigger`（原始标识）、`trigger_label`（中文）、
-  `occurred_at`、`domains`（逗号连接）、`target`、`timestamp`（签名方
-  案对应精度）、`sign`。模板里显式写了 `{{sign}}` 时签名以模板为准，
-  不再自动合并。
-- **缺省消息**：未配置模板时按签名方式选格式——`sign = feishu` /
-  `dingtalk` 分别用对应平台的 text 格式（与专用适配器一致）；无签名时
-  发统一事件负载 JSON（`event`/`title`/`pipeline`/`trigger`/
-  `occurred_at`/`domains`/`target`），保持向后兼容。
-- **专用适配器的兼容性**：`sign`、`method`、`headers`、`body_template`
-  仅 `generic` 渠道可用——`feishu` / `dingtalk` 渠道配置这些字段会被
-  视为非法条目跳过（它们的请求形态写死）。把渠道从专用适配器迁到
-  `generic` 时，复制原有字段并加上 `sign` 即可，消息格式不变。
-- **事件词汇**：`cert.apply`（证书申请成功）、`cert.deploy`（部署成功）、
-  `pipeline.failed`（流水线因某步骤失败而中止）。申请消息含域名列表；
-  部署消息含部署目标（SSH 主机 / 本地路径）与域名；失败消息含失败步骤的
-  `type_id` 与失败原因。只关心失败时可写 `events = ["pipeline.failed"]`。
-- **平台接入**：在飞书/钉钉群里添加「自定义机器人」（webhook），钉钉建议
-  选择「加签」安全设置并把密钥填入 `secret`；飞书同理可开启签名校验。
-- **校验语义**：非法条目（`provider` 不在内置之列、`events` 含未知事件、
-  `url` 非 http(s)、重名、`sign`/`method`/`headers`/`body_template`
-  不合法或专用适配器误配扩展字段、渠道类型专属字段交叉配置）启动时
-  跳过并 `warn`，其余渠道照常加载；渠道缺省不启用——`enabled` 缺省
-  `false`，未显式写 `enabled = true` 的渠道保留配置但不投递（启动日志
-  会逐个提示未启用渠道）。从旧版本升级时注意：未写 `enabled` 的既有
-  渠道升级后将停止投递，需显式开启。
-- **投递行为**：事件触发后异步投递，10 秒超时，失败按 1s/2s 退避最多
-  3 次尝试；投递成败不影响流水线运行结果。IM 平台有频控（如钉钉
-  约 20 条/分钟），大量流水线同时运行时可能触发限流。
-- **连通性测试**：配置后重启，调用测试端点验证（带鉴权）：
-
-  ```bash
-  curl -X POST http://127.0.0.1:8080/api/notifications/test \
-    -H "Authorization: Bearer $TOKEN" \
-    -H 'Content-Type: application/json' \
-    -d '{"name": "ops-feishu"}'      # 缺省 body 测试全部启用渠道
-  ```
-
-  响应逐渠道给出 `ok` 与失败原因。
-
-### email 邮件渠道
-
-`email` 渠道把事件以纯文本邮件送达每个收件人（主题含事件标题），连接
-参数与 webhook 渠道完全无关：
-
-```toml
-[[notifications]]
-name = "ops-email"
-provider = "email"
-host = "smtp.exmail.qq.com"      # SMTP 服务器，不含端口与协议前缀
-port = 465                       # 可选；缺省随 tls 模式（见下）
-tls = "implicit"                 # implicit（缺省）/ starttls / none
-from = "no-reply@example.com"
-to = ["ops@example.com"]         # 收件人列表，可为多个
-username = "no-reply@example.com"  # 与 password 同时配置才启用认证
-password = "xxx"
-enabled = true                   # 缺省 false，须显式开启
-events = ["cert.apply", "cert.deploy"]
-```
-
-- **TLS 模式**：`implicit` 连接建立即 TLS（典型端口 465）；`starttls`
-  先明文连接、服务器宣告后升级 TLS（典型端口 587）；`none` 不加密
-  （仅限内网调试）。`port` 缺省随模式取 465 / 587 / 25。
-- **认证可选**：`username` 与 `password` 同时配置才执行 SMTP 认证，都
-  缺省时匿名连接（内网 relay 场景）。
-- **收件人**：`to` 至少一项且必填，一次 SMTP 会话送达全部收件人。
-- **字段互斥**：`email` 渠道不支持 `url` / `sign` / `method` / `headers`
-  / `body_template`；webhook 渠道不支持 `host` / `port` / `from` / `to`
-  / `username` / `password` / `tls`——交叉配置按非法条目跳过并 `warn`。
-
-### 多渠道配置示例
-
-一份脱敏自实际运行配置的四渠道示例，覆盖四种接入形态：飞书签名、
-钉钉加签、ntfy 自建实例走 generic 统一请求方案、SMTP 邮件：
-
-```toml
-[[notifications]]
-name = "lark"
-provider = "feishu"   # Lark（open.larksuite.com）与飞书同协议，适配器通用
-url = "https://open.larksuite.com/open-apis/bot/v2/hook/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-secret = "机器人签名密钥"    # 机器人开启「签名校验」时填写；不填即无签名
-enabled = true                 # 缺省 false，须显式开启
-events = ["cert.apply", "cert.deploy"]
-
-[[notifications]]
-name = "dingtalk"
-provider = "dingtalk"
-url = "https://oapi.dingtalk.com/robot/send?access_token=xxxxxxxx"
-secret = "SECxxxxxxxxxxxxxxxx"   # 钉钉「加签」安全设置给出的密钥（SEC 开头）
-enabled = true                 # 缺省 false，须显式开启
-events = ["cert.apply", "cert.deploy"]
-
-[[notifications]]
-name = "ntfy"
-provider = "generic"
-url = "https://ntfy.example.com/"   # ntfy 自建实例（根路径，topic 在请求体里）
-method = "POST"
-body_template = '{"topic": "acme", "title": "{{title}}", "message": "{{pipeline}}（{{trigger_label}}）\n域名：{{domains}}", "tags": ["white_check_mark"], "priority": 4}'
-headers = { "Authorization" = "Bearer tk_xxxx" }   # 实例开启访问控制时填写
-enabled = true                 # 缺省 false，须显式开启
-events = ["cert.apply", "cert.deploy"]
-
-[[notifications]]
-name = "email-ops"
-provider = "email"
-host = "smtp.exmail.qq.com"
-tls = "implicit"                     # 465 隐式 TLS；587 端口改用 starttls
-from = "no-reply@example.com"
-to = ["ops@example.com", "backup@example.com"]
-username = "no-reply@example.com"
-password = "****"
-enabled = true                 # 缺省 false，须显式开启
-events = ["cert.apply", "cert.deploy"]
-```
-
-四者的接入凭据各不相同：`feishu` 把签名放进请求体、`dingtalk` 放进
-地址查询参数、`ntfy` 凭 `Authorization` 请求头鉴权（generic 渠道不配
-`sign` 即不签名）、`email` 以 `username` / `password` 做 SMTP 认证。
-
-`secret` 明文存于 config.toml（数据目录权限受限 `0700`），请勿把该文件
-提交进版本控制；泄露后果限于向对应群机器人发送消息，风险远低于 DNS /
-SSH 凭据。
-
-### 运行简讯步骤（notify.summary）
-
-除事件订阅推送外，可以在流水线末尾加一个 `notify.summary` 步骤，把本次
-运行的结果（总耗时与各步骤状态）**直接投递**给步骤选中的渠道——不经过
-渠道 `events` 订阅过滤，适合「每次运行结束都在群里播报一声」。步骤输入的
-`channels` 为渠道名列表（`[[notifications]]` 的 `name`），缺省空数组：
-
-```json
-{ "channels": ["lark", "ntfy"] }
-```
-
-- 渠道名必须已在 `[[notifications]]` 中声明：写错会让该步骤失败并中止后续
-  步骤（错误定位到 `channels` 字段）。
-- 选中的渠道未启用（`enabled = false`）时跳过并记警告；全部选中渠道均未
-  启用、或 `channels` 为空时不投递（步骤仍成功）。
-- 简讯消息（标题「运行简讯」）含流水线名称、触发来源、时间、域名列表、
-  总耗时与各步骤状态（成功 / 跳过 / 未执行）；投递失败只记警告，不影响
-  运行结果。
+凭据页每条通知凭据都可点「测试」向渠道发一条测试消息（等价于调用
+`POST /api/credentials/{id}/test`），响应给出 `ok` 或失败原因。
 
 ## 最小可用配置示例
 

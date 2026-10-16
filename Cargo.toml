@@ -126,6 +126,11 @@ lettre = { version = "0.11", default-features = false, features = [
     "webpki-roots",
 ] }
 
+# 邮件通知渠道的 SMTP 代理隧道。
+tokio-socks = "0.5"
+tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "tls12", "ring"] }
+webpki-roots = "1"
+
 # 测试：进程内 HTTP mock（webhook 渠道适配器的请求断言）。
 wiremock = "0.6"
 

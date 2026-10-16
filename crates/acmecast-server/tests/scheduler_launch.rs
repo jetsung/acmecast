@@ -26,6 +26,7 @@ async fn setup_with_pipeline(enabled: bool) -> (DatabaseConnection, i64) {
                 name: "调度触发用例".to_owned(),
                 enabled,
                 description: None,
+                notification_channels: Vec::new(),
                 // 保存校验要求至少一个步骤；停用分支在执行前就返回，
                 // 步骤不会被真正运行。
                 steps: vec![acmecast_store::repository::PipelineStepInput {

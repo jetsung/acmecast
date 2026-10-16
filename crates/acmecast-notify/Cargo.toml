@@ -9,6 +9,10 @@ publish.workspace = true
 description = "通知渠道：适配器（飞书/钉钉/通用/邮件 SMTP）、事件订阅与异步投递"
 
 [dependencies]
+# 通知渠道以凭据形式存储：类型定义（`CredentialType`）与按标识解析来自这里。
+acmecast-access.workspace = true
+# 凭据解密（`CredentialCipher`）与脱敏辅助。
+acmecast-core.workspace = true
 # 事件订阅实现 `EventSink`；事件协议（`PipelineEvent`）由引擎定义。
 acmecast-pipeline.workspace = true
 # 消息素材取自运行历史与流水线定义。
@@ -20,7 +24,7 @@ hmac.workspace = true
 # SMTP 邮件渠道的传输与消息构建（rustls 后端，见 workspace 依赖注释）。
 lettre.workspace = true
 reqwest.workspace = true
-# 步骤输入 schema 从结构体推导（`notify.summary` 的 channels 字段）。
+# 凭据字段 schema 从结构体推导（通知凭据类型的表单定义）。
 schemars.workspace = true
 sea-orm.workspace = true
 serde.workspace = true
@@ -28,15 +32,17 @@ serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+# SMTP 代理隧道：SOCKS5 与 TLS 代理支持。
+tokio-rustls.workspace = true
+tokio-socks.workspace = true
 tracing.workspace = true
+url.workspace = true
+webpki-roots.workspace = true
 
 [dev-dependencies]
 wiremock.workspace = true
 # `start_paused`：退避重试的用例在虚拟时钟下秒级完成。
 tokio = { workspace = true, features = ["test-util"] }
-# 步骤单测要构造执行上下文：凭据存储与密钥体系来自这两个 crate。
-acmecast-access.workspace = true
-acmecast-core.workspace = true
 
 [lints]
 workspace = true

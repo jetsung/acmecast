@@ -172,7 +172,6 @@ async fn run(config_override: Option<&str>) -> Result<(), Box<dyn std::error::Er
         propagation,
         config.resolvers.clone(),
         config.proxy_url.as_deref(),
-        config.notifications.clone(),
     );
     tracing::info!(types = ?step_registry.type_ids(), "已注册流水线任务类型");
     let mut runtime = acmecast_server::RuntimeState::from_environment_with_steps_and_redis_url(
@@ -194,21 +193,17 @@ async fn run(config_override: Option<&str>) -> Result<(), Box<dyn std::error::Er
         AuthMode::Enforced(_) => {}
     }
 
-    // webhook 通知：配置了启用渠道才装配订阅端；渠道数在启动日志里可见，
-    // 让「我以为配了通知」这类误解在第一时间暴露。
-    let enabled_channels = config
-        .notifications
-        .iter()
-        .filter(|channel| channel.enabled)
-        .count();
-    if enabled_channels > 0 {
-        tracing::info!(channels = enabled_channels, "webhook 通知已启用");
-        runtime.notifier = Some(std::sync::Arc::new(acmecast_notify::WebhookEventSink::new(
-            db.clone(),
-            config.notifications.clone(),
-            acmecast_notify::DeliveryOptions::default(),
-        )));
-    }
+    // webhook 通知：渠道是流水线级配置（`notification_channels` 凭据 ID），
+    // 运行结束时统一投递，装配不依赖启动配置。凭据密钥缺失时渠道无法
+    // 解密，装配仍进行——投递路径记 WARN 跳过，避免把配置错误静默吞掉。
+    let notifier = acmecast_notify::WebhookEventSink::new(
+        db.clone(),
+        std::sync::Arc::clone(&runtime.credential_registry),
+        runtime.cipher.clone(),
+        acmecast_notify::DeliveryOptions::default(),
+        config.proxy_url.as_deref(),
+    );
+    runtime.notifier = Some(std::sync::Arc::new(notifier));
 
     // 停机信号经 watch 广播：HTTP 服务与调度器各持一个接收端，
     // 任一先收到都开始收尾。
@@ -345,7 +340,9 @@ fn handle_hash_password(password: Option<String>) {
     }
 }
 
-async fn handle_migrate_certs(config_override: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+async fn handle_migrate_certs(
+    config_override: Option<&str>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let config = acmecast_server::config::ServerConfig::from_env_and_file_at(
         config_override.map(Path::new),
     )?;

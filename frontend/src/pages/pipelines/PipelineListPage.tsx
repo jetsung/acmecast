@@ -129,6 +129,7 @@ export function PipelineListPage() {
           name: candidate,
           description: full.description ?? null,
           enabled: full.enabled,
+          notification_channels: full.notification_channels ?? [],
           steps: full.steps.map((s) => ({
             type_id: s.type_id,
             input: s.input,

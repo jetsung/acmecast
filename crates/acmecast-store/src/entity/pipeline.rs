@@ -18,6 +18,8 @@ pub struct Model {
     pub enabled: bool,
     /// 额外说明。
     pub description: Option<String>,
+    /// 运行结束（成功/失败）时接收简讯的通知渠道凭据 ID 列表，JSON 数组文本。
+    pub notification_channels: String,
     /// 记录创建时间。
     pub created_at: chrono::DateTime<chrono::Utc>,
     /// 记录更新时间。

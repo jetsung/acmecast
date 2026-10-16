@@ -144,6 +144,7 @@ async fn run_suite(db: DatabaseConnection) {
                 name: "等价性流水线".to_owned(),
                 description: None,
                 enabled: true,
+                notification_channels: Vec::new(),
                 steps: vec![
                     PipelineStepInput {
                         type_id: "step.one".to_owned(),
@@ -226,7 +227,7 @@ async fn run_suite(db: DatabaseConnection) {
                 enabled: true,
                 catch_up: false,
                 renewal_domains: Some(vec![domain.clone()]),
-                    renewal_threshold_days: None,
+                renewal_threshold_days: None,
             },
         )
         .await
@@ -241,7 +242,7 @@ async fn run_suite(db: DatabaseConnection) {
                 enabled: true,
                 catch_up: false,
                 renewal_domains: None,
-                    renewal_threshold_days: None,
+                renewal_threshold_days: None,
             },
         )
         .await;

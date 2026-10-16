@@ -81,6 +81,7 @@ async fn a_pipeline(db: &DatabaseConnection, name: &str) -> i64 {
                 name: name.to_owned(),
                 description: None,
                 enabled: true,
+                notification_channels: Vec::new(),
                 steps: vec![PipelineStepInput {
                     type_id: "test.noop".to_owned(),
                     input: serde_json::json!({}),
@@ -140,7 +141,7 @@ async fn a_cron_schedule(db: &DatabaseConnection, pipeline_id: i64, cron: &str, 
                 enabled: true,
                 catch_up,
                 renewal_domains: None,
-                    renewal_threshold_days: None,
+                renewal_threshold_days: None,
             },
         )
         .await
@@ -215,7 +216,7 @@ async fn an_invalid_cron_is_rejected_on_save() {
                 enabled: true,
                 catch_up: false,
                 renewal_domains: None,
-                    renewal_threshold_days: None,
+                renewal_threshold_days: None,
             },
         )
         .await
@@ -254,7 +255,7 @@ async fn a_certificate_within_the_renewal_window_triggers_its_pipeline() {
                 enabled: true,
                 catch_up: false,
                 renewal_domains: Some(vec!["a.example.com".to_owned()]),
-                    renewal_threshold_days: None,
+                renewal_threshold_days: None,
             },
         )
         .await
@@ -294,7 +295,7 @@ async fn a_certificate_outside_the_window_does_not_trigger() {
                 enabled: true,
                 catch_up: false,
                 renewal_domains: Some(vec!["safe.example.com".to_owned()]),
-                    renewal_threshold_days: None,
+                renewal_threshold_days: None,
             },
         )
         .await
@@ -327,7 +328,7 @@ async fn a_running_pipeline_is_not_triggered_again() {
                 enabled: true,
                 catch_up: false,
                 renewal_domains: Some(vec!["busy.example.com".to_owned()]),
-                    renewal_threshold_days: None,
+                renewal_threshold_days: None,
             },
         )
         .await
@@ -365,7 +366,7 @@ async fn repeated_hits_within_the_dedup_window_trigger_once() {
                 enabled: true,
                 catch_up: false,
                 renewal_domains: Some(vec!["due.example.com".to_owned()]),
-                    renewal_threshold_days: None,
+                renewal_threshold_days: None,
             },
         )
         .await
@@ -615,7 +616,7 @@ async fn a_failed_renewal_launch_is_recorded_and_throttled() {
                 enabled: true,
                 catch_up: false,
                 renewal_domains: Some(vec!["broken.example.com".to_owned()]),
-                    renewal_threshold_days: None,
+                renewal_threshold_days: None,
             },
         )
         .await

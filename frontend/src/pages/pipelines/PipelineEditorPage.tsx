@@ -5,7 +5,6 @@ import { useLocation, useNavigate, useParams } from "react-router";
 import type { components } from "@/api/schema";
 import { client } from "@/api/client";
 import { unwrapData } from "@/api/helpers";
-import { listNotificationChannels, type NotificationChannel } from "@/api/notifications";
 import { SchemaForm } from "@/components/SchemaForm";
 import { PageHeader } from "@/components/PageHeader";
 
@@ -13,8 +12,14 @@ import { PageHeader } from "@/components/PageHeader";
 const ACME_ACCOUNT_TYPE_ID = "acme.account";
 /** SSH 主机档案凭据：cert.deploy 的 SSH 配置按标识引用它。 */
 const SSH_HOST_TYPE_ID = "deploy.ssh";
-/** 运行简讯步骤：`channels` 字段注入通知渠道多选选项。 */
-const NOTIFY_SUMMARY_TYPE_ID = "notify.summary";
+
+/** 通知类凭据类型：流水线「通知」多选的选项来源。 */
+const NOTIFY_TYPE_IDS: Record<string, true> = {
+  "notify.feishu": true,
+  "notify.dingtalk": true,
+  "notify.generic": true,
+  "notify.email": true,
+};
 
 const DNS_CREDENTIAL_TYPE_IDS: Record<string, true> = {
   "cloud.cloudflare": true,
@@ -90,6 +95,8 @@ interface PipelineForm {
   name: string;
   description?: string | null;
   enabled: boolean;
+  /** 运行结束（成功/失败）时接收简讯的通知类凭据 ID 列表。 */
+  notification_channels?: number[];
 }
 
 interface TaskType {
@@ -101,6 +108,7 @@ interface CopyState {
   name: string;
   description: string | null;
   enabled: boolean;
+  notification_channels: number[];
   steps: Array<{ type_id: string; input: Record<string, unknown>; enabled: boolean }>;
 }
 
@@ -142,6 +150,31 @@ export function PipelineEditorPage() {
     },
   });
   const credentialItems = credentials?.items ?? [];
+
+  // 凭据类型展示名：「通知」多选的标签附带渠道类型，便于辨识。
+  const { data: credentialTypes } = useQuery({
+    queryKey: ["credential-types"],
+    queryFn: async () => {
+      const result = await client.GET("/api/credential-types", { cache: "no-store" });
+      return unwrapData<Array<{ type_id: string; display_name: string }>>(result);
+    },
+  });
+
+  // 「通知」多选选项：仅通知类凭据，标签为「名称（id=N）— 渠道类型」。
+  const notificationChannelOptions = useMemo<FieldOption[]>(() => {
+    const displayNames = new Map(
+      (credentialTypes ?? []).map((type) => [type.type_id, type.display_name]),
+    );
+    return credentialItems
+      .filter((credential) => NOTIFY_TYPE_IDS[credential.type_id])
+      .map((credential) => ({
+        value: credential.id,
+        label: `${credential.name}（id=${credential.id}）— ${
+          displayNames.get(credential.type_id) ?? credential.type_id
+        }`,
+      }));
+  }, [credentialItems, credentialTypes]);
+
   const fieldOptions = useMemo<FieldOptions>(() => {
     const items = credentialItems;
     const resolved: FieldOptions = {};
@@ -173,6 +206,7 @@ export function PipelineEditorPage() {
       name: copyFrom.name,
       description: copyFrom.description ?? undefined,
       enabled: copyFrom.enabled,
+      notification_channels: copyFrom.notification_channels ?? [],
     });
     const loaded = copyFrom.steps.map((step) => ({
       id: nextStepId.current++,
@@ -210,6 +244,7 @@ export function PipelineEditorPage() {
         name: full.name,
         description: full.description ?? undefined,
         enabled: full.enabled,
+        notification_channels: full.notification_channels ?? [],
       });
       const loaded = full.steps.map((step) => ({
         id: nextStepId.current++,
@@ -352,6 +387,7 @@ export function PipelineEditorPage() {
         name: values.name,
         description: values.description ?? null,
         enabled: values.enabled,
+        notification_channels: values.notification_channels ?? [],
         steps: steps.map((step) => ({
           type_id: step.type_id,
           input: (form.getFieldValue(["inputs", step.id]) ?? {}) as Record<string, unknown>,
@@ -405,6 +441,20 @@ export function PipelineEditorPage() {
           </Form.Item>
         </Space>
 
+        <Form.Item
+          name="notification_channels"
+          label="通知"
+          extra="运行结束（成功或失败）时，向选中的渠道投递一条简讯；不选即不通知"
+        >
+          <Select
+            mode="multiple"
+            allowClear
+            style={{ width: 560 }}
+            placeholder="选择通知渠道（通知类凭据）"
+            options={notificationChannelOptions}
+          />
+        </Form.Item>
+
         <Typography.Title level={5}>步骤</Typography.Title>
         {steps.map((step, index) => (
           <Card
@@ -434,6 +484,7 @@ export function PipelineEditorPage() {
               <span>任务类型：</span>
               <Select
                 style={{ width: 240 }}
+                aria-label="任务类型"
                 value={step.type_id}
                 options={(tasks ?? []).map((task) => {
                   const disabled =
@@ -519,14 +570,6 @@ function TaskSchemaFields({
     enabled: typeId !== "",
   });
 
-  // 通知渠道列表：notify.summary 的 channels 多选选项来源；只有该类型步骤
-  // 需要时才拉取（同一键并发挂载由 react-query 去重）。
-  const { data: channels } = useQuery({
-    queryKey: ["notification-channels"],
-    queryFn: listNotificationChannels,
-    enabled: typeId === NOTIFY_SUMMARY_TYPE_ID,
-  });
-
   // 当前选中的目标主机档案：跳板下拉按它动态排除，切换目标后立即重算。
   const form = Form.useFormInstance();
   const selectedHostCredentialId = Form.useWatch(
@@ -535,12 +578,8 @@ function TaskSchemaFields({
   );
 
   const decorated = useMemo(
-    () =>
-      withChannelOptions(
-        withFieldOptions(schema, fieldOptions, rawCredentials, selectedHostCredentialId),
-        channels,
-      ),
-    [schema, fieldOptions, rawCredentials, selectedHostCredentialId, channels],
+    () => withFieldOptions(schema, fieldOptions, rawCredentials, selectedHostCredentialId),
+    [schema, fieldOptions, rawCredentials, selectedHostCredentialId],
   );
 
   if (!schema) {
@@ -766,38 +805,6 @@ function withFieldOptions(
   return changed
     ? { ...root, properties: next, ...(order ? { "x-field-order": order } : {}) }
     : schema;
-}
-
-/**
- * 给 `notify.summary` 的 `channels` 字段注入渠道多选选项（`x-options`）：
- * 选项含全部已声明渠道——包括 `enabled = false` 的（运行时会被跳过并告警），
- * 标签在渠道名后附带 provider 与启用状态，让「选了却不投递」在界面上可解释。
- * 渠道列表尚未加载时原样返回（字段退化为 tags 输入，不阻塞表单）。
- */
-function withChannelOptions(
-  schema: unknown,
-  channels: NotificationChannel[] | undefined,
-): unknown {
-  if (!channels) return schema;
-  const root = schema as
-    | { properties?: Record<string, Record<string, unknown>> }
-    | undefined;
-  const properties = root?.properties;
-  const node = properties?.["channels"];
-  if (!properties || !node) return schema;
-  return {
-    ...root,
-    properties: {
-      ...properties,
-      channels: {
-        ...node,
-        "x-options": channels.map((channel) => ({
-          value: channel.name,
-          label: `${channel.name}（${channel.provider}，${channel.enabled ? "已启用" : "已停用"}）`,
-        })),
-      },
-    },
-  };
 }
 
 /** `withFieldOptions` 递归时用到的最小节点形状（完整 schema 由变体自身保证）。 */

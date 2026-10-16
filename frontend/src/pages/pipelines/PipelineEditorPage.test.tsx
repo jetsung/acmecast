@@ -18,8 +18,14 @@ interface PostedStep {
   input: Record<string, unknown>;
 }
 
+interface PostedBody {
+  steps: PostedStep[];
+  /** 运行结束简讯渠道（通知类凭据 ID 数组）。 */
+  notification_channels?: number[];
+}
+
 // vi.mock 提升到文件顶部，捕获用的数组必须一并提升。
-const posted = vi.hoisted(() => [] as { steps: PostedStep[] }[]);
+const posted = vi.hoisted(() => [] as PostedBody[]);
 
 const TASKS = [
   { type_id: "test.a", display_name: "任务 A" },
@@ -50,11 +56,25 @@ vi.mock("@/api/client", () => ({
                 { id: 31, name: "EdgeOne DNS", type_id: "dns.tencent-eo", remark: "" },
                 { id: 40, name: "SSH 主机", type_id: "deploy.ssh", remark: "" },
                 { id: 41, name: "jump-01", type_id: "deploy.ssh", remark: "" },
+                { id: 50, name: "ops-feishu", type_id: "notify.feishu", remark: "" },
+                { id: 51, name: "ops-mail", type_id: "notify.email", remark: "" },
               ],
-              total: 8,
+              total: 10,
               page: 1,
               page_size: 100,
             },
+          },
+          response: new Response(),
+        };
+      }
+      if (path === "/api/credential-types") {
+        return {
+          data: {
+            data: [
+              { type_id: "notify.feishu", display_name: "飞书机器人", schema: {} },
+              { type_id: "notify.email", display_name: "邮件", schema: {} },
+              { type_id: "cloud.aliyun", display_name: "阿里云 DNS", schema: {} },
+            ],
           },
           response: new Response(),
         };
@@ -295,6 +315,7 @@ vi.mock("@/api/client", () => ({
               name: "existing",
               description: null,
               enabled: true,
+              notification_channels: [50, 51],
               steps: [
                 { type_id: "test.a", input: { va: "kept" }, enabled: true },
                 {
@@ -347,12 +368,12 @@ vi.mock("@/api/client", () => ({
   },
 }));
 
-function renderPage(initialPath = "/pipelines/new") {
+function renderPage(initialPath = "/pipelines/new", state?: unknown) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={queryClient}>
       <App>
-        <MemoryRouter initialEntries={[initialPath]}>
+        <MemoryRouter initialEntries={[{ pathname: initialPath, state }]}>
           <Routes>
             <Route path="/pipelines/:id" element={<PipelineEditorPage />} />
           </Routes>
@@ -442,8 +463,10 @@ describe("PipelineEditorPage", () => {
     await addStep();
     fireEvent.change(await screen.findByLabelText("va"), { target: { value: "stale" } });
 
-    // 把这一步的类型从 A 改成 B。
-    fireEvent.mouseDown(screen.getByRole("combobox"));
+    // 把这一步的类型从 A 改成 B（最后一个 combobox 是步骤的类型下拉，
+    // 页面上方还有「通知」多选）。
+    const combos = screen.getAllByRole("combobox");
+    fireEvent.mouseDown(combos[combos.length - 1]);
     fireEvent.click(await screen.findByTitle("任务 B"));
     // 原字段已随类型切换移除，避免上一类型的残留值混入。
     expect(screen.queryByLabelText("va")).toBeNull();
@@ -544,6 +567,53 @@ describe("PipelineEditorPage", () => {
 
     const body = await save();
     expect(body.steps[0].input).toEqual({ dns_credential_id: 9 });
+  });
+
+  it("通知多选仅列通知类凭据，保存时提交 ID 数组", async () => {
+    posted.length = 0;
+    const queryClient = renderPage();
+    await waitForTasks(queryClient);
+    await waitFor(() => expect(queryClient.getQueryState(["credentials"])?.status).toBe("success"));
+    fireEvent.change(screen.getByLabelText("名称"), { target: { value: "p" } });
+
+    const field = await screen.findByLabelText("通知");
+    fireEvent.mouseDown(field);
+    // 非通知类凭据（DNS / 部署 / 账号）不出现在「通知」下拉里。
+    expect(screen.queryByTitle("some-dns（id=8）")).toBeNull();
+    expect(screen.queryByTitle("web-01（id=10）")).toBeNull();
+    // 选项标签含渠道类型（展示名来自 /api/credential-types）。
+    fireEvent.click(await screen.findByTitle("ops-feishu（id=50）— 飞书机器人"));
+    fireEvent.click(await screen.findByTitle("ops-mail（id=51）— 邮件"));
+
+    const body = await save();
+    // 多选值保持数字 ID 数组。
+    expect(body.notification_channels).toEqual([50, 51]);
+  });
+
+  it("编辑模式回显已选通知渠道", async () => {
+    posted.length = 0;
+    await waitForTasks(renderPage("/pipelines/7"));
+
+    // 已选渠道以选中项标签回显。
+    expect(await screen.findByTitle("ops-feishu（id=50）— 飞书机器人")).toBeTruthy();
+    expect(screen.getByTitle("ops-mail（id=51）— 邮件")).toBeTruthy();
+  });
+
+  it("复制流水线时预填通知渠道", async () => {
+    posted.length = 0;
+    await waitForTasks(
+      renderPage("/pipelines/new", {
+        copyFrom: {
+          name: "existing_copy",
+          description: null,
+          enabled: true,
+          notification_channels: [50],
+          steps: [{ type_id: "test.a", input: { va: "kept" }, enabled: true }],
+        },
+      }),
+    );
+
+    expect(await screen.findByTitle("ops-feishu（id=50）— 飞书机器人")).toBeTruthy();
   });
 
   it("按字段语义选控件：枚举/凭据走下拉，任意结构走 JSON 文本", async () => {

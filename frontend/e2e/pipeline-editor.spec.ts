@@ -70,8 +70,8 @@ async function openJsonEditor(page: import("@playwright/test").Page) {
   await page.getByRole("button", { name: "添加步骤" }).click();
 
   // 显式选任务类型（不依赖任务列表已就绪时的默认值）。
-  // 用 first()：任务类型是步骤里第一个下拉，任务输入自己也可能有下拉。
-  await page.getByRole("combobox").first().click();
+  // 按 aria-label 取步骤的类型下拉：页面上方还有「通知」多选，first() 会命中它。
+  await page.getByLabel("任务类型").first().click();
   await page.locator('.ant-select-item-option[title="E2E JSON"]').click();
 
   const editor = page.getByLabel("rules");

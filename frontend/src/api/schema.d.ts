@@ -233,40 +233,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/notifications/channels": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** 通知渠道列表的文档占位函数。 */
-        get: operations["list_notification_channels"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/notifications/test": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** 通知渠道测试的文档占位函数。 */
-        post: operations["test_notifications"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/pipelines": {
         parameters: {
             query?: never;
@@ -674,14 +640,6 @@ export interface components {
             };
         };
         /** @description 统一成功响应。 */
-        ApiResponse_NotificationTestResponse: {
-            /** @description 通知渠道测试响应：逐渠道给出投递结果。 */
-            data: {
-                /** @description 每个被测渠道一条结果，顺序与配置一致。 */
-                results: components["schemas"]["NotificationTestResult"][];
-            };
-        };
-        /** @description 统一成功响应。 */
         ApiResponse_PageResponse_CertificateResponse: {
             /** @description 通用分页响应。 */
             data: {
@@ -881,6 +839,8 @@ export interface components {
                     id: number;
                     /** @description 展示名称。 */
                     name: string;
+                    /** @description 运行结束（成功/失败）时接收简讯的通知渠道凭据 ID 列表。 */
+                    notification_channels: number[];
                     /** @description 步骤数量。 */
                     step_count: number;
                     /**
@@ -969,6 +929,8 @@ export interface components {
                 id: number;
                 /** @description 展示名称。 */
                 name: string;
+                /** @description 运行结束（成功/失败）时接收简讯的通知渠道凭据 ID 列表。 */
+                notification_channels: number[];
                 /** @description 有序步骤。 */
                 steps: components["schemas"]["PipelineStepResponse"][];
                 /**
@@ -1080,17 +1042,6 @@ export interface components {
                  * @description 步骤顺序。
                  */
                 step_index: number;
-            }[];
-        };
-        /** @description 统一成功响应。 */
-        ApiResponse_Vec_NotificationChannelResponse: {
-            data: {
-                /** @description 是否启用；未启用的渠道也列出，供用户辨识「配了但没投递」。 */
-                enabled: boolean;
-                /** @description 渠道名。 */
-                name: string;
-                /** @description 适配器类型。 */
-                provider: string;
             }[];
         };
         /** @description 统一成功响应。 */
@@ -1418,41 +1369,6 @@ export interface components {
             /** @description 令牌类型，固定 `Bearer`。 */
             token_type: string;
         };
-        /**
-         * @description 通知渠道列表项。
-         *
-         *     脱敏视图：只暴露辨识与启用状态，不含 `url`/`secret`/`headers` 等可用于
-         *     投递的字段——渠道列表供前端渲染选项，不需要也不应携带投递凭据。
-         */
-        NotificationChannelResponse: {
-            /** @description 是否启用；未启用的渠道也列出，供用户辨识「配了但没投递」。 */
-            enabled: boolean;
-            /** @description 渠道名。 */
-            name: string;
-            /** @description 适配器类型。 */
-            provider: string;
-        };
-        /** @description 通知渠道测试请求。 */
-        NotificationTestRequest: {
-            /** @description 要测试的渠道名；缺省时测试全部启用渠道。 */
-            name?: string | null;
-        };
-        /** @description 通知渠道测试响应：逐渠道给出投递结果。 */
-        NotificationTestResponse: {
-            /** @description 每个被测渠道一条结果，顺序与配置一致。 */
-            results: components["schemas"]["NotificationTestResult"][];
-        };
-        /** @description 单个通知渠道的测试投递结果。 */
-        NotificationTestResult: {
-            /** @description 失败原因。 */
-            error?: string | null;
-            /** @description 渠道名。 */
-            name: string;
-            /** @description 投递是否成功。 */
-            ok: boolean;
-            /** @description 适配器类型。 */
-            provider: string;
-        };
         /** @description 通用分页响应。 */
         PageResponse_CertificateResponse: {
             /** @description 当前页数据。 */
@@ -1642,6 +1558,8 @@ export interface components {
                 id: number;
                 /** @description 展示名称。 */
                 name: string;
+                /** @description 运行结束（成功/失败）时接收简讯的通知渠道凭据 ID 列表。 */
+                notification_channels: number[];
                 /** @description 步骤数量。 */
                 step_count: number;
                 /**
@@ -1714,6 +1632,8 @@ export interface components {
             enabled?: boolean;
             /** @description 展示名称。 */
             name: string;
+            /** @description 运行结束（成功/失败）时接收简讯的通知渠道凭据 ID 列表；缺省为空数组。 */
+            notification_channels?: number[];
             /** @description 按执行顺序排列的步骤。 */
             steps: components["schemas"]["PipelineStepRequest"][];
         };
@@ -1735,6 +1655,8 @@ export interface components {
             id: number;
             /** @description 展示名称。 */
             name: string;
+            /** @description 运行结束（成功/失败）时接收简讯的通知渠道凭据 ID 列表。 */
+            notification_channels: number[];
             /** @description 有序步骤。 */
             steps: components["schemas"]["PipelineStepResponse"][];
             /**
@@ -1786,6 +1708,8 @@ export interface components {
             id: number;
             /** @description 展示名称。 */
             name: string;
+            /** @description 运行结束（成功/失败）时接收简讯的通知渠道凭据 ID 列表。 */
+            notification_channels: number[];
             /** @description 步骤数量。 */
             step_count: number;
             /**
@@ -2567,66 +2491,6 @@ export interface operations {
                 };
             };
             429: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiErrorBody"];
-                };
-            };
-        };
-    };
-    list_notification_channels: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description 全部已声明渠道（含未启用；不含敏感字段） */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiResponse_Vec_NotificationChannelResponse"];
-                };
-            };
-        };
-    };
-    test_notifications: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: {
-            content: {
-                "application/json": null | components["schemas"]["NotificationTestRequest"];
-            };
-        };
-        responses: {
-            /** @description 逐渠道投递结果 */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiResponse_NotificationTestResponse"];
-                };
-            };
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiErrorBody"];
-                };
-            };
-            409: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -15,10 +15,28 @@ use crate::message::NotificationMessage;
 /// 上限即 [`DEFAULT_TIMEOUT`]。
 #[must_use]
 pub fn http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(DEFAULT_TIMEOUT)
+    http_client_with_proxy(None).expect("默认 HTTP 客户端配置应可构建")
+}
+
+/// 按代理配置构建 HTTP 客户端。
+///
+/// `proxy_url` 为 `Some(socks5://…/http://…/https://…)` 时注入代理；
+/// `None` 时直连。若代理 URL 非法则返回错误，调用方应把错误呈现为
+/// 投递失败（原因含代理主机）。
+pub fn http_client_with_proxy(proxy_url: Option<&str>) -> std::result::Result<reqwest::Client, String> {
+    let mut builder = reqwest::Client::builder().timeout(DEFAULT_TIMEOUT);
+    if let Some(url) = proxy_url {
+        let proxy = reqwest::Proxy::all(url).map_err(|error| {
+            format!(
+                "代理配置无效({})：{error}",
+                acmecast_core::proxy_log_target(url)
+            )
+        })?;
+        builder = builder.proxy(proxy);
+    }
+    builder
         .build()
-        .expect("默认 HTTP 客户端配置应可构建")
+        .map_err(|error| format!("HTTP 客户端构建失败: {error}"))
 }
 
 /// 单次请求的超时上限。
@@ -58,6 +76,15 @@ pub async fn deliver(
         .ok_or_else(|| Error::UnknownProvider {
             provider: channel.provider.clone(),
         })?;
+    // 渠道配了代理时用代理客户端；构建失败是配置错误，直接返回投递错误不重试。
+    let client = match channel.proxy_url.as_deref() {
+        Some(url) => http_client_with_proxy(Some(url)).map_err(|cause| Error::Delivery {
+            name: channel.name.clone(),
+            cause: cause.to_string(),
+        })?,
+        None => client.clone(),
+    };
+    let client = &client;
 
     let mut attempt = 0u32;
     loop {
@@ -119,6 +146,7 @@ mod tests {
             method: "POST".to_owned(),
             headers: std::collections::BTreeMap::new(),
             body_template: None,
+            proxy_url: None,
             smtp: None,
         }
     }
@@ -131,7 +159,6 @@ mod tests {
             trigger: "manual".to_owned(),
             occurred_at: chrono::Utc::now(),
             domains: vec![],
-            target: None,
             failure: None,
             summary: None,
         }

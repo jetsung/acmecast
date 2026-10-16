@@ -70,6 +70,7 @@ async fn pipeline_can_load_its_steps() {
         name: Set("示例流水线".to_owned()),
         enabled: Set(true),
         description: Set(None),
+        notification_channels: Set("[]".to_owned()),
         created_at: Set(Utc::now()),
         updated_at: Set(Utc::now()),
         ..Default::default()
@@ -108,6 +109,7 @@ async fn steps_are_returned_in_configured_order() {
         name: Set("顺序校验".to_owned()),
         enabled: Set(true),
         description: Set(None),
+        notification_channels: Set("[]".to_owned()),
         created_at: Set(Utc::now()),
         updated_at: Set(Utc::now()),
         ..Default::default()
@@ -149,6 +151,7 @@ async fn history_can_load_its_logs() {
         name: Set("日志校验".to_owned()),
         enabled: Set(true),
         description: Set(None),
+        notification_channels: Set("[]".to_owned()),
         created_at: Set(Utc::now()),
         updated_at: Set(Utc::now()),
         ..Default::default()
@@ -290,6 +293,7 @@ async fn storage_is_scoped_per_pipeline() {
             name: Set(name.to_owned()),
             enabled: Set(true),
             description: Set(None),
+            notification_channels: Set("[]".to_owned()),
             created_at: Set(Utc::now()),
             updated_at: Set(Utc::now()),
             ..Default::default()

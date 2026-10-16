@@ -19,7 +19,7 @@ import type { ReactNode } from "react";
  * 必填联动同理（`x-required-when`，支持 `Equals` 与数组长度下限 `MinItems`，
  * 后者用于 cert.apply 的「多域名时 dns_zone 必填」）；
  * 另有调用方注入的 `x-options`，把「资源 ID」字段渲染成按名称选择的下拉，
- * `array<string>` 字段（如 notify.summary 的 channels）则渲染成多选下拉；
+ * 带选项的 `array<string>` 字段则渲染成多选下拉；
  * `x-multiline`（后端 schema 注入，如 SSH 档案的私钥）：string 字段渲染成多行文本域；
  * `x-target-schemas`（cert.deploy 的 config）：按同级 `target` 的取值渲染成
  * 所选部署目标的**结构化子表单**，未选 target 时提示先选。
@@ -501,8 +501,8 @@ function SchemaField({
   const options = node["x-options"];
   if (Array.isArray(options)) {
     const selectOptions = options.map((option) => ({ value: option.value, label: option.label }));
-    // `array<string>` + 选项（如 notify.summary 的 channels 渠道）：候选是
-    // 封闭集合，渲染成多选下拉而不是 tags 自由输入；无选项时仍走 tags。
+    // `array<string>` + 选项：候选是封闭集合，渲染成多选下拉而不是
+    // tags 自由输入；无选项时仍走 tags。
     if (type === "array" && itemType !== "object") {
       return (
         <Select

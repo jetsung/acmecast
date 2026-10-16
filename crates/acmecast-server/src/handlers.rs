@@ -9,6 +9,10 @@ use acmecast_access::{
     AcmeAccountFields, AcmeAccountType, ConnectivityOutcome, CredentialRegistry, CredentialStore,
 };
 use acmecast_acme::AcmeService;
+use acmecast_notify::{
+    DingtalkCredentialType, EmailCredentialType, FeishuCredentialType, GenericCredentialType,
+    is_notify_type_id,
+};
 use acmecast_pipeline::{HistoryQuery, HistoryRepository, StepRegistry};
 use acmecast_store::{
     CertFilePaths, CertInput, CertQuery, CertRepository, CertSort, DEFAULT_PAGE_SIZE, FileStore,
@@ -81,11 +85,6 @@ pub(crate) fn routes() -> Router<HttpState> {
         )
         .route("/api/credentials/{id}/test", post(test_credential))
         .route("/api/credential-types", get(list_credential_types))
-        .route(
-            "/api/notifications/channels",
-            get(list_notification_channels),
-        )
-        .route("/api/notifications/test", post(test_notifications))
         .route("/api/schedules", get(list_schedules).post(create_schedule))
         .route("/api/schedules/{pipeline_id}", delete(delete_schedule))
         .route("/api/schedules/trigger-logs", get(list_trigger_logs))
@@ -94,8 +93,14 @@ pub(crate) fn routes() -> Router<HttpState> {
         .route("/api/histories", get(list_histories))
         .route("/api/histories/{id}", get(get_history))
         .route("/api/histories/{id}/logs", get(history_logs))
-        .route("/api/histories/{id}/events", get(crate::history_stream::handle_history_events))
-        .route("/api/pipelines/{pipeline_id}/histories/{id}/events", get(crate::history_stream::handle_pipeline_history_events))
+        .route(
+            "/api/histories/{id}/events",
+            get(crate::history_stream::handle_history_events),
+        )
+        .route(
+            "/api/pipelines/{pipeline_id}/histories/{id}/events",
+            get(crate::history_stream::handle_pipeline_history_events),
+        )
 }
 
 /// 登录请求 DTO。
@@ -212,32 +217,39 @@ async fn download_certificate(
 
     if format == "key" || format == "private-key" || format == "key-pem" {
         let key_path = cert.key_path.clone().expect("新布局 key_path 必有值");
-        let key_pem = store.read(&key_path).await.map_err(|e| map_key_read_error(e, &key_path))?;
+        let key_pem = store
+            .read(&key_path)
+            .await
+            .map_err(|e| map_key_read_error(e, &key_path))?;
         let leaf = cert
             .domain_set()
             .into_iter()
             .next()
             .unwrap_or_else(|| "certificate".to_owned());
         let filename = format!("{}.key", sanitize_filename(&leaf));
-        let disposition =
-            HeaderValue::from_str(&format!("attachment; filename=\"{filename}\"")).map_err(
-                |error| {
-                    ApiError::new(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "internal_error",
-                        error.to_string(),
-                    )
-                },
-            )?;
+        let disposition = HeaderValue::from_str(&format!("attachment; filename=\"{filename}\""))
+            .map_err(|error| {
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal_error",
+                    error.to_string(),
+                )
+            })?;
         let mut response = Response::new(Body::from(key_pem.into_bytes()));
         let headers = response.headers_mut();
-        headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/x-pem-file"));
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/x-pem-file"),
+        );
         headers.insert(header::CONTENT_DISPOSITION, disposition);
         return Ok(response);
     }
 
     let cert_pem = {
-        let p = cert.fullchain_path.clone().expect("新布局 fullchain_path 必有值");
+        let p = cert
+            .fullchain_path
+            .clone()
+            .expect("新布局 fullchain_path 必有值");
         store.read(&p).await.map_err(ApiError::from)?
     };
     let key_pem = {
@@ -254,7 +266,9 @@ async fn download_certificate(
     let ca_pem: String = {
         if let Some(ca_path) = cert.ca_path.clone() {
             store.read(&ca_path).await.unwrap_or_default()
-        } else { String::new() }
+        } else {
+            String::new()
+        }
     };
     let (bytes, content_type, extension) = match format.as_str() {
         "fullchain" | "pem" | "crt" | "chain" => (
@@ -264,10 +278,18 @@ async fn download_certificate(
         ),
         "ca" | "intermediate" | "ca.cer" => {
             if ca_pem.trim().is_empty() {
-                return Err(ApiError::new(StatusCode::NOT_FOUND, "not_found", "该证书无中间链（单证书）"));
+                return Err(ApiError::new(
+                    StatusCode::NOT_FOUND,
+                    "not_found",
+                    "该证书无中间链（单证书）",
+                ));
             }
-            (ca_pem.clone().into_bytes(), "application/x-pem-file", "ca.cer")
-        },
+            (
+                ca_pem.clone().into_bytes(),
+                "application/x-pem-file",
+                "ca.cer",
+            )
+        }
         "der" => (
             acmecast_cert::first_der(&cert_pem).map_err(ApiError::from)?,
             "application/pkix-cert",
@@ -357,7 +379,6 @@ pub(crate) struct ArchiveResponse {
     pub material_missing: bool,
 }
 
-
 /// 吊销一条证书（11.3）。
 ///
 /// 编排顺序刻意为「先 CA 后本地」：CA 侧失败时本地状态不变，用户可以重试；
@@ -400,8 +421,17 @@ async fn revoke_certificate(
         .map_err(ApiError::from)?;
     let sources = cert_file_paths(&cert);
     let mut material_present = false;
-    for path in [&sources.cert, &sources.ca, &sources.fullchain, &sources.key, &sources.cert_pem, &sources.key_pem] {
-        if path.is_empty() { continue; }
+    for path in [
+        &sources.cert,
+        &sources.ca,
+        &sources.fullchain,
+        &sources.key,
+        &sources.cert_pem,
+        &sources.key_pem,
+    ] {
+        if path.is_empty() {
+            continue;
+        }
         if store.read(path).await.is_ok() {
             material_present = true;
             break;
@@ -465,13 +495,17 @@ async fn revoke_certificate(
                 ),
             )
         })?;
-    let mut transport = AcmeAccountType::acme_proxy_config(&fields, state.app.config.proxy_url.as_deref());
+    let mut transport =
+        AcmeAccountType::acme_proxy_config(&fields, state.app.config.proxy_url.as_deref());
     transport.accept_invalid_certs = state.app.config.accept_invalid_acme_certs;
     let service = AcmeService::from_credentials(&account, Some(&transport))
         .await
         .map_err(|e| ApiError::from(acmecast_core::Error::External(e.to_string())))?;
 
-    let cert_path = cert.fullchain_path.clone().expect("新布局 fullchain_path 必有值");
+    let cert_path = cert
+        .fullchain_path
+        .clone()
+        .expect("新布局 fullchain_path 必有值");
     let cert_pem = store.read(&cert_path).await.map_err(ApiError::from)?;
     let der = acmecast_cert::first_der(&cert_pem).map_err(ApiError::from)?;
 
@@ -545,10 +579,7 @@ async fn archive_revoked_material(
 ) {
     // 6 路径全部作为搬迁源：归档布局的 .cer/.ca.cer 等文件也必须搬进吊销目录。
     let sources = cert_file_paths(cert);
-    let paths = match store
-        .move_certificate(&sources, &cert.fingerprint)
-        .await
-    {
+    let paths = match store.move_certificate(&sources, &cert.fingerprint).await {
         Ok(Some(paths)) => paths,
         Ok(None) => {
             tracing::warn!(
@@ -572,10 +603,19 @@ async fn archive_revoked_material(
     if let Err(error) = repository.update_paths(cert_id, &paths).await {
         tracing::error!(cert_id, %error, "吊销归档后更新证书路径失败，尝试把文件移回原位");
         let original = CertFilePaths {
-            cert: cert.cert_path.clone().unwrap_or_else(|| cert.cert_pem_path.clone()),
+            cert: cert
+                .cert_path
+                .clone()
+                .unwrap_or_else(|| cert.cert_pem_path.clone()),
             ca: cert.ca_path.clone().unwrap_or_default(),
-            fullchain: cert.fullchain_path.clone().unwrap_or_else(|| cert.cert_pem_path.clone()),
-            key: cert.key_path.clone().unwrap_or_else(|| cert.key_pem_path.clone()),
+            fullchain: cert
+                .fullchain_path
+                .clone()
+                .unwrap_or_else(|| cert.cert_pem_path.clone()),
+            key: cert
+                .key_path
+                .clone()
+                .unwrap_or_else(|| cert.key_pem_path.clone()),
             cert_pem: cert.cert_pem_path.clone(),
             key_pem: cert.key_pem_path.clone(),
         };
@@ -671,10 +711,19 @@ async fn archive_certificate(
                 "归档后更新证书路径失败，尝试把文件移回原位"
             );
             let original = CertFilePaths {
-                cert: cert.cert_path.clone().unwrap_or_else(|| cert.cert_pem_path.clone()),
+                cert: cert
+                    .cert_path
+                    .clone()
+                    .unwrap_or_else(|| cert.cert_pem_path.clone()),
                 ca: cert.ca_path.clone().unwrap_or_default(),
-                fullchain: cert.fullchain_path.clone().unwrap_or_else(|| cert.cert_pem_path.clone()),
-                key: cert.key_path.clone().unwrap_or_else(|| cert.key_pem_path.clone()),
+                fullchain: cert
+                    .fullchain_path
+                    .clone()
+                    .unwrap_or_else(|| cert.cert_pem_path.clone()),
+                key: cert
+                    .key_path
+                    .clone()
+                    .unwrap_or_else(|| cert.key_pem_path.clone()),
                 cert_pem: cert.cert_pem_path.clone(),
                 key_pem: cert.key_pem_path.clone(),
             };
@@ -696,7 +745,12 @@ async fn archive_certificate(
             .mark_revoked(cert_id, Utc::now())
             .await
             .map_err(ApiError::from)?;
-        (cert.cert_pem_path.clone(), cert.key_pem_path.clone(), false, true)
+        (
+            cert.cert_pem_path.clone(),
+            cert.key_pem_path.clone(),
+            false,
+            true,
+        )
     };
 
     Ok(ApiResponse::new(ArchiveResponse {
@@ -708,15 +762,12 @@ async fn archive_certificate(
     }))
 }
 
-
 /// 私钥读取失败时映射为面向用户的错误：缺失为 404，其余按通用 IO 映射，不回显绝对路径。
 fn map_key_read_error(error: acmecast_store::Error, _relative: &str) -> ApiError {
     match &error {
-        acmecast_store::Error::Io(io) if io.kind() == std::io::ErrorKind::NotFound => ApiError::new(
-            StatusCode::NOT_FOUND,
-            "not_found",
-            "私钥文件不存在",
-        ),
+        acmecast_store::Error::Io(io) if io.kind() == std::io::ErrorKind::NotFound => {
+            ApiError::new(StatusCode::NOT_FOUND, "not_found", "私钥文件不存在")
+        }
         _ => ApiError::from(error),
     }
 }
@@ -771,6 +822,9 @@ pub(crate) struct PipelineRequest {
     /// 流水线级开关，默认启用。
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    /// 运行结束（成功/失败）时接收简讯的通知渠道凭据 ID 列表；缺省为空数组。
+    #[serde(default)]
+    pub notification_channels: Vec<i64>,
     /// 按执行顺序排列的步骤。
     pub steps: Vec<PipelineStepRequest>,
 }
@@ -801,6 +855,8 @@ pub(crate) struct PipelineSummaryResponse {
     pub description: Option<String>,
     /// 是否启用。
     pub enabled: bool,
+    /// 运行结束（成功/失败）时接收简讯的通知渠道凭据 ID 列表。
+    pub notification_channels: Vec<i64>,
     /// 步骤数量。
     pub step_count: usize,
     /// 更新时间。
@@ -833,6 +889,8 @@ pub(crate) struct PipelineResponse {
     pub description: Option<String>,
     /// 是否启用。
     pub enabled: bool,
+    /// 运行结束（成功/失败）时接收简讯的通知渠道凭据 ID 列表。
+    pub notification_channels: Vec<i64>,
     /// 有序步骤。
     pub steps: Vec<PipelineStepResponse>,
     /// 创建时间。
@@ -1138,9 +1196,7 @@ async fn list_pipelines(
             rows.sort_by_key(|row| (row.updated_at, row.id));
         }
         Some(s) if s == "desc" || s == "descending" => {
-            rows.sort_by_key(|row| {
-                (std::cmp::Reverse(row.updated_at), std::cmp::Reverse(row.id))
-            });
+            rows.sort_by_key(|row| (std::cmp::Reverse(row.updated_at), std::cmp::Reverse(row.id)));
         }
         Some(other) => {
             return Err(ApiError::validation(
@@ -1158,6 +1214,7 @@ async fn list_pipelines(
             name: item.name,
             description: item.description,
             enabled: item.enabled,
+            notification_channels: item.notification_channels,
             step_count: item.step_count,
             updated_at: item.updated_at,
         })
@@ -1175,7 +1232,12 @@ async fn create_pipeline(
     ApiJson(request): ApiJson<PipelineRequest>,
 ) -> Result<ApiResponse<PipelineResponse>, ApiError> {
     let input = pipeline_input(request);
-    validate_pipeline_credential_capabilities(&state.app.db, &input.steps).await?;
+    validate_pipeline_credential_capabilities(
+        &state.app.db,
+        &input.steps,
+        &input.notification_channels,
+    )
+    .await?;
     let id = PipelineRepository::new(&state.app.db)
         .save(None, input)
         .await
@@ -1208,6 +1270,7 @@ async fn get_pipeline_by_id(state: &HttpState, id: i64) -> Result<PipelineRespon
         name: pipeline.name,
         description: pipeline.description,
         enabled: pipeline.enabled,
+        notification_channels: pipeline.notification_channels,
         steps: pipeline
             .steps
             .into_iter()
@@ -1231,7 +1294,12 @@ async fn update_pipeline(
     ApiJson(request): ApiJson<PipelineRequest>,
 ) -> Result<ApiResponse<PipelineResponse>, ApiError> {
     let input = pipeline_input(request);
-    validate_pipeline_credential_capabilities(&state.app.db, &input.steps).await?;
+    validate_pipeline_credential_capabilities(
+        &state.app.db,
+        &input.steps,
+        &input.notification_channels,
+    )
+    .await?;
     let id = PipelineRepository::new(&state.app.db)
         .save(Some(id), input)
         .await
@@ -1245,16 +1313,46 @@ async fn update_pipeline(
 /// `cert.deploy` 的 `config.credential_id`（腾讯云 SSL 变体）需 `deploy` 能力。
 /// 非受控类型不受能力约束；引用不存在留给既有执行期报错。能力不匹配时
 /// 返回 400 并提示凭据标识与缺失能力，不发起任何云端调用。
+///
+/// `notification_channels` 的每个 ID 引用的凭据 MUST 为通知类（`notify.*`），
+/// 不存在或类型不符同样在保存时拒绝——投递是运行结束时的尽力而为动作，
+/// 不能等执行期才发现渠道选错了。
 async fn validate_pipeline_credential_capabilities(
     db: &sea_orm::DatabaseConnection,
     steps: &[acmecast_store::repository::PipelineStepInput],
+    notification_channels: &[i64],
 ) -> Result<(), ApiError> {
     use sea_orm::EntityTrait;
+
+    for credential_id in notification_channels {
+        let row = acmecast_store::entity::credential::Entity::find_by_id(*credential_id)
+            .one(db)
+            .await
+            .map_err(|error| ApiError::from(acmecast_store::Error::from(error)))?;
+        let Some(row) = row else {
+            return Err(ApiError::validation(
+                "notification_channels",
+                format!("通知渠道引用的凭据不存在: {credential_id}"),
+            ));
+        };
+        if !is_notify_type_id(&row.type_id) {
+            return Err(ApiError::validation(
+                "notification_channels",
+                format!(
+                    "凭据 {credential_id}（{}，类型 {}）不是通知类凭据",
+                    row.name, row.type_id
+                ),
+            ));
+        }
+    }
+
     for step in steps {
         let (field, credential_id, required) = match step.type_id.trim() {
             "cert.apply" => (
                 "dns_credential_id",
-                step.input.get("dns_credential_id").and_then(serde_json::Value::as_i64),
+                step.input
+                    .get("dns_credential_id")
+                    .and_then(serde_json::Value::as_i64),
                 acmecast_store::capability::DNS,
             ),
             "cert.deploy" => (
@@ -1615,10 +1713,7 @@ async fn delete_certificate(
     // 失败仅记日志不回滚已删除的记录；防逃逸由 FileStore 内 resolve 承担。
     match FileStore::open(state.app.config.data_dir.clone()).await {
         Ok(store) => {
-            if let Err(error) = store
-                .remove_material(&cert_pem_path, &key_pem_path)
-                .await
-            {
+            if let Err(error) = store.remove_material(&cert_pem_path, &key_pem_path).await {
                 tracing::warn!(%error, cert_id = id, "清理证书文件与目录失败，已忽略");
             }
         }
@@ -1785,7 +1880,8 @@ async fn save_credential(
         .unwrap_or("")
         .to_owned();
     // 能力标记仅受控类型生效；校验与归一化见 `resolve_capabilities_text`。
-    let capabilities = resolve_capabilities_text(request.type_id.trim(), request.capabilities.as_ref())?;
+    let capabilities =
+        resolve_capabilities_text(request.type_id.trim(), request.capabilities.as_ref())?;
     let now = Utc::now();
     let row = match id {
         Some(id) => {
@@ -1859,7 +1955,9 @@ fn resolve_capabilities_text(
             "能力仅支持 dns / deploy，且至少选择一项",
         ));
     }
-    Ok(acmecast_store::capability::to_text(items.iter().map(String::as_str)))
+    Ok(acmecast_store::capability::to_text(
+        items.iter().map(String::as_str),
+    ))
 }
 
 /// 递归去掉凭据 JSON 里所有字符串的首尾空白。
@@ -1939,143 +2037,6 @@ async fn test_credential(
         },
     };
     Ok(ApiResponse::new(response))
-}
-
-/// 向通知渠道发送测试消息，逐渠道返回投递结果。
-///
-/// 这是**交互式验证**：同步等待每个渠道的投递完成（与事件旁路的
-/// spawn 投递不同），管理员配置 `[[notifications]]` 后先在这里确认
-/// 连通性，再等真实事件。
-async fn test_notifications(
-    State(state): State<HttpState>,
-    // 请求体可选：`axum::Json` 实现了 `OptionalFromRequest`；body 缺省或
-    // 为空时按「测试全部启用渠道」处理。自定义 `ApiJson` 未实现该 trait，
-    // 这里用不到它的错误包装——无效 JSON 与缺省同义。
-    request: Option<axum::Json<NotificationTestRequest>>,
-) -> Result<ApiResponse<NotificationTestResponse>, ApiError> {
-    let channels = &state.app.config.notifications;
-    let targets: Vec<&acmecast_notify::ChannelConfig> = match request
-        .as_ref()
-        .and_then(|request| request.0.name.as_deref())
-    {
-        // 指定渠道：不做启用过滤——启用前先测通是合理顺序。
-        Some(name) => {
-            let found: Vec<_> = channels.iter().filter(|c| c.name == name).collect();
-            if found.is_empty() {
-                return Err(ApiError::new(
-                    StatusCode::NOT_FOUND,
-                    "not_found",
-                    format!("通知渠道不存在: {name}"),
-                ));
-            }
-            found
-        }
-        // 缺省：全部启用渠道；一个都没有时要明说，而不是返回空成功。
-        None => {
-            let enabled: Vec<_> = channels.iter().filter(|c| c.enabled).collect();
-            if enabled.is_empty() {
-                return Err(ApiError::new(
-                    StatusCode::CONFLICT,
-                    "no_channels",
-                    "没有可测试的通知渠道，请先在 config.toml 配置 [[notifications]] 并重启",
-                ));
-            }
-            enabled
-        }
-    };
-
-    let registry = Arc::new(acmecast_notify::default_registry());
-    let client = acmecast_notify::http_client();
-    let options = acmecast_notify::DeliveryOptions::default();
-    let message = acmecast_notify::NotificationMessage {
-        event: "test".to_owned(),
-        title: "通知渠道测试".to_owned(),
-        pipeline: "acmecast 服务".to_owned(),
-        trigger: "manual".to_owned(),
-        occurred_at: Utc::now(),
-        domains: Vec::new(),
-        target: None,
-        failure: None,
-        summary: None,
-    };
-
-    let mut results = Vec::with_capacity(targets.len());
-    for channel in targets {
-        let ok = acmecast_notify::deliver(&client, &registry, channel, &message, &options);
-        let (ok, error) = match ok.await {
-            Ok(()) => (true, None),
-            Err(error) => (false, Some(error.to_string())),
-        };
-        results.push(NotificationTestResult {
-            name: channel.name.clone(),
-            provider: channel.provider.clone(),
-            ok,
-            error,
-        });
-    }
-
-    Ok(ApiResponse::new(NotificationTestResponse { results }))
-}
-
-/// 单个通知渠道的测试投递结果。
-#[derive(Debug, Serialize, ToSchema)]
-pub(crate) struct NotificationTestResult {
-    /// 渠道名。
-    pub name: String,
-    /// 适配器类型。
-    pub provider: String,
-    /// 投递是否成功。
-    pub ok: bool,
-    /// 失败原因。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-}
-
-/// 通知渠道测试请求。
-#[derive(Debug, Deserialize, ToSchema)]
-pub(crate) struct NotificationTestRequest {
-    /// 要测试的渠道名；缺省时测试全部启用渠道。
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-}
-
-/// 通知渠道测试响应：逐渠道给出投递结果。
-#[derive(Debug, Serialize, ToSchema)]
-pub(crate) struct NotificationTestResponse {
-    /// 每个被测渠道一条结果，顺序与配置一致。
-    pub results: Vec<NotificationTestResult>,
-}
-
-/// 通知渠道列表项。
-///
-/// 脱敏视图：只暴露辨识与启用状态，不含 `url`/`secret`/`headers` 等可用于
-/// 投递的字段——渠道列表供前端渲染选项，不需要也不应携带投递凭据。
-#[derive(Debug, Serialize, ToSchema)]
-pub(crate) struct NotificationChannelResponse {
-    /// 渠道名。
-    pub name: String,
-    /// 适配器类型。
-    pub provider: String,
-    /// 是否启用；未启用的渠道也列出，供用户辨识「配了但没投递」。
-    pub enabled: bool,
-}
-
-/// 列出全部已声明的通知渠道（含未启用）。
-async fn list_notification_channels(
-    State(state): State<HttpState>,
-) -> Result<ApiResponse<Vec<NotificationChannelResponse>>, ApiError> {
-    let channels = state
-        .app
-        .config
-        .notifications
-        .iter()
-        .map(|channel| NotificationChannelResponse {
-            name: channel.name.clone(),
-            provider: channel.provider.clone(),
-            enabled: channel.enabled,
-        })
-        .collect();
-    Ok(ApiResponse::new(channels))
 }
 
 /// 调度配置响应。
@@ -2237,10 +2198,7 @@ async fn list_trigger_logs(
     ApiQuery(query): ApiQuery<TriggerLogQueryParams>,
 ) -> Result<ApiResponse<PageResponse<TriggerLogResponse>>, ApiError> {
     let page = query.page.unwrap_or(1).max(1);
-    let page_size = query
-        .page_size
-        .unwrap_or(10)
-        .clamp(1, MAX_PAGE_SIZE);
+    let page_size = query.page_size.unwrap_or(10).clamp(1, MAX_PAGE_SIZE);
     let result = acmecast_store::repository::TriggerLogRepository::new(&state.app.db)
         .list(query.pipeline_id, page, page_size)
         .await
@@ -2383,15 +2341,28 @@ async fn list_histories_for(
     let mut items = Vec::with_capacity(result.items.len());
     for item in result.items {
         // 对于 running 状态的历史，优先从缓存获取最新元数据
-        let (status, finished_at, error_message) = if item.status == acmecast_store::entity::history::RunStatus::Running {
-            if let Some(cached_meta) = cache.get_meta(item.id).await {
-                (cached_meta.status.as_str().to_owned(), cached_meta.finished_at, cached_meta.error_message)
+        let (status, finished_at, error_message) =
+            if item.status == acmecast_store::entity::history::RunStatus::Running {
+                if let Some(cached_meta) = cache.get_meta(item.id).await {
+                    (
+                        cached_meta.status.as_str().to_owned(),
+                        cached_meta.finished_at,
+                        cached_meta.error_message,
+                    )
+                } else {
+                    (
+                        item.status.as_str().to_owned(),
+                        item.finished_at,
+                        item.error_message,
+                    )
+                }
             } else {
-                (item.status.as_str().to_owned(), item.finished_at, item.error_message)
-            }
-        } else {
-            (item.status.as_str().to_owned(), item.finished_at, item.error_message)
-        };
+                (
+                    item.status.as_str().to_owned(),
+                    item.finished_at,
+                    item.error_message,
+                )
+            };
         items.push(HistoryResponse {
             id: item.id,
             pipeline_id: item.pipeline_id,
@@ -2563,6 +2534,7 @@ fn pipeline_input(request: PipelineRequest) -> PipelineInput {
         name: request.name,
         description: request.description,
         enabled: request.enabled,
+        notification_channels: request.notification_channels,
         steps: request
             .steps
             .into_iter()
@@ -2683,6 +2655,20 @@ pub(crate) fn default_credential_registry(proxy_url: Option<&str>) -> Arc<Creden
     registry
         .register(acmecast_access::WebdavCredentialType::default().with_global_proxy(proxy_url))
         .expect("内置 WebDAV 凭据类型不应重复注册");
+    // 通知凭据：流水线运行结束时按 `notification_channels` 解析它们投递
+    // 简讯，注册后凭据页才能创建/测试，流水线「通知」多选才有来源。
+    registry
+        .register(FeishuCredentialType::default().with_global_proxy(proxy_url))
+        .expect("内置飞书通知凭据类型不应重复注册");
+    registry
+        .register(DingtalkCredentialType::default().with_global_proxy(proxy_url))
+        .expect("内置钉钉通知凭据类型不应重复注册");
+    registry
+        .register(GenericCredentialType::default().with_global_proxy(proxy_url))
+        .expect("内置通用 Webhook 通知凭据类型不应重复注册");
+    registry
+        .register(EmailCredentialType::default().with_global_proxy(proxy_url))
+        .expect("内置邮件通知凭据类型不应重复注册");
     Arc::new(registry)
 }
 
@@ -2706,7 +2692,8 @@ mod capability_tests {
     fn controlled_type_accepts_valid_capabilities() {
         // 合法：归一化排序后落库（与规格「更新为 ["dns","deploy"] 原样返回」一致）。
         assert_eq!(
-            resolve_capabilities_text("cloud.tencent", Some(&vec!["deploy".into(), "dns".into()])).unwrap(),
+            resolve_capabilities_text("cloud.tencent", Some(&vec!["deploy".into(), "dns".into()]))
+                .unwrap(),
             r#"["dns","deploy"]"#
         );
         assert_eq!(
@@ -2732,7 +2719,10 @@ mod capability_tests {
             "capabilities"
         );
         assert_eq!(
-            err_field(resolve_capabilities_text("cloud.tencent", Some(&vec!["admin".into()]))),
+            err_field(resolve_capabilities_text(
+                "cloud.tencent",
+                Some(&vec!["admin".into()])
+            )),
             "capabilities"
         );
         assert_eq!(

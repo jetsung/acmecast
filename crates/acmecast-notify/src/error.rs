@@ -18,6 +18,12 @@ pub enum Error {
         /// 被重复注册的适配器类型标识。
         provider: String,
     },
+    /// 凭据字段无法转换为渠道配置（类型不符、枚举非法等）。
+    #[error("通知渠道配置无效: {reason}")]
+    InvalidConfig {
+        /// 具体原因。
+        reason: String,
+    },
     /// 消息投递在重试后仍失败。
     #[error("渠道 {name} 投递失败: {cause}")]
     Delivery {

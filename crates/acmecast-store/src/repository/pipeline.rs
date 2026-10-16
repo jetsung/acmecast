@@ -37,6 +37,8 @@ pub struct PipelineInput {
     pub description: Option<String>,
     /// 流水线级开关。
     pub enabled: bool,
+    /// 运行结束（成功/失败）时接收简讯的通知渠道凭据 ID 列表。
+    pub notification_channels: Vec<i64>,
     /// 按执行顺序排列的步骤，位置即顺序。
     pub steps: Vec<PipelineStepInput>,
 }
@@ -67,6 +69,8 @@ pub struct Pipeline {
     pub description: Option<String>,
     /// 流水线级开关。
     pub enabled: bool,
+    /// 运行结束（成功/失败）时接收简讯的通知渠道凭据 ID 列表。
+    pub notification_channels: Vec<i64>,
     /// 按执行顺序排列的步骤。
     pub steps: Vec<PipelineStep>,
     /// 创建时间。
@@ -86,6 +90,8 @@ pub struct PipelineSummary {
     pub description: Option<String>,
     /// 流水线级开关。
     pub enabled: bool,
+    /// 运行结束（成功/失败）时接收简讯的通知渠道凭据 ID 列表。
+    pub notification_channels: Vec<i64>,
     /// 步骤数量。
     pub step_count: usize,
     /// 最后更新时间。
@@ -130,9 +136,7 @@ impl<'db> PipelineRepository<'db> {
         if let Some(conflict) = self.find_by_name(name).await? {
             let is_self = id.is_some_and(|own| own == conflict.id);
             if !is_self {
-                return Err(Error::Conflict(format!(
-                    "流水线名称已存在: {name}"
-                )));
+                return Err(Error::Conflict(format!("流水线名称已存在: {name}")));
             }
         }
 
@@ -140,6 +144,8 @@ impl<'db> PipelineRepository<'db> {
         let transaction = self.db.begin().await?;
         let now = Utc::now();
         let description = normalize_description(input.description);
+        let notification_channels = serde_json::to_string(&input.notification_channels)
+            .expect("通知渠道 ID 数组的序列化不会失败");
 
         let pipeline_id = match id {
             Some(existing) => {
@@ -155,6 +161,7 @@ impl<'db> PipelineRepository<'db> {
                     name: Set(name.to_owned()),
                     description: Set(description),
                     enabled: Set(input.enabled),
+                    notification_channels: Set(notification_channels),
                     updated_at: Set(now),
                     ..Default::default()
                 }
@@ -167,6 +174,7 @@ impl<'db> PipelineRepository<'db> {
                     name: Set(name.to_owned()),
                     description: Set(description),
                     enabled: Set(input.enabled),
+                    notification_channels: Set(notification_channels),
                     created_at: Set(now),
                     updated_at: Set(now),
                     ..Default::default()
@@ -227,6 +235,7 @@ impl<'db> PipelineRepository<'db> {
             name: found.name,
             description: found.description,
             enabled: found.enabled,
+            notification_channels: parse_notification_channels(&found.notification_channels),
             steps: self.steps_of(id).await?,
             created_at: found.created_at,
             updated_at: found.updated_at,
@@ -248,6 +257,7 @@ impl<'db> PipelineRepository<'db> {
                 name: row.name,
                 description: row.description,
                 enabled: row.enabled,
+                notification_channels: parse_notification_channels(&row.notification_channels),
                 step_count,
                 updated_at: row.updated_at,
             });
@@ -301,18 +311,14 @@ fn validate_step_limits(steps: &[PipelineStepInput]) -> Result<()> {
         .filter(|s| s.type_id.trim() == "cert.apply")
         .count();
     if apply > 1 {
-        return Err(Error::Validation(
-            "cert.apply 仅允许添加一次".to_owned(),
-        ));
+        return Err(Error::Validation("cert.apply 仅允许添加一次".to_owned()));
     }
     let store = steps
         .iter()
         .filter(|s| s.type_id.trim() == "cert.store")
         .count();
     if store > 1 {
-        return Err(Error::Validation(
-            "cert.store 仅允许添加一次".to_owned(),
-        ));
+        return Err(Error::Validation("cert.store 仅允许添加一次".to_owned()));
     }
     Ok(())
 }
@@ -322,4 +328,12 @@ fn normalize_description(description: Option<String>) -> Option<String> {
     description
         .map(|text| text.trim().to_owned())
         .filter(|text| !text.is_empty())
+}
+
+/// 解析库中的通知渠道文本为凭据 ID 列表。
+///
+/// 非法 JSON 视作空集合（不投递）：通知是运行结束后的尽力而为动作，
+/// 库中脏数据不应让读取流水线定义整体失败。
+fn parse_notification_channels(text: &str) -> Vec<i64> {
+    serde_json::from_str(text).unwrap_or_default()
 }

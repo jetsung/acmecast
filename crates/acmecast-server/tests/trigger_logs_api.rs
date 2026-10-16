@@ -29,6 +29,7 @@ async fn app_with_seeded_logs(counts: &[(i64, TriggerSource)]) -> (Router, Datab
                     name: format!("流水线 {pipeline_id}"),
                     enabled: true,
                     description: None,
+                    notification_channels: Vec::new(),
                     steps: vec![acmecast_store::repository::PipelineStepInput {
                         type_id: "test.placeholder".to_owned(),
                         input: serde_json::json!({}),
@@ -122,11 +123,8 @@ async fn lists_all_logs_in_reverse_order() {
 
 #[tokio::test]
 async fn default_page_size_fallback_is_10() {
-    let (app, _db) = app_with_seeded_logs(&[
-        (1, TriggerSource::Cron),
-        (2, TriggerSource::Renewal),
-    ])
-    .await;
+    let (app, _db) =
+        app_with_seeded_logs(&[(1, TriggerSource::Cron), (2, TriggerSource::Renewal)]).await;
     let token = authorized_token(&app).await;
 
     // 不传 page_size，验证 fallback 为 10。

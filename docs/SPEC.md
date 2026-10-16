@@ -481,7 +481,7 @@ SSE 实时推送与终态持久化遵循双轨：
 
 ### 网络操作超时（`[network]` 段 / `ACMECAST_NETWORK_TIMEOUT_SECS`）
 
-流水线各步骤的网络操作（SSH 连接/传输、S3 PUT、WebDAV PUT/MKCOL、腾讯云 API 调用、DNS 提供商 API 调用）MUST 受可配置超时约束，默认 30 秒，超时以可读错误返回而非永久挂起。已有独立超时的路径不受影响：ACME 轮询（120 秒）、DNS 传播等待（默认 300 秒）、通知渠道（10 秒）、凭据连通性测试（10 秒）。
+流水线各步骤的网络操作（SSH 连接/传输、S3 PUT、WebDAV PUT/MKCOL、腾讯云 API 调用、DNS 提供商 API 调用）MUST 受可配置超时约束，默认 30 秒，超时以可读错误返回而非永久挂起。已有独立超时的路径不受影响：ACME 轮询（120 秒）、DNS 传播等待（默认 300 秒）、通知投递（10 秒）、凭据连通性测试（10 秒）。
 
 | 优先级 | 来源 | 键 | 说明 |
 |---|---|---|---|
@@ -546,10 +546,12 @@ timeout_secs = 30
 | `acme.account` | ACME 目录/下单/校验 | `acmecast_acme::ProxyConfig`（socks5/http/https） |
 | `deploy.ssh` | SSH 连接与主机探测 | SOCKS5/HTTP-CONNECT 隧道 + `russh::client::connect_stream` |
 | `deploy.tencent-ssl` | 腾讯云 SSL API 调用 | `ReqwestTransport`（经 `transport_for_credentials` 按 `proxy_mode` 选层） |
+| `notify.feishu` / `notify.dingtalk` / `notify.generic` | 运行结束简讯投递 + 连通性测试 | `reqwest::Proxy::all`（socks5/http/https，`acmecast_notify::delivery::http_client_with_proxy`） |
+| `notify.email` | 运行结束简讯投递 + 连通性测试 | SOCKS5/HTTP-CONNECT 隧道 + `lettre::AsyncSmtpConnection::connect_with_transport`（隐式 TLS 经 `tokio-rustls`） |
 
 - 配置了代理（`inherit` 全局非空 或 `custom`）的凭据，其对应出网 MUST 经该代理发送；代理连接失败 MUST 以可读错误呈现（HTTP 类为 `provider_api_error`，SSH 类为连接错误）且含代理主机以便排障，含凭据的代理 URL 在日志与错误呈现前经 `redact` 脱敏（`socks5://user:pass@host:port` 不明文外泄）。
 - 各类型的连通性测试（`CredentialType::test_connectivity`）MUST 走与正式调用相同的（按 `proxy_mode` 构建的）代理；错误同样经 `redact` 脱敏后呈现。
-- 代理仅作用于**持有该凭据的调用**，MUST NOT 改变其他凭据或通知渠道的出网路径；测试替身 `with_transport` 不受影响。
+- 代理仅作用于**持有该凭据的调用**，MUST NOT 改变其他凭据或未走代理的通知渠道的出网路径；测试替身 `with_transport` 不受影响。
 - `ReqwestTransport::with_proxy(proxy_url)` 内部以 `reqwest::Proxy::all(url)` 构建（`socks` feature 已启用），`new()`/`default()` 保持直连语义不变。
 
 ### 实现索引
@@ -716,11 +718,11 @@ ORDER BY (archived_at IS NULL) DESC,  -- 活跃 (1) 排前，已归档 (0) 排�
 
 - 回退命中仅一条 `INFO`（指纹+回退路径），全部失败一条 `ERROR`（尝试列表+指引），不为每个候选单独打日志。
 - 可观测性与 `pipeline-renewal-lifecycle` 的"跳过可观测"要求对齐：运行历史终态命中回退则 `succeeded`，全部失败则 `failed`。
-- 跳过分支本就不向通知渠道投递；失败分支按既有失败通知规则处理。
+- 跳过分支以运行成功收尾（运行结束简讯照常投递、该步骤在简讯中标注跳过）；失败分支按既有失败通知规则处理。
 
 ### 作用域与不变量
 
-- 本变更不改变阈值判定、域名归一、产物键、通知抑制与幂等/归档规则。
+- 本变更不改变阈值判定、域名归一、产物键与幂等/归档规则。
 - 兼容回退仅在跳过分支且主路径缺失时触发，正常签发路径无额外 IO（串行 2–4 次文件读取，仅限回退场景）。
 - 回退读取复用证书详情/下载/吊销/部署路径中已有的兼容读取能力（`certificate-file-layout` 的旧布局回退 + `certificate-storage` 的归档查找），不在 `apply.rs` 内联重写路径推导，避免与规格漂移。
 

@@ -113,7 +113,9 @@ pub(crate) async fn start_run(
         .await?;
 
     let log = startup_log(pipeline, history_id, source, now);
-    HistoryRepository::new(db).append_log(history_id, log.clone()).await?;
+    HistoryRepository::new(db)
+        .append_log(history_id, log.clone())
+        .await?;
 
     if let Some(cache) = cache {
         let meta = HistoryMeta {
@@ -202,7 +204,6 @@ pub(crate) fn compact_propagation_miss_logs(logs: &mut Vec<StepLogRecord>) {
     });
 }
 
-
 /// 入库前精简：仅保留最后一条 `proxy: ` 代理行，其余移除。
 ///
 /// 与 [`compact_propagation_miss_logs`] 同一双轨策略：SSE 实时流全量保留
@@ -236,7 +237,9 @@ struct RunExecutionSink<'a> {
 #[async_trait::async_trait]
 impl<'a> acmecast_pipeline::EventSink for RunExecutionSink<'a> {
     async fn publish(&self, event: acmecast_pipeline::PipelineEvent) {
-        if let (acmecast_pipeline::PipelineEvent::Log { run_id, log, .. }, Some(cache)) = (&event, self.cache) {
+        if let (acmecast_pipeline::PipelineEvent::Log { run_id, log, .. }, Some(cache)) =
+            (&event, self.cache)
+        {
             cache.push_log(*run_id, log).await;
         }
         if let Some(broadcaster) = self.broadcaster {
@@ -393,6 +396,7 @@ mod tests {
             name: "test-pipeline".to_owned(),
             description: None,
             enabled: true,
+            notification_channels: Vec::new(),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             steps: vec![
@@ -428,7 +432,13 @@ mod tests {
     }
     #[test]
     fn compact_no_miss_unchanged() {
-        let mut logs = vec![make_log("propagation start timeout=600 interval=10 (record: _acme-challenge.example.com)"), make_log("round 1 hit (resolver: 阿里 DNS)"), make_log("propagation succeeded after 1 rounds")];
+        let mut logs = vec![
+            make_log(
+                "propagation start timeout=600 interval=10 (record: _acme-challenge.example.com)",
+            ),
+            make_log("round 1 hit (resolver: 阿里 DNS)"),
+            make_log("propagation succeeded after 1 rounds"),
+        ];
         let len = logs.len();
         compact_propagation_miss_logs(&mut logs);
         assert_eq!(logs.len(), len);
@@ -445,7 +455,10 @@ mod tests {
             make_log("propagation succeeded after 1 rounds"),
         ];
         compact_proxy_logs(&mut logs);
-        let proxies: Vec<_> = logs.iter().filter(|l| l.message.starts_with("proxy: ")).collect();
+        let proxies: Vec<_> = logs
+            .iter()
+            .filter(|l| l.message.starts_with("proxy: "))
+            .collect();
         assert_eq!(proxies.len(), 1, "{logs:?}");
         assert!(proxies[0].message.contains("5.6.7.8"), "{logs:?}");
         assert_eq!(logs.len(), 3, "其余日志不受影响: {logs:?}");
@@ -469,7 +482,13 @@ mod tests {
 
     #[test]
     fn compact_single_miss_unchanged() {
-        let mut logs = vec![make_log("propagation start timeout=600 interval=10 (record: _acme-challenge.example.com) resolvers: 阿里 DNS"), make_log("round 1 miss (resolvers: 阿里 DNS)"), make_log("round 1 hit (resolver: 阿里 DNS)")];
+        let mut logs = vec![
+            make_log(
+                "propagation start timeout=600 interval=10 (record: _acme-challenge.example.com) resolvers: 阿里 DNS",
+            ),
+            make_log("round 1 miss (resolvers: 阿里 DNS)"),
+            make_log("round 1 hit (resolver: 阿里 DNS)"),
+        ];
         compact_propagation_miss_logs(&mut logs);
         assert_eq!(logs.iter().filter(|l| is_round_miss(&l.message)).count(), 1);
     }
@@ -477,7 +496,9 @@ mod tests {
     #[test]
     fn compact_two_miss_keeps_last() {
         let mut logs = vec![
-            make_log("propagation start timeout=600 interval=10 (record: _acme-challenge.example.com) resolvers: 阿里 DNS"),
+            make_log(
+                "propagation start timeout=600 interval=10 (record: _acme-challenge.example.com) resolvers: 阿里 DNS",
+            ),
             make_log("round 1 miss (resolvers: 阿里 DNS)"),
             make_log("round 2 miss (resolvers: 阿里 DNS)"),
             make_log("round 2 hit (resolver: 阿里 DNS)"),
@@ -490,25 +511,37 @@ mod tests {
 
     #[test]
     fn compact_23_miss_keeps_only_last() {
-        let mut logs: Vec<StepLogRecord> = vec![make_log("propagation start timeout=600 interval=10 (record: _acme-challenge.ooos.top) authoritative: 权威 NS（ooos.top） resolvers: Cloudflare DNS, 阿里 DNS")];
+        let mut logs: Vec<StepLogRecord> = vec![make_log(
+            "propagation start timeout=600 interval=10 (record: _acme-challenge.ooos.top) authoritative: 权威 NS（ooos.top） resolvers: Cloudflare DNS, 阿里 DNS",
+        )];
         for i in 1..=23 {
-            logs.push(make_log(format!("round {i} miss (resolvers: 权威 NS（ooos.top）)")));
+            logs.push(make_log(format!(
+                "round {i} miss (resolvers: 权威 NS（ooos.top）)"
+            )));
         }
         logs.push(make_log("propagation succeeded after 23 rounds"));
         compact_propagation_miss_logs(&mut logs);
         let misses: Vec<_> = logs.iter().filter(|l| is_round_miss(&l.message)).collect();
         assert_eq!(misses.len(), 1, "仅保留最后一条 miss: {logs:?}");
         assert!(misses[0].message.contains("round 23 miss"), "{misses:?}");
-        assert!(misses[0].message.contains("权威 NS（ooos.top）"), "{misses:?}");
+        assert!(
+            misses[0].message.contains("权威 NS（ooos.top）"),
+            "{misses:?}"
+        );
         // 非 miss 不受影响
         assert!(logs.iter().any(|l| l.message.contains("propagation start")));
-        assert!(logs.iter().any(|l| l.message.contains("propagation succeeded")));
+        assert!(
+            logs.iter()
+                .any(|l| l.message.contains("propagation succeeded"))
+        );
     }
 
     #[test]
     fn compact_mixed_hit_not_removed() {
         let mut logs = vec![
-            make_log("propagation start timeout=600 interval=10 (record: _acme-challenge.example.com) resolvers: 阿里 DNS"),
+            make_log(
+                "propagation start timeout=600 interval=10 (record: _acme-challenge.example.com) resolvers: 阿里 DNS",
+            ),
             make_log("round 1 miss (resolvers: 阿里 DNS)"),
             make_log("round 2 miss (resolvers: 阿里 DNS)"),
             make_log("round 2 hit (resolver: 阿里 DNS)"),
@@ -519,7 +552,10 @@ mod tests {
         let misses: Vec<_> = logs.iter().filter(|l| is_round_miss(&l.message)).collect();
         assert_eq!(misses.len(), 1);
         assert!(misses[0].message.contains("round 3 miss"));
-        assert_eq!(logs.iter().filter(|l| l.message.contains(" hit ")).count(), 2);
+        assert_eq!(
+            logs.iter().filter(|l| l.message.contains(" hit ")).count(),
+            2
+        );
     }
 
     #[test]
@@ -540,6 +576,12 @@ mod tests {
     }
 
     fn make_log(msg: impl Into<String>) -> StepLogRecord {
-        StepLogRecord { step_index: 0, level: StepLogLevel::Info, message: msg.into(), created_at: chrono::Utc::now(), output: None }
+        StepLogRecord {
+            step_index: 0,
+            level: StepLogLevel::Info,
+            message: msg.into(),
+            created_at: chrono::Utc::now(),
+            output: None,
+        }
     }
 }

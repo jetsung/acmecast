@@ -37,6 +37,26 @@ async fn json_body(response: axum::response::Response) -> serde_json::Value {
     serde_json::from_slice(&bytes).expect("响应应是 JSON")
 }
 
+/// 创建一条凭据并返回主键（通知渠道测试需要真实凭据记录做引用校验）。
+async fn create_credential(
+    app: &axum::Router,
+    name: &str,
+    type_id: &str,
+    fields: serde_json::Value,
+) -> i64 {
+    let create = Request::post("/api/credentials")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({ "name": name, "type_id": type_id, "fields": fields }).to_string(),
+        ))
+        .unwrap();
+    let response = app.clone().oneshot(create).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "凭据应能创建");
+    json_body(response).await["data"]["id"]
+        .as_i64()
+        .expect("应返回凭据 id")
+}
+
 #[tokio::test]
 async fn pipeline_crud_uses_uniform_data_envelope_and_returns_404() {
     let app = app().await;
@@ -311,7 +331,7 @@ async fn credential_remark_round_trips_through_api() {
 
 #[tokio::test]
 async fn history_logs_expose_structured_output_with_tencent_cert_ids() {
-    use acmecast_pipeline::{HistoryRecord, StepLogRecord, StepLogLevel};
+    use acmecast_pipeline::{HistoryRecord, StepLogLevel, StepLogRecord};
     use acmecast_store::entity::history;
 
     use chrono::Utc;
@@ -320,9 +340,7 @@ async fn history_logs_expose_structured_output_with_tencent_cert_ids() {
     let db = Database::connect("sqlite::memory:")
         .await
         .expect("应能连接内存数据库");
-    acmecast_store::migrate(&db)
-        .await
-        .expect("迁移应成功");
+    acmecast_store::migrate(&db).await.expect("迁移应成功");
 
     // 先创建一条流水线以满足 history.pipeline_id 外键。
     let pipeline_id = {
@@ -477,7 +495,195 @@ async fn pipeline_list_defaults_to_id_desc() {
         .map(|item| item["id"].as_i64().expect("应有 id"))
         .collect();
     // 降序：最后创建的在最前。
-    assert_eq!(returned_ids, vec![ids[2], ids[1], ids[0]], "默认应按 ID 降序");
+    assert_eq!(
+        returned_ids,
+        vec![ids[2], ids[1], ids[0]],
+        "默认应按 ID 降序"
+    );
+}
+
+#[tokio::test]
+async fn pipeline_notification_channels_round_trip_and_validate() {
+    // spec（pipeline-notification）：创建/更新透传 notification_channels 并原样
+    // 回显；引用非通知类或不存在的凭据在保存时拒绝；缺省为空数组。
+    let app = app_with_cipher().await;
+
+    let feishu = create_credential(
+        &app,
+        "飞书群",
+        "notify.feishu",
+        serde_json::json!({
+            "name": "飞书群",
+            "url": "https://open.feishu.cn/hook",
+            "secret": "s",
+        }),
+    )
+    .await;
+    let email = create_credential(
+        &app,
+        "运维邮件",
+        "notify.email",
+        serde_json::json!({
+            "name": "运维邮件",
+            "host": "smtp.example.com",
+            "from": "ops@example.com",
+            "to": ["oncall@example.com"],
+        }),
+    )
+    .await;
+    let ssh = create_credential(
+        &app,
+        "ssh 档案",
+        "deploy.ssh",
+        serde_json::json!({ "host": "srv.example.com", "password": "p" }),
+    )
+    .await;
+
+    let pipeline_body = |name: &str, channels: serde_json::Value| {
+        serde_json::json!({
+            "name": name,
+            "notification_channels": channels,
+            "steps": [{ "type_id": "test.step", "input": { "value": 1 } }],
+        })
+        .to_string()
+    };
+
+    // 缺省不传：空数组。
+    let response = app
+        .clone()
+        .oneshot(
+            Request::post("/api/pipelines")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    r#"{"name":"无通知","steps":[{"type_id":"test.step","input":{}}]}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    assert_eq!(
+        body["data"]["notification_channels"],
+        serde_json::json!([]),
+        "缺省应为空数组"
+    );
+
+    // 携带两个通知渠道：详情与列表都原样回显。
+    let response = app
+        .clone()
+        .oneshot(
+            Request::post("/api/pipelines")
+                .header("content-type", "application/json")
+                .body(Body::from(pipeline_body(
+                    "带通知",
+                    serde_json::json!([feishu, email]),
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    let id = body["data"]["id"].as_i64().expect("应返回流水线 id");
+    assert_eq!(
+        body["data"]["notification_channels"],
+        serde_json::json!([feishu, email])
+    );
+
+    let detail = app
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/pipelines/{id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let detail_body = json_body(detail).await;
+    assert_eq!(
+        detail_body["data"]["notification_channels"],
+        serde_json::json!([feishu, email])
+    );
+
+    let list = app
+        .clone()
+        .oneshot(
+            Request::get("/api/pipelines?page=1&page_size=10")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let list_body = json_body(list).await;
+    let item = list_body["data"]["items"]
+        .as_array()
+        .expect("应有 items")
+        .iter()
+        .find(|item| item["id"] == id)
+        .expect("列表应含新建流水线");
+    assert_eq!(
+        item["notification_channels"],
+        serde_json::json!([feishu, email])
+    );
+
+    // 非通知类凭据：400，错误定位到 notification_channels 并含凭据 ID。
+    let response = app
+        .clone()
+        .oneshot(
+            Request::post("/api/pipelines")
+                .header("content-type", "application/json")
+                .body(Body::from(pipeline_body(
+                    "错渠道",
+                    serde_json::json!([ssh]),
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = json_body(response).await;
+    assert_eq!(body["error"]["field"], "notification_channels");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .expect("错误消息应为字符串")
+            .contains(&ssh.to_string()),
+        "错误消息应指明无效凭据 ID: {}",
+        body["error"]["message"]
+    );
+
+    // 不存在的凭据 ID：同样拒绝。
+    let response = app
+        .clone()
+        .oneshot(
+            Request::post("/api/pipelines")
+                .header("content-type", "application/json")
+                .body(Body::from(pipeline_body(
+                    "幽灵渠道",
+                    serde_json::json!([9999]),
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = json_body(response).await;
+    assert_eq!(body["error"]["field"], "notification_channels");
+
+    // 更新可清空渠道。
+    let response = app
+        .oneshot(
+            Request::put(format!("/api/pipelines/{id}"))
+                .header("content-type", "application/json")
+                .body(Body::from(pipeline_body("带通知", serde_json::json!([]))))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    assert_eq!(body["data"]["notification_channels"], serde_json::json!([]));
 }
 
 #[tokio::test]
@@ -513,6 +719,9 @@ async fn credential_list_defaults_to_id_desc() {
         .iter()
         .map(|item| item["id"].as_i64().expect("应有 id"))
         .collect();
-    assert_eq!(returned_ids, vec![ids[2], ids[1], ids[0]], "默认应按 ID 降序");
+    assert_eq!(
+        returned_ids,
+        vec![ids[2], ids[1], ids[0]],
+        "默认应按 ID 降序"
+    );
 }
-

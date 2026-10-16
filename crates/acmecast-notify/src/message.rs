@@ -9,9 +9,9 @@ use serde_json::json;
 /// 一条待投递的通知消息。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NotificationMessage {
-    /// 事件标识（如 `cert.apply`）。
+    /// 事件标识（`pipeline.succeeded` / `pipeline.failed` / `test`）。
     pub event: String,
-    /// 事件标题（如「证书申请成功」）。
+    /// 事件标题（如「流水线运行成功」）。
     pub title: String,
     /// 流水线名称。
     pub pipeline: String,
@@ -19,13 +19,11 @@ pub struct NotificationMessage {
     pub trigger: String,
     /// 事件发生时间。
     pub occurred_at: DateTime<Utc>,
-    /// 申请的域名列表；仅 `cert.apply` 类事件携带。
+    /// 申请的域名列表；取自流水线定义里 `cert.apply` 步骤的输入。
     pub domains: Vec<String>,
-    /// 部署目标描述；仅 `cert.deploy` 类事件携带。
-    pub target: Option<String>,
     /// 失败步骤与原因；仅 `pipeline.failed` 事件携带。
     pub failure: Option<FailureDetail>,
-    /// 运行简讯素材；仅 `notify.summary` 步骤组装的消息携带。
+    /// 运行简讯素材（总耗时与各步骤状态）；运行结束事件携带。
     pub summary: Option<SummaryDetail>,
 }
 
@@ -45,6 +43,8 @@ pub struct FailureDetail {
 pub enum SummaryStepStatus {
     /// 已成功执行。
     Succeeded,
+    /// 执行失败（运行因它中止）。
+    Failed,
     /// 因停用被跳过。
     Skipped,
     /// 尚未执行（排在本步之后的位置）。
@@ -57,6 +57,7 @@ impl SummaryStepStatus {
     pub fn label(self) -> &'static str {
         match self {
             Self::Succeeded => "成功",
+            Self::Failed => "失败",
             Self::Skipped => "跳过",
             Self::NotRun => "未执行",
         }
@@ -67,6 +68,7 @@ impl SummaryStepStatus {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
             Self::Skipped => "skipped",
             Self::NotRun => "not_run",
         }
@@ -92,6 +94,12 @@ pub struct SummaryDetail {
 }
 
 impl NotificationMessage {
+    /// 简讯是否承载失败结果（失败简讯必带失败详情）。
+    #[must_use]
+    fn is_failure(&self) -> bool {
+        self.failure.is_some()
+    }
+
     /// 渲染为 IM 文本消息。
     ///
     /// 单段纯文本：标题起头，字段逐行列出；缺省的素材（无域名/目标）直接
@@ -114,12 +122,19 @@ impl NotificationMessage {
         if !self.domains.is_empty() {
             lines.push(format!("域名：{}", self.domains.join(", ")));
         }
-        if let Some(target) = &self.target {
-            lines.push(format!("部署目标：{target}"));
-        }
         if let Some(summary) = &self.summary {
-            lines.push("运行结果：成功".to_owned());
-            lines.push(format!("总耗时：{}", format_duration(summary.duration_secs)));
+            lines.push(format!(
+                "运行结果：{}",
+                if self.is_failure() {
+                    "失败"
+                } else {
+                    "成功"
+                }
+            ));
+            lines.push(format!(
+                "总耗时：{}",
+                format_duration(summary.duration_secs)
+            ));
             lines.push("步骤状态：".to_owned());
             for step in &summary.steps {
                 lines.push(format!("- {}：{}", step.type_id, step.status.label()));
@@ -168,9 +183,6 @@ impl NotificationMessage {
         if !self.domains.is_empty() {
             payload["domains"] = json!(self.domains);
         }
-        if let Some(target) = &self.target {
-            payload["target"] = json!(target);
-        }
         if let Some(failure) = &self.failure {
             payload["failure"] = json!({
                 "step_type": failure.step_type,
@@ -180,7 +192,7 @@ impl NotificationMessage {
         }
         if let Some(summary) = &self.summary {
             payload["summary"] = json!({
-                "result": "success",
+                "result": if self.is_failure() { "failed" } else { "success" },
                 "duration_secs": summary.duration_secs,
                 "steps": summary
                     .steps
@@ -237,7 +249,6 @@ mod tests {
             trigger: "cron".to_owned(),
             occurred_at: Utc.with_ymd_and_hms(2026, 10, 4, 12, 0, 0).unwrap(),
             domains: vec!["a.example.com".to_owned(), "b.example.com".to_owned()],
-            target: None,
             failure: None,
             summary: None,
         }
@@ -257,10 +268,8 @@ mod tests {
     fn text_omits_missing_sections() {
         let mut message = sample();
         message.domains.clear();
-        message.target = Some("SSH host.example.com".to_owned());
         let text = message.render_text();
         assert!(!text.contains("域名"), "{text}");
-        assert!(text.contains("部署目标：SSH host.example.com"), "{text}");
     }
 
     #[test]
@@ -275,7 +284,6 @@ mod tests {
         let payload = sample().payload_json();
         assert_eq!(payload["event"], "cert.apply");
         assert_eq!(payload["trigger"], "cron");
-        assert!(payload.get("target").is_none());
         assert_eq!(payload["domains"][0], "a.example.com");
         assert!(
             payload["occurred_at"]
@@ -313,8 +321,8 @@ mod tests {
     #[test]
     fn text_includes_summary_result_duration_and_steps() {
         let mut message = sample();
-        message.event = "notify.summary".to_owned();
-        message.title = "运行简讯".to_owned();
+        message.event = "pipeline.succeeded".to_owned();
+        message.title = "流水线运行成功".to_owned();
         message.summary = Some(SummaryDetail {
             duration_secs: 185,
             steps: vec![
@@ -326,10 +334,6 @@ mod tests {
                     type_id: "cert.deploy".to_owned(),
                     status: SummaryStepStatus::Skipped,
                 },
-                SummaryStep {
-                    type_id: "notify.summary".to_owned(),
-                    status: SummaryStepStatus::Succeeded,
-                },
             ],
         });
         let text = message.render_text();
@@ -337,7 +341,6 @@ mod tests {
         assert!(text.contains("总耗时：3 分 5 秒"), "{text}");
         assert!(text.contains("- cert.apply：成功"), "{text}");
         assert!(text.contains("- cert.deploy：跳过"), "{text}");
-        assert!(text.contains("- notify.summary：成功"), "{text}");
     }
 
     #[test]
@@ -358,7 +361,7 @@ mod tests {
     #[test]
     fn payload_json_carries_summary_detail() {
         let mut message = sample();
-        message.event = "notify.summary".to_owned();
+        message.event = "pipeline.succeeded".to_owned();
         message.summary = Some(SummaryDetail {
             duration_secs: 45,
             steps: vec![SummaryStep {

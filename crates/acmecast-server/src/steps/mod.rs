@@ -95,7 +95,10 @@ pub fn default_deploy_registry(
         .register(acmecast_deploy::LocalTarget)
         .expect("内置部署目标不应重复注册");
     registry
-        .register(acmecast_deploy::SshTarget::live_with_proxy(proxy_url, network_timeout))
+        .register(acmecast_deploy::SshTarget::live_with_proxy(
+            proxy_url,
+            network_timeout,
+        ))
         .expect("内置部署目标不应重复注册");
     registry
         .register(acmecast_deploy::TencentSslTarget::default())
@@ -118,8 +121,9 @@ pub fn default_deploy_registry(
 /// 传给 `cert.apply`——DoH 解析器直连失败时经它回退；提供商侧
 /// `proxy_mode=inherit` 的凭据则经调用方构建的 DNS 注册表继承同一份取值
 /// （见 [`default_dns_registry`]）。
-/// `notifications` 是 `config.toml` 声明的通知渠道（含未启用的），注入
-/// `notify.summary` 步骤供简讯投递按名选取。
+///
+/// 通知不再是步骤：运行结束的统一简讯由 `WebhookEventSink` 按流水线
+/// `notification_channels` 投递，步骤注册表里没有通知相关条目。
 #[must_use]
 pub fn default_steps(
     db: DatabaseConnection,
@@ -129,17 +133,19 @@ pub fn default_steps(
     propagation: acmecast_dns::PropagationPolicy,
     resolver_entries: Vec<acmecast_dns::ResolverEntry>,
     proxy_url: Option<&str>,
-    notifications: Vec<acmecast_notify::ChannelConfig>,
 ) -> StepRegistry {
     let mut steps = StepRegistry::new();
     steps
-        .register(CertApplyStep::with_policy_resolvers_db_and_data_dir(
-            dns,
-            propagation,
-            resolver_entries,
-            db.clone(),
-            data_dir.clone(),
-        ).with_proxy_url(proxy_url))
+        .register(
+            CertApplyStep::with_policy_resolvers_db_and_data_dir(
+                dns,
+                propagation,
+                resolver_entries,
+                db.clone(),
+                data_dir.clone(),
+            )
+            .with_proxy_url(proxy_url),
+        )
         .expect("内置步骤不应重复注册");
     steps
         .register(CertStoreStep::new(db.clone(), data_dir))
@@ -149,14 +155,6 @@ pub fn default_steps(
         .register(CertDeployStep::new(deploy, state).with_proxy_url(proxy_url))
         .expect("内置步骤不应重复注册");
     steps
-        .register(acmecast_notify::NotifySummaryStep::new(
-            notifications,
-            Arc::new(acmecast_notify::default_registry()),
-            db,
-            acmecast_notify::http_client(),
-        ))
-        .expect("内置步骤不应重复注册");
-    steps
 }
 
 #[cfg(test)]
@@ -164,21 +162,14 @@ mod tests {
     use super::*;
     use acmecast_pipeline::PipelineStep;
 
-    /// 通知事件常量必须与步骤 `type_id` 同源：事件订阅过滤靠字符串匹配，
-    /// 常量漂移会导致「配置了订阅却永远不触发」的静默失效。
+    /// `cert.apply` 步骤的类型标识必须与 `acmecast_notify::EVENT_CERT_APPLY`
+    /// 同源：简讯的域名列表按该常量从流水线定义里找步骤，常量漂移会让
+    /// 简讯永远带不上域名。
     #[test]
-    fn notification_event_constants_match_step_type_ids() {
+    fn cert_apply_event_constant_matches_step_type_id() {
         let dns = Arc::new(DnsProviderRegistry::new());
         let apply = CertApplyStep::new(dns);
         assert_eq!(apply.type_id(), acmecast_notify::EVENT_CERT_APPLY);
-
-        let deploy = CertDeployStep::new(
-            Arc::new(DeploymentRegistry::new()),
-            Arc::new(DatabaseDeploymentState::new(
-                sea_orm::DatabaseConnection::Disconnected,
-            )),
-        );
-        assert_eq!(deploy.type_id(), acmecast_notify::EVENT_CERT_DEPLOY);
     }
 
     /// DNS 注册表携带全局代理：配了代理（含未配）四家照常注册——
@@ -227,9 +218,12 @@ mod tests {
         }
 
         let transport = Arc::new(Counting::default());
-        let provider = CloudflareProvider::with_transport(Arc::clone(&transport)
-            as Arc<dyn HttpTransport>)
-        .with_global_proxy_and_timeout(Some("ftp://127.0.0.1:21"), acmecast_core::NETWORK_TIMEOUT);
+        let provider =
+            CloudflareProvider::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>)
+                .with_global_proxy_and_timeout(
+                    Some("ftp://127.0.0.1:21"),
+                    acmecast_core::NETWORK_TIMEOUT,
+                );
         let record = TxtRecord::new("example.com", "_acme-challenge.example.com", "value", 60);
 
         // inherit：读全局代理 → 非法值在传输层构建时被拒，替身未被调用。

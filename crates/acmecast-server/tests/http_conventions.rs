@@ -30,7 +30,7 @@ use utoipa::OpenApi;
 /// `/api/openapi.json` 与 `/swagger-ui` 由 `SwaggerUi` 挂载、与文档本身
 /// 同源生成，不在此列。这份清单就是「端点变更后文档同步」的守护：
 /// 新增路由而忘记补文档时，这里会失败提醒。
-const KNOWN_API_PATHS: [&str; 27] = [
+const KNOWN_API_PATHS: [&str; 25] = [
     "/api/login",
     "/api/pipelines",
     "/api/pipelines/{id}",
@@ -45,8 +45,6 @@ const KNOWN_API_PATHS: [&str; 27] = [
     "/api/credentials/{id}",
     "/api/credentials/{id}/test",
     "/api/credential-types",
-    "/api/notifications/test",
-    "/api/notifications/channels",
     "/api/tasks",
     "/api/tasks/{type_id}/schema",
     "/api/histories",
@@ -212,7 +210,8 @@ async fn pem_download_carries_filename_and_content_type() {
         .unwrap_or_default()
         .to_owned();
     assert!(
-        disposition.contains("attachment") && disposition.contains("download.example.com.fullchain.cer"),
+        disposition.contains("attachment")
+            && disposition.contains("download.example.com.fullchain.cer"),
         "应带附件文件名，实际为 `{disposition}`"
     );
     let content_type = response
@@ -489,7 +488,9 @@ async fn deleting_an_archived_certificate_removes_files_and_fingerprint_dir() {
     // 已归档后可删——直接删除。
     let response = send(
         &app,
-        Request::delete("/api/certificates/1").body(Body::empty()).unwrap(),
+        Request::delete("/api/certificates/1")
+            .body(Body::empty())
+            .unwrap(),
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK, "归档态应可删除");
@@ -541,15 +542,24 @@ async fn archiving_missing_material_degrades_to_local_revocation_mark() {
             .unwrap(),
     )
     .await;
-    assert_eq!(response.status(), StatusCode::OK, "材料缺失也应返回成功（降级）");
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "材料缺失也应返回成功（降级）"
+    );
     let body = json(response).await;
     assert_eq!(body["data"]["archived_now"], false);
-    assert_eq!(body["data"]["material_missing"], true, "应带材料缺失降级标记");
+    assert_eq!(
+        body["data"]["material_missing"], true,
+        "应带材料缺失降级标记"
+    );
 
     // 降级后记录进入吊销终态，删除按钮的启用条件满足。
     let response = send(
         &app,
-        Request::get("/api/certificates/1").body(Body::empty()).unwrap(),
+        Request::get("/api/certificates/1")
+            .body(Body::empty())
+            .unwrap(),
     )
     .await;
     let body = json(response).await;
@@ -558,12 +568,17 @@ async fn archiving_missing_material_degrades_to_local_revocation_mark() {
         "降级应设置 revoked_at：{:?}",
         body["data"]["revoked_at"]
     );
-    assert!(body["data"]["archived_at"].is_null(), "降级不应设置 archived_at");
+    assert!(
+        body["data"]["archived_at"].is_null(),
+        "降级不应设置 archived_at"
+    );
 
     // 降级后的记录可直接删除。
     let response = send(
         &app,
-        Request::delete("/api/certificates/1").body(Body::empty()).unwrap(),
+        Request::delete("/api/certificates/1")
+            .body(Body::empty())
+            .unwrap(),
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK, "降级为吊销态后应可删除");
@@ -603,8 +618,15 @@ async fn revoking_missing_material_degrades_without_ca_call() {
         json_request("POST", "/api/certificates/1/revoke", &serde_json::json!({})),
     )
     .await;
-    assert_eq!(response.status(), StatusCode::OK, "材料缺失应降级为本地标记");
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "材料缺失应降级为本地标记"
+    );
     let body = json(response).await;
-    assert_eq!(body["data"]["material_missing"], true, "应带材料缺失降级标记");
+    assert_eq!(
+        body["data"]["material_missing"], true,
+        "应带材料缺失降级标记"
+    );
     assert!(body["data"]["revoked_at"].is_string(), "应设置 revoked_at");
 }

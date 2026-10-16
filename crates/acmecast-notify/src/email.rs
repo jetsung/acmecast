@@ -16,6 +16,7 @@ use lettre::{
 use crate::channel::{ChannelConfig, NotificationChannel};
 use crate::error::{Error, Result};
 use crate::message::NotificationMessage;
+use crate::smtp_proxy::send_via_proxy;
 
 /// 邮件主题前缀：与 IM 渠道的文本前缀保持同一辨识度。
 pub(crate) const SUBJECT_PREFIX: &str = "【acmecast】";
@@ -72,6 +73,9 @@ pub struct SmtpSettings {
     pub password: Option<String>,
     /// TLS 连接模式，缺省 [`TlsMode::Implicit`]。
     pub tls: TlsMode,
+    /// 有效代理 URL（`socks5`/`http`/`https`）；`None` 即直连。
+    /// 经代理时搭建 SOCKS5/HTTP-CONNECT 隧道后完成 SMTP 会话。
+    pub proxy_url: Option<String>,
 }
 
 impl SmtpSettings {
@@ -155,6 +159,14 @@ impl NotificationChannel for EmailChannel {
             name: channel.name.clone(),
             cause,
         })?;
+        if let Some(proxy_url) = settings.proxy_url.as_deref() {
+            return send_via_proxy(settings, proxy_url, mail)
+                .await
+                .map_err(|cause| Error::Delivery {
+                    name: channel.name.clone(),
+                    cause,
+                });
+        }
         let transport = build_transport(settings);
         transport
             .send(mail)
@@ -206,10 +218,15 @@ pub(crate) fn build_transport(settings: &SmtpSettings) -> AsyncSmtpTransport<Tok
     let mut builder = match settings.tls {
         TlsMode::Implicit => AsyncSmtpTransport::<Tokio1Executor>::relay(host),
         TlsMode::StartTls => AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host),
-        TlsMode::None => Ok(AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(host)),
+        TlsMode::None => Ok(AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(
+            host,
+        )),
     }
     .unwrap_or_else(|error| {
-        panic!("SMTP 传输参数构建失败（host={host}，tls={:?}）: {error}", settings.tls)
+        panic!(
+            "SMTP 传输参数构建失败（host={host}，tls={:?}）: {error}",
+            settings.tls
+        )
     });
     builder = builder
         .port(settings.effective_port())
@@ -246,7 +263,6 @@ mod tests {
             trigger: "cron".to_owned(),
             occurred_at: chrono::Utc::now(),
             domains: vec!["a.example.com".to_owned()],
-            target: None,
             failure: None,
             summary: None,
         }
@@ -261,6 +277,7 @@ mod tests {
             username: Some("no-reply@example.com".to_owned()),
             password: Some("secret".to_owned()),
             tls: TlsMode::Implicit,
+            proxy_url: None,
         }
     }
 
@@ -400,7 +417,10 @@ mod tests {
         assert!(raw.contains("ops@example.com"), "{raw}");
         assert!(raw.contains("b@example.com"), "{raw}");
         assert!(raw.contains("no-reply@example.com"), "{raw}");
-        assert!(raw.contains("Content-Type: text/plain; charset=utf-8"), "{raw}");
+        assert!(
+            raw.contains("Content-Type: text/plain; charset=utf-8"),
+            "{raw}"
+        );
         let body = decoded_body(&raw);
         assert!(body.contains("证书申请成功"), "{body}");
         assert!(body.contains("流水线：example-pipeline"), "{body}");

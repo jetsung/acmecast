@@ -1,17 +1,18 @@
-//! 5.2 端到端：流水线运行触发 webhook 通知。
+//! 端到端：流水线运行结束 → 凭据渠道收到简讯。
 //!
-//! 全链路走真实 HTTP 与真实执行器：手动触发含 `cert.apply` + `cert.deploy`
-//! 的流水线，断言订阅渠道收到两条消息、消息字段符合 spec；同时用一个
-//! 持续失败的渠道证明投递失败不影响流水线结果。
+//! 全链路走真实 HTTP 与真实执行器：通知渠道经 `/api/credentials` 加密
+//! 入库，流水线的 `notification_channels` 选中它，手动触发运行，断言运行
+//! 结束（成功/失败）时渠道收到**一条**简讯；同时验证投递失败不影响流水线
+//! 结果、未选渠道不产生投递。
 
 mod support;
 
 use std::sync::Arc;
 use std::time::Duration;
 
+use acmecast_core::CredentialCipher;
 use acmecast_notify::{
-    ChannelConfig, DeliveryOptions, EVENT_CERT_APPLY, EVENT_CERT_DEPLOY, SmtpSettings, TlsMode,
-    WebhookEventSink,
+    DeliveryOptions, EVENT_PIPELINE_FAILED, EVENT_PIPELINE_SUCCEEDED, WebhookEventSink,
 };
 use acmecast_pipeline::{PipelineStep, StepContext, StepOutput, StepRegistry};
 use acmecast_server::{AppState, RuntimeState, auth::AuthMode, config::ServerConfig};
@@ -23,6 +24,16 @@ use serde_json::Value;
 use tower::ServiceExt;
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
+
+/// 与测试装配共用同一密钥；凭据的加解密两侧必须一致。
+const CIPHER_BYTES: [u8; 32] = [7u8; 32];
+
+/// `cert.apply` 的类型标识（成功简讯的域名列表从它的输入取）。
+const CERT_APPLY: &str = "cert.apply";
+/// 成功部署步骤的类型标识。
+const CERT_DEPLOY: &str = "cert.deploy";
+/// 总是失败步骤的类型标识（专为失败简讯断言构造）。
+const CERT_FAIL: &str = "cert.fail";
 
 /// 总是成功的测试步骤，`type_id` 由构造注入。
 #[derive(Debug)]
@@ -39,6 +50,24 @@ impl PipelineStep for OkStep {
     }
 }
 
+/// 总是失败的测试步骤：失败原因固定，供失败简讯断言。
+#[derive(Debug)]
+struct FailStep(&'static str);
+
+#[async_trait]
+impl PipelineStep for FailStep {
+    fn type_id(&self) -> &'static str {
+        self.0
+    }
+
+    async fn execute(&self, _ctx: &mut StepContext<'_>) -> acmecast_pipeline::Result<StepOutput> {
+        Err(acmecast_pipeline::Error::InvalidInput {
+            field: "domains".to_owned(),
+            reason: "测试构造的失败".to_owned(),
+        })
+    }
+}
+
 async fn database() -> DatabaseConnection {
     let db = Database::connect("sqlite::memory:")
         .await
@@ -47,36 +76,41 @@ async fn database() -> DatabaseConnection {
     db
 }
 
+/// 装配含三个测试步骤与通知订阅端的应用。
+///
+/// 凭据加密器与 `/api/credentials` 端点、`WebhookEventSink` 三方共用：
+/// 保存时加密、投递时解密的密钥必须一致。
 #[allow(unsafe_code)]
-async fn app(db: DatabaseConnection, channels: Vec<ChannelConfig>) -> axum::Router {
+async fn app(db: DatabaseConnection) -> axum::Router {
     unsafe {
         std::env::set_var("NO_PROXY", "127.0.0.1,localhost");
         std::env::set_var("no_proxy", "127.0.0.1,localhost");
     }
     let mut steps = StepRegistry::new();
     steps
-        .register(OkStep(EVENT_CERT_APPLY))
+        .register(OkStep(CERT_APPLY))
         .expect("注册申请步骤应成功");
     steps
-        .register(OkStep(EVENT_CERT_DEPLOY))
+        .register(OkStep(CERT_DEPLOY))
         .expect("注册部署步骤应成功");
+    steps
+        .register(FailStep(CERT_FAIL))
+        .expect("注册失败步骤应成功");
 
+    let cipher = Arc::new(CredentialCipher::from_bytes(&CIPHER_BYTES).expect("密钥应合法"));
+    let credentials = acmecast_server::dependencies::credential_registry();
     let mut runtime = RuntimeState::new(
-        acmecast_server::dependencies::credential_registry(),
+        Arc::clone(&credentials),
         Arc::new(steps),
-        // run 端点要求加密器在场（凭据解析的前置条件），测试同样要给。
-        Some(Arc::new(
-            acmecast_core::CredentialCipher::from_base64(
-                &acmecast_core::CredentialCipher::generate_key_base64(),
-            )
-            .expect("生成的密钥应可用"),
-        )),
+        Some(Arc::clone(&cipher)),
         AuthMode::Disabled,
     );
     runtime.notifier = Some(Arc::new(WebhookEventSink::new(
         db.clone(),
-        channels,
+        credentials,
+        Some(cipher),
         DeliveryOptions::default(),
+        None::<String>,
     )));
 
     acmecast_server::assemble_router_with_runtime(
@@ -101,6 +135,99 @@ fn json_request(method: &str, uri: &str, body: &Value) -> Request<Body> {
         .expect("应能构造请求")
 }
 
+async fn json_body(response: axum::http::Response<Body>) -> Value {
+    let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+        .await
+        .expect("应能读取响应体");
+    serde_json::from_slice(&bytes).expect("响应应为 JSON")
+}
+
+/// 经 API 创建一条通知凭据，返回其 id。
+async fn create_credential(app: &axum::Router, type_id: &str, fields: Value) -> i64 {
+    let response = send(
+        app,
+        json_request(
+            "POST",
+            "/api/credentials",
+            &serde_json::json!({ "name": "e2e-channel", "type_id": type_id, "fields": fields }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::OK,
+        "创建凭据应成功"
+    );
+    json_body(response).await["data"]["id"]
+        .as_i64()
+        .expect("应返回凭据 id")
+}
+
+/// 经 API 创建流水线（含通知渠道选择），返回其 id。
+async fn create_pipeline(app: &axum::Router, channels: &[i64], steps: Value) -> i64 {
+    let response = send(
+        app,
+        json_request(
+            "POST",
+            "/api/pipelines",
+            &serde_json::json!({
+                "name": "e2e-pipeline",
+                "notification_channels": channels,
+                "steps": steps,
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::OK,
+        "保存流水线应成功"
+    );
+    json_body(response).await["data"]["id"]
+        .as_i64()
+        .expect("应返回流水线 id")
+}
+
+/// 手动触发运行并轮询数据库至终态，断言终态与预期一致。
+async fn run_pipeline_and_wait(
+    app: &axum::Router,
+    db: &DatabaseConnection,
+    pipeline_id: i64,
+    expected: &str,
+) {
+    let response = send(
+        app,
+        json_request(
+            "POST",
+            &format!("/api/pipelines/{pipeline_id}/run"),
+            &serde_json::json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        axum::http::StatusCode::OK,
+        "触发运行应成功"
+    );
+
+    use acmecast_store::entity::history;
+    let mut history_status = String::new();
+    for _ in 0..500 {
+        if let Some(record) = history::Entity::find()
+            .filter(history::Column::PipelineId.eq(pipeline_id))
+            .one(db)
+            .await
+            .expect("查询历史应成功")
+            && record.status != "running"
+        {
+            history_status = record.status;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(history_status, expected, "流水线运行终态应符合预期");
+}
+
 async fn wait_for_requests(server: &MockServer, expected: usize) -> Vec<wiremock::Request> {
     for _ in 0..250 {
         if let Some(requests) = server.received_requests().await
@@ -113,37 +240,20 @@ async fn wait_for_requests(server: &MockServer, expected: usize) -> Vec<wiremock
     panic!("等待 {expected} 条请求超时");
 }
 
-fn email_channel(name: &str, events: &[&str], smtp: SmtpSettings) -> ChannelConfig {
-    ChannelConfig {
-        name: name.to_owned(),
-        provider: "email".to_owned(),
-        url: String::new(),
-        secret: None,
-        events: events.iter().map(|e| (*e).to_owned()).collect(),
-        enabled: true,
-        sign: None,
-        method: "POST".to_owned(),
-        headers: std::collections::BTreeMap::new(),
-        body_template: None,
-        smtp: Some(smtp),
-    }
+/// 运行结束与投递是两条并行旁路：终态已到但投递可能还在路上，等一小会。
+async fn assert_no_requests(server: &MockServer) {
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let requests = server.received_requests().await.unwrap_or_default();
+    assert!(requests.is_empty(), "不应产生投递: {}", requests.len());
 }
 
-fn smtp_settings(port: u16) -> SmtpSettings {
-    SmtpSettings {
-        host: "127.0.0.1".to_owned(),
-        port: Some(port),
-        from: "no-reply@example.com".to_owned(),
-        to: vec!["ops@example.com".to_owned()],
-        username: None,
-        password: None,
-        tls: TlsMode::None,
-    }
+fn generic_credential_fields(url: &str) -> Value {
+    serde_json::json!({ "name": "e2e", "url": url, "method": "POST" })
 }
 
 /// 极简 SMTP 服务器：匿名、无 TLS，收集每次会话的 DATA 负载。
 ///
-/// 只为 e2e 打通「事件 → EmailChannel → SMTP 会话」链路，不支持认证，
+/// 只为 e2e 打通「运行结束 → EmailChannel → SMTP 会话」链路，不支持认证，
 /// 命令响应一律按最简格式应答（EHLO 附带 8BITMIME）。
 async fn smtp_server() -> (std::net::SocketAddr, Arc<tokio::sync::Mutex<Vec<String>>>) {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -219,258 +329,153 @@ async fn wait_for_messages(
     panic!("等待 {expected} 封邮件超时");
 }
 
-/// 创建含 cert.apply + cert.deploy 两个步骤的流水线，返回其 id。
-async fn create_apply_deploy_pipeline(app: &axum::Router) -> i64 {
-    let response = send(
-        app,
-        json_request(
-            "POST",
-            "/api/pipelines",
-            &serde_json::json!({
-                "name": "e2e-pipeline",
-                "steps": [
-                    {
-                        "type_id": EVENT_CERT_APPLY,
-                        "input": { "domains": ["a.example.com"] },
-                        "enabled": true
-                    },
-                    {
-                        "type_id": EVENT_CERT_DEPLOY,
-                        "input": { "target": "ssh", "config": { "host": "web.example.com" } },
-                        "enabled": true
-                    }
-                ]
-            }),
-        ),
-    )
-    .await;
-    assert_eq!(
-        response.status(),
-        axum::http::StatusCode::OK,
-        "保存流水线应成功"
-    );
-    let body: Value = serde_json::from_slice(
-        &axum::body::to_bytes(response.into_body(), 1024 * 1024)
-            .await
-            .unwrap(),
-    )
-    .unwrap();
-    body["data"]["id"].as_i64().expect("应返回流水线 id")
-}
-
-/// 手动触发运行并轮询数据库至终态，断言成功（投递失败不影响运行结果）。
-async fn run_pipeline_and_wait_success(
-    app: &axum::Router,
-    db: &sea_orm::DatabaseConnection,
-    pipeline_id: i64,
-) {
-    let response = send(
-        app,
-        json_request(
-            "POST",
-            &format!("/api/pipelines/{pipeline_id}/run"),
-            &serde_json::json!({}),
-        ),
-    )
-    .await;
-    assert_eq!(
-        response.status(),
-        axum::http::StatusCode::OK,
-        "触发运行应成功"
-    );
-
-    use acmecast_store::entity::history;
-    let mut history_status = String::new();
-    for _ in 0..500 {
-        if let Some(record) = history::Entity::find()
-            .filter(history::Column::PipelineId.eq(pipeline_id))
-            .one(db)
-            .await
-            .expect("查询历史应成功")
-            && record.status != "running"
-        {
-            history_status = record.status;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert_eq!(history_status, "success", "流水线运行应为成功");
-}
-
+/// 成功运行：渠道收到一条成功简讯（含步骤状态、域名与总耗时）。
 #[tokio::test]
-async fn pipeline_run_pushes_apply_and_deploy_messages() {
+async fn succeeded_run_delivers_single_summary() {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     let healthy = MockServer::start().await;
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(200))
         .mount(&healthy)
         .await;
-    // 持续失败的渠道：证明投递失败不影响流水线结果。
-    let broken = MockServer::start().await;
+
+    let db = database().await;
+    let app = app(db.clone()).await;
+    let credential_id = create_credential(
+        &app,
+        "notify.generic",
+        generic_credential_fields(&format!("{}/hook", healthy.uri())),
+    )
+    .await;
+    let pipeline_id = create_pipeline(
+        &app,
+        &[credential_id],
+        serde_json::json!([
+            { "type_id": CERT_APPLY, "input": { "domains": ["a.example.com"] }, "enabled": true },
+            { "type_id": CERT_DEPLOY, "input": { "target": "local" }, "enabled": true },
+        ]),
+    )
+    .await;
+
+    run_pipeline_and_wait(&app, &db, pipeline_id, "success").await;
+
+    let requests = wait_for_requests(&healthy, 1).await;
+    assert_eq!(requests.len(), 1, "成功运行只应投递一条简讯");
+    let body: Value = serde_json::from_slice(&requests[0].body).expect("应为 JSON");
+    assert_eq!(body["event"], EVENT_PIPELINE_SUCCEEDED);
+    assert_eq!(body["title"], "流水线运行成功");
+    assert_eq!(body["pipeline"], "e2e-pipeline");
+    assert_eq!(body["trigger"], "manual");
+    assert_eq!(body["domains"][0], "a.example.com");
+    assert_eq!(body["summary"]["result"], "success");
+    assert_eq!(body["summary"]["steps"][0]["type_id"], CERT_APPLY);
+    assert_eq!(body["summary"]["steps"][0]["status"], "succeeded");
+    assert_eq!(body["summary"]["steps"][1]["type_id"], CERT_DEPLOY);
+    assert_eq!(body["summary"]["steps"][1]["status"], "succeeded");
+}
+
+/// 失败运行：渠道收到一条失败简讯（含失败步骤与原因），运行终态为失败。
+#[tokio::test]
+async fn failed_run_delivers_failure_summary() {
+    let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(503))
-        .mount(&broken)
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
         .await;
 
     let db = database().await;
-    let channels = vec![
-        ChannelConfig {
-            name: "ops".to_owned(),
-            provider: "generic".to_owned(),
-            url: format!("{}/hook", healthy.uri()),
-            secret: None,
-            events: vec![EVENT_CERT_APPLY.to_owned(), EVENT_CERT_DEPLOY.to_owned()],
-            enabled: true,
-            sign: None,
-            method: "POST".to_owned(),
-            headers: std::collections::BTreeMap::new(),
-            body_template: None,
-            smtp: None,
-        },
-        ChannelConfig {
-            name: "down".to_owned(),
-            provider: "generic".to_owned(),
-            url: format!("{}/hook", broken.uri()),
-            secret: None,
-            events: vec![EVENT_CERT_APPLY.to_owned()],
-            enabled: true,
-            sign: None,
-            method: "POST".to_owned(),
-            headers: std::collections::BTreeMap::new(),
-            body_template: None,
-            smtp: None,
-        },
-    ];
-    let app = app(db.clone(), channels).await;
-
-    // 保存一条含两个订阅事件的流水线。
-    let response = send(
+    let app = app(db.clone()).await;
+    let credential_id = create_credential(
         &app,
-        json_request(
-            "POST",
-            "/api/pipelines",
-            &serde_json::json!({
-                "name": "e2e-pipeline",
-                "steps": [
-                    {
-                        "type_id": EVENT_CERT_APPLY,
-                        "input": { "domains": ["a.example.com"] },
-                        "enabled": true
-                    },
-                    {
-                        "type_id": EVENT_CERT_DEPLOY,
-                        "input": { "target": "ssh", "config": { "host": "web.example.com" } },
-                        "enabled": true
-                    }
-                ]
-            }),
-        ),
+        "notify.generic",
+        generic_credential_fields(&format!("{}/hook", server.uri())),
     )
     .await;
-    assert_eq!(
-        response.status(),
-        axum::http::StatusCode::OK,
-        "保存流水线应成功"
-    );
-    let body: Value = serde_json::from_slice(
-        &axum::body::to_bytes(response.into_body(), 1024 * 1024)
-            .await
-            .unwrap(),
-    )
-    .unwrap();
-    let pipeline_id = body["data"]["id"].as_i64().expect("应返回流水线 id");
-
-    // 手动触发运行。
-    let response = send(
+    let pipeline_id = create_pipeline(
         &app,
-        json_request(
-            "POST",
-            &format!("/api/pipelines/{pipeline_id}/run"),
-            &serde_json::json!({}),
-        ),
+        &[credential_id],
+        serde_json::json!([
+            { "type_id": CERT_APPLY, "input": { "domains": ["a.example.com"] }, "enabled": true },
+            { "type_id": CERT_FAIL, "input": {}, "enabled": true },
+        ]),
     )
     .await;
-    assert_eq!(
-        response.status(),
-        axum::http::StatusCode::OK,
-        "触发运行应成功"
-    );
 
-    // 运行是 spawn 旁路：轮询数据库等终态。
-    use acmecast_store::entity::history;
-    let mut history_status = String::new();
-    for _ in 0..250 {
-        if let Some(record) = history::Entity::find()
-            .filter(history::Column::PipelineId.eq(pipeline_id))
-            .one(&db)
-            .await
-            .expect("查询历史应成功")
-            && record.status != "running"
-        {
-            history_status = record.status;
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert_eq!(history_status, "success", "流水线运行应为成功");
+    run_pipeline_and_wait(&app, &db, pipeline_id, "failed").await;
 
-    // 健康渠道收到两条消息：申请（含域名）与部署（含目标）。
-    let requests = wait_for_requests(&healthy, 2).await;
-    let messages: Vec<Value> = requests
-        .iter()
-        .map(|request| serde_json::from_slice(&request.body).expect("消息应为 JSON"))
-        .collect();
-    assert_eq!(messages[0]["event"], EVENT_CERT_APPLY);
-    assert_eq!(messages[0]["pipeline"], "e2e-pipeline");
-    assert_eq!(messages[0]["trigger"], "manual");
-    assert_eq!(messages[0]["domains"][0], "a.example.com");
-    assert_eq!(messages[1]["event"], EVENT_CERT_DEPLOY);
-    assert_eq!(messages[1]["target"], "SSH web.example.com");
-
-    // 失败渠道也收到了申请事件（最终失败只影响自身）。
-    let broken_requests = wait_for_requests(&broken, 1).await;
-    assert_eq!(broken_requests.len(), 1, "失败渠道应只收到订阅内的申请事件");
+    let requests = wait_for_requests(&server, 1).await;
+    assert_eq!(requests.len(), 1, "失败运行只应投递一条简讯");
+    let body: Value = serde_json::from_slice(&requests[0].body).expect("应为 JSON");
+    assert_eq!(body["event"], EVENT_PIPELINE_FAILED);
+    assert_eq!(body["title"], "流水线运行失败");
+    assert_eq!(body["failure"]["step"], 2, "失败步序号对外从 1 起");
+    assert_eq!(body["failure"]["step_type"], CERT_FAIL);
+    let reason = body["failure"]["reason"].as_str().expect("应含失败原因");
+    assert!(reason.contains("测试构造的失败"), "{reason}");
+    assert_eq!(body["summary"]["result"], "failed");
+    assert_eq!(body["summary"]["steps"][0]["status"], "succeeded");
+    assert_eq!(body["summary"]["steps"][1]["status"], "failed");
 }
 
+/// 未选渠道：运行结束不产生任何投递。
 #[tokio::test]
-async fn email_channel_receives_events_and_smtp_failure_is_isolated() {
+async fn empty_notification_channels_never_deliver() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&server)
+        .await;
+
+    let db = database().await;
+    let app = app(db.clone()).await;
+    let pipeline_id = create_pipeline(
+        &app,
+        &[],
+        serde_json::json!([
+            { "type_id": CERT_APPLY, "input": { "domains": ["a.example.com"] }, "enabled": true },
+        ]),
+    )
+    .await;
+
+    run_pipeline_and_wait(&app, &db, pipeline_id, "success").await;
+
+    assert_no_requests(&server).await;
+}
+
+/// 邮件渠道：运行结束收到一封成功简讯；投递失败渠道不影响运行结果。
+#[tokio::test]
+async fn email_credential_receives_summary() {
     let (smtp_addr, inbox) = smtp_server().await;
     let db = database().await;
-    // 健康邮件渠道订阅两个事件；另一渠道指向不可达端口，验证投递失败
-    // 与流水线结果隔离（与 webhook 失败渠道同一语义）。
-    let channels = vec![
-        email_channel(
-            "mail-ops",
-            &[EVENT_CERT_APPLY, EVENT_CERT_DEPLOY],
-            smtp_settings(smtp_addr.port()),
-        ),
-        email_channel(
-            "mail-down",
-            &[EVENT_CERT_APPLY],
-            smtp_settings(9),
-        ),
-    ];
-    let app = app(db.clone(), channels).await;
+    let app = app(db.clone()).await;
+    let credential_id = create_credential(
+        &app,
+        "notify.email",
+        serde_json::json!({
+            "name": "邮件群",
+            "host": "127.0.0.1",
+            "port": smtp_addr.port(),
+            "tls": "none",
+            "from": "no-reply@example.com",
+            "to": ["ops@example.com"],
+        }),
+    )
+    .await;
+    let pipeline_id = create_pipeline(
+        &app,
+        &[credential_id],
+        serde_json::json!([
+            { "type_id": CERT_APPLY, "input": { "domains": ["a.example.com"] }, "enabled": true },
+        ]),
+    )
+    .await;
 
-    let pipeline_id = create_apply_deploy_pipeline(&app).await;
-    run_pipeline_and_wait_success(&app, &db, pipeline_id).await;
+    run_pipeline_and_wait(&app, &db, pipeline_id, "success").await;
 
-    // 邮件渠道收到两封信：申请（含域名）与部署（含目标），发件与收件
-    // 人按渠道配置展开。
-    let messages = wait_for_messages(&inbox, 2).await;
-    assert_eq!(messages.len(), 2);
-    let subjects: Vec<&str> = messages
-        .iter()
-        .filter_map(|raw| {
-            raw.lines().find(|line| line.starts_with("Subject:"))
-        })
-        .collect();
-    assert_eq!(subjects.len(), 2, "两封邮件主题应各不相同: {messages:?}");
-    for raw in &messages {
-        assert!(raw.contains("From: no-reply@example.com"), "{raw}");
-        assert!(raw.contains("To: ops@example.com"), "{raw}");
-        assert!(raw.contains("=?utf-8?"), "中文主题应被编码: {raw}");
-    }
-    // 两封主题对应两个事件（证书申请成功 / 证书部署成功）。
-    assert_ne!(subjects[0], subjects[1], "两个事件的邮件主题应可区分");
+    let messages = wait_for_messages(&inbox, 1).await;
+    assert_eq!(messages.len(), 1, "运行结束只应投递一封邮件");
+    let raw = &messages[0];
+    assert!(raw.contains("From: no-reply@example.com"), "{raw}");
+    assert!(raw.contains("To: ops@example.com"), "{raw}");
+    assert!(raw.contains("=?utf-8?"), "中文主题应被编码: {raw}");
 }

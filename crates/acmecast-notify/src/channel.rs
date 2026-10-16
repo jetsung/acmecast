@@ -38,6 +38,8 @@ pub struct ChannelConfig {
     pub headers: BTreeMap<String, String>,
     /// 自定义请求体模板；`None` 时按适配器缺省格式构造。
     pub body_template: Option<String>,
+        /// 有效代理 URL（`socks5`/`http`/`https`）；`None` 即直连（`direct` 或 `inherit` 但全局为空）。
+    pub proxy_url: Option<String>,
     /// 邮件渠道的 SMTP 连接设置；webhook 渠道为 `None`。
     pub smtp: Option<crate::email::SmtpSettings>,
 }

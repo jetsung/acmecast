@@ -24,7 +24,6 @@ fn message() -> NotificationMessage {
         trigger: "cron".to_owned(),
         occurred_at: Utc::now(),
         domains: vec!["a.example.com".to_owned()],
-        target: None,
         failure: None,
         summary: None,
     }
@@ -42,6 +41,7 @@ fn config(url: &str) -> ChannelConfig {
         method: "POST".to_owned(),
         headers: BTreeMap::new(),
         body_template: None,
+        proxy_url: None,
         smtp: None,
     }
 }
@@ -181,7 +181,6 @@ async fn generic_posts_unified_payload() {
     assert_eq!(body["pipeline"], "example-pipeline");
     assert_eq!(body["trigger"], "cron");
     assert_eq!(body["domains"][0], "a.example.com");
-    assert!(body.get("target").is_none());
 }
 
 #[tokio::test]

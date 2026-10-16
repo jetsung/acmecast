@@ -1,6 +1,7 @@
 # 凭据体系
 
-凭据是流水线步骤访问外部系统（CA、DNS 提供商、SSH 主机）的认证材料。
+凭据是流水线访问外部系统（CA、DNS 提供商、SSH 主机）或投递通知
+（IM 机器人 / 通用 webhook / SMTP）的认证材料。
 所有凭据字段经 AES-256-GCM 加密后落库（密钥为 `ACMECAST_CREDENTIAL_KEY`，
 只存在于环境变量），API 与日志中永不出现明文——读取详情的接口解密返回，
 其余列表接口不含字段。
@@ -130,7 +131,7 @@ EdgeOne（TEO）DNS 提供商凭据。字段与 `cloud.tencent` 完全一致（�
     HTTP 代理）——但**部署执行链路没有全局代理来源**，这三类的 `inherit`
     在部署执行时等同直连，仅凭据自带 `custom` URL 才经代理（探测与测试
     链路有全局来源，`inherit` 正常继承）；
-  - 通知渠道不接代理；同一流水线里 `direct` 模式的凭据也保持直连；
+  - `notify.feishu` / `notify.dingtalk` / `notify.generic`（运行结束简讯投递与凭据页连通性测试，webhook 经 `reqwest::Proxy`）与 `notify.email`（运行结束简讯投递与连通性测试，SMTP 经 SOCKS5/HTTP-CONNECT 隧道）；同一流水线里 `direct` 模式的凭据也保持直连；
 - `custom` 模式的非法 URL（不支持的 scheme 或无法解析）在凭据保存时被拒绝并
   定位到 `proxy_url` 字段；代理不可达时错误信息会指向代理地址，凭据页「测试」
   可提前暴露；
@@ -158,6 +159,89 @@ EdgeOne（TEO）DNS 提供商凭据。字段与 `cloud.tencent` 完全一致（�
 
 凭据字段字符串在保存/读取时递归 trim 首尾空白——粘贴带换行的密钥不会让
 厂商认证在莫名其妙的地方失败。
+
+### `notify.*` — 通知渠道（四类）
+
+通知渠道以凭据形式管理，供流水线的「通知」字段引用，运行结束（成功或
+失败）时向渠道投递简讯（见[配置](03-configuration.md)的「通知」）。四类
+适配器：
+
+| 类型标识 | 渠道 | 消息格式 | 签名/认证 |
+|---|---|---|---|
+| `notify.feishu` | 飞书（Lark）自定义机器人 | text | 配置 `secret` 时启用（`timestamp` + `sign`） |
+| `notify.dingtalk` | 钉钉自定义机器人 | text | 配置 `secret` 时启用官方加签（URL 查询参数） |
+| `notify.generic` | 通用 webhook（统一请求方案） | 可自定义模板 | 无内置签名，认证头自行放 `headers` |
+| `notify.email` | SMTP 邮件 | 纯文本邮件 | `username` + `password` 认证（可选） |
+
+`notify.feishu` / `notify.dingtalk` 字段：
+
+| 字段 | 必需 | 说明 |
+|---|---|---|
+| `name` | 是 | 渠道名（简讯与日志中标识渠道） |
+| `url` | 是 | 机器人 webhook 地址（http/https） |
+| `secret` | 否 | 机器人签名密钥：填写即启用签名校验——飞书签名合并进请求体顶层字段，钉钉经 URL 查询参数加签 |
+| `proxy_mode` / `proxy_url` | 否 | 出网代理（见下文「出网代理」） |
+
+`notify.generic` 字段：
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `name` | — | 必填，渠道名 |
+| `url` | — | 必填，请求地址 |
+| `method` | `POST` | `POST` / `PUT` / `PATCH` |
+| `headers` | 空 | 额外静态请求头（JSON 对象），如自建端点的 `X-API-Key` |
+| `body_template` | 空 | 请求体模板，见下 |
+| `proxy_mode` / `proxy_url` | 否 | 出网代理（见下文「出网代理」） |
+
+`notify.email` 字段：
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `name` | — | 必填，渠道名 |
+| `host` | — | 必填，SMTP 服务器（不含端口与协议前缀） |
+| `port` | 随 `tls` | `implicit`→465、`starttls`→587、`none`→25 |
+| `tls` | `implicit` | `implicit`（连接即 TLS）/ `starttls`（先明文连接后升级）/ `none`（不加密，仅限内网调试） |
+| `from` | — | 必填，发件人地址 |
+| `to` | — | 必填，收件人列表（表单每行一个），一次 SMTP 会话送达全部收件人 |
+| `username` / `password` | 空 | 同时填写才启用 SMTP 认证，都缺省时匿名连接（内网 relay 场景） |
+| `proxy_mode` / `proxy_url` | 否 | 出网代理（见下文「出网代理」） |
+
+**请求体模板（generic）**：占位符 `{{var}}` 填充简讯素材并做 JSON 转义
+（值放在引号内使用，如 `"{{domains}}"`）。可用变量：`event`、`title`、
+`pipeline`、`trigger`（原始标识）、`trigger_label`（中文）、`occurred_at`、
+`domains`（逗号连接）、`timestamp`（秒级时间戳）、`sign`（未签名时为空串）。
+未配置模板时发统一简讯负载 JSON：恒有 `event` / `title` / `pipeline` /
+`trigger` / `occurred_at`；域名非空时带 `domains` 数组；失败简讯另有
+`failure`（`step_type` / `step` / `reason`）；成功与失败简讯都带
+`summary`（`result` / `duration_secs` / `steps`）。
+
+ntfy.sh 推送示例（ntfy 的 JSON 发布格式走根路径，`topic` 写在请求体里；
+若直接 POST 到 `/<topic>`，JSON 会被当成纯文本消息）：
+
+```json
+{
+  "name": "ntfy",
+  "url": "https://ntfy.sh/",
+  "method": "POST",
+  "body_template": "{\"topic\": \"acmecast-换成随机私有主题\", \"title\": \"{{title}}\", \"message\": \"{{pipeline}}（{{trigger_label}}）\\n域名：{{domains}}\", \"tags\": [\"white_check_mark\"], \"priority\": 4}",
+  "headers": { "Authorization": "Bearer tk_xxx" }
+}
+```
+
+- 公共实例上 topic 名就是订阅凭据（知道即可订阅与推送），请用随机主题名；
+- ntfy JSON 格式的字段类型比 HTTP header 方式严格：`priority` 必须是
+  `1`–`5` 的整数（1=min、3=default、4=high、5=urgent/max），写 `high`
+  之类的字符串会被整体拒绝（报 40024 invalid JSON）。
+
+**平台接入**：在飞书/钉钉群里添加「自定义机器人」（webhook），钉钉建议
+选择「加签」安全设置并把密钥填入 `secret`；飞书同理可开启签名校验。
+
+**连通性测试**：四类都向渠道发一条测试消息（飞书 / 钉钉按平台 text 格式，
+generic 按上述负载或渲染模板，email 发一封测试邮件），且按凭据的
+代理模式出网：`direct` 直连 / `inherit` 继承全局代理 / `custom` 走凭据自带
+URL（webhook 经 `reqwest::Proxy`，邮件经 SOCKS5/HTTP-CONNECT 隧道）；代理
+不可达时失败原因含代理主机。`notify.generic` 保存时还会校验 `headers` 与
+`body_template` 的合法性，非法值定位到对应字段。
 
 ## API 速查
 
