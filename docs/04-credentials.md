@@ -175,36 +175,34 @@ EdgeOne（TEO）DNS 提供商凭据。字段与 `cloud.tencent` 完全一致（�
 
 `notify.feishu` / `notify.dingtalk` 字段：
 
-| 字段 | 必需 | 说明 |
-|---|---|---|
-| `name` | 是 | 渠道名（简讯与日志中标识渠道） |
-| `url` | 是 | 机器人 webhook 地址（http/https） |
-| `secret` | 否 | 机器人签名密钥：填写即启用签名校验——飞书签名合并进请求体顶层字段，钉钉经 URL 查询参数加签 |
-| `proxy_mode` / `proxy_url` | 否 | 出网代理（见下文「出网代理」） |
+| 字段 | 默认 | 说明 | 布局 |
+|---|---|---|---|
+| `url` | — | 必填，机器人 webhook 地址（http/https） | 仅一行（`x-full-width`） |
+| `secret` | 空 | 机器人签名密钥：填写即启用签名校验——飞书签名合并进请求体顶层字段，钉钉经 URL 查询参数加签 | 左半列独占一行（`x-end-row`） |
+| `proxy_mode` / `proxy_url` | `direct` / 空 | 出网代理（见下文「出网代理」） | 左｜右同行，`proxy_url` 仅 `custom` 时显示 |
 
 `notify.generic` 字段：
 
-| 字段 | 默认 | 说明 |
-|---|---|---|
-| `name` | — | 必填，渠道名 |
-| `url` | — | 必填，请求地址 |
-| `method` | `POST` | `POST` / `PUT` / `PATCH` |
-| `headers` | 空 | 额外静态请求头（JSON 对象），如自建端点的 `X-API-Key` |
-| `body_template` | 空 | 请求体模板，见下 |
-| `proxy_mode` / `proxy_url` | 否 | 出网代理（见下文「出网代理」） |
+| 字段 | 默认 | 说明 | 布局 |
+|---|---|---|---|
+| `url` | — | 必填，请求地址 | 仅一行（`x-full-width`） |
+| `method` | `POST` | `POST` / `PUT` / `PATCH` | 左半列独占一行（`x-end-row`） |
+| `headers` | 空 | 额外静态请求头（JSON 对象），如自建端点的 `X-API-Key` | 仅一行多行文本（`x-multiline`） |
+| `body_template` | 空 | 请求体模板，见下 | 仅一行多行文本（`x-multiline`） |
+| `proxy_mode` / `proxy_url` | `direct` / 空 | 出网代理（见下文「出网代理」） | 左｜右同行 |
 
 `notify.email` 字段：
 
-| 字段 | 默认 | 说明 |
-|---|---|---|
-| `name` | — | 必填，渠道名 |
-| `host` | — | 必填，SMTP 服务器（不含端口与协议前缀） |
-| `port` | 随 `tls` | `implicit`→465、`starttls`→587、`none`→25 |
-| `tls` | `implicit` | `implicit`（连接即 TLS）/ `starttls`（先明文连接后升级）/ `none`（不加密，仅限内网调试） |
-| `from` | — | 必填，发件人地址 |
-| `to` | — | 必填，收件人列表（表单每行一个），一次 SMTP 会话送达全部收件人 |
-| `username` / `password` | 空 | 同时填写才启用 SMTP 认证，都缺省时匿名连接（内网 relay 场景） |
-| `proxy_mode` / `proxy_url` | 否 | 出网代理（见下文「出网代理」） |
+| 字段 | 默认 | 说明 | 布局 |
+|---|---|---|---|
+| `host` | — | 必填，SMTP 服务器（不含端口与协议前缀） | 左半列 |
+| `port` | 随 `tls` | `implicit`→465、`starttls`→587、`none`→25 | 右半列 |
+| `from` | — | 必填，发件人地址 | 左半列 |
+| `tls` | `implicit` | `implicit`（连接即 TLS）/ `starttls`（先明文连接后升级）/ `none`（不加密，仅限内网调试） | 右半列（枚举下拉） |
+| `to` | — | 必填，收件人列表（表单每行一个），一次 SMTP 会话送达全部收件人 | 仅一行多行文本（`x-multiline` + `x-full-width`） |
+| `username` | 空 | SMTP 认证用户名 | 左半列 |
+| `password` | 空 | SMTP 认证密码（与 `username` 同时填写才启用认证，匿名 relay 时可空） | 右半列 |
+| `proxy_mode` / `proxy_url` | `direct` / 空 | 出网代理（见下文「出网代理」） | 左｜右同行 |
 
 **请求体模板（generic）**：占位符 `{{var}}` 填充简讯素材并做 JSON 转义
 （值放在引号内使用，如 `"{{domains}}"`）。可用变量：`event`、`title`、

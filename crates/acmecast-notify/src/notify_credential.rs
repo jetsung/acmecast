@@ -49,8 +49,6 @@ pub fn is_notify_type_id(type_id: &str) -> bool {
 /// 飞书机器人凭据字段。
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
 pub struct FeishuFields {
-    /// 渠道名（展示用）。
-    pub name: String,
     /// 机器人 webhook 地址。
     pub url: String,
     /// 签名密钥；机器人开启「签名校验」时填写（可选，不填即无签名）。
@@ -67,7 +65,6 @@ pub struct FeishuFields {
 impl std::fmt::Debug for FeishuFields {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FeishuFields")
-            .field("name", &self.name)
             .field("url", &self.url)
             .field("secret", &acmecast_core::redact_presence(&self.secret))
             .field("proxy_mode", &self.proxy_mode)
@@ -79,8 +76,6 @@ impl std::fmt::Debug for FeishuFields {
 /// 钉钉机器人凭据字段。
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
 pub struct DingtalkFields {
-    /// 渠道名（展示用）。
-    pub name: String,
     /// 机器人 webhook 地址（含 `access_token`）。
     pub url: String,
     /// 加签密钥（`SEC` 开头）；机器人开启「加签」安全设置时填写（可选，不填即无签名）。
@@ -97,7 +92,6 @@ pub struct DingtalkFields {
 impl std::fmt::Debug for DingtalkFields {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DingtalkFields")
-            .field("name", &self.name)
             .field("url", &self.url)
             .field("secret", &acmecast_core::redact_presence(&self.secret))
             .field("proxy_mode", &self.proxy_mode)
@@ -109,8 +103,6 @@ impl std::fmt::Debug for DingtalkFields {
 /// 通用 webhook 凭据字段。
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
 pub struct GenericFields {
-    /// 渠道名（展示用）。
-    pub name: String,
     /// 请求地址。
     pub url: String,
     /// 请求方法：`POST` / `PUT` / `PATCH`，缺省 `POST`。
@@ -133,7 +125,6 @@ pub struct GenericFields {
 impl std::fmt::Debug for GenericFields {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GenericFields")
-            .field("name", &self.name)
             .field("url", &self.url)
             .field("method", &self.method)
             .field("headers", &self.headers)
@@ -147,8 +138,6 @@ impl std::fmt::Debug for GenericFields {
 /// 邮件凭据字段。
 #[derive(Clone, Serialize, Deserialize, JsonSchema)]
 pub struct EmailFields {
-    /// 渠道名（展示用）。
-    pub name: String,
     /// SMTP 服务器地址（不含端口与协议前缀）。
     pub host: String,
     /// 端口；缺省随 `tls` 模式（`implicit`→465、`starttls`→587、`none`→25）。
@@ -178,7 +167,6 @@ pub struct EmailFields {
 impl std::fmt::Debug for EmailFields {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EmailFields")
-            .field("name", &self.name)
             .field("host", &self.host)
             .field("port", &self.port)
             .field("tls", &self.tls)
@@ -224,13 +212,25 @@ fn set_enum(schema: &mut RootSchema, field: &str, values: &[&str]) {
     }
 }
 
-/// 飞书凭据字段 schema：`name | url` 成对同行，`secret` 可选。
+/// 飞书凭据字段 schema：`url` 独占整行，`secret` 左半独占一行。
 #[must_use]
 pub fn feishu_fields_schema() -> RootSchema {
     let mut schema = schema_for!(FeishuFields);
     schema.schema.extensions.insert(
         "x-field-order".to_owned(),
-        serde_json::json!(["name", "url", "secret", "proxy_mode", "proxy_url"]),
+        serde_json::json!(["url", "secret", "proxy_mode", "proxy_url"]),
+    );
+    set_extension(
+        &mut schema,
+        "url",
+        "x-full-width",
+        serde_json::Value::Bool(true),
+    );
+    set_extension(
+        &mut schema,
+        "secret",
+        "x-end-row",
+        serde_json::Value::Bool(true),
     );
     acmecast_core::inject_proxy_field_annotations(&mut schema);
     schema
@@ -242,30 +242,45 @@ pub fn dingtalk_fields_schema() -> RootSchema {
     let mut schema = schema_for!(DingtalkFields);
     schema.schema.extensions.insert(
         "x-field-order".to_owned(),
-        serde_json::json!(["name", "url", "secret", "proxy_mode", "proxy_url"]),
+        serde_json::json!(["url", "secret", "proxy_mode", "proxy_url"]),
+    );
+    set_extension(
+        &mut schema,
+        "url",
+        "x-full-width",
+        serde_json::Value::Bool(true),
+    );
+    set_extension(
+        &mut schema,
+        "secret",
+        "x-end-row",
+        serde_json::Value::Bool(true),
     );
     acmecast_core::inject_proxy_field_annotations(&mut schema);
     schema
 }
 
-/// 通用 webhook 凭据字段 schema：`method` 为枚举下拉；`headers` 与
-/// `body_template` 是多行文本，各占整行。
+/// 通用 webhook 凭据字段 schema：`url` 整行、`method` 左半独占、`headers/body_template` 整行多行。
 #[must_use]
 pub fn generic_fields_schema() -> RootSchema {
     let mut schema = schema_for!(GenericFields);
     schema.schema.extensions.insert(
         "x-field-order".to_owned(),
-        serde_json::json!([
-            "name",
-            "url",
-            "method",
-            "headers",
-            "body_template",
-            "proxy_mode",
-            "proxy_url"
-        ]),
+        serde_json::json!(["url", "method", "headers", "body_template", "proxy_mode", "proxy_url"]),
     );
     set_enum(&mut schema, "method", &ALLOWED_METHODS);
+    set_extension(
+        &mut schema,
+        "url",
+        "x-full-width",
+        serde_json::Value::Bool(true),
+    );
+    set_extension(
+        &mut schema,
+        "method",
+        "x-end-row",
+        serde_json::Value::Bool(true),
+    );
     set_extension(
         &mut schema,
         "headers",
@@ -282,31 +297,28 @@ pub fn generic_fields_schema() -> RootSchema {
     schema
 }
 
-/// 邮件凭据字段 schema：`host | port` 成对同行、`tls` 为枚举下拉、
-/// `to` 为多行文本（每行一个收件人）占整行。
+/// 邮件凭据字段 schema：`host|port`、`from|tls`、`to` 整行，`username|password` 同行。
 #[must_use]
 pub fn email_fields_schema() -> RootSchema {
     let mut schema = schema_for!(EmailFields);
     schema.schema.extensions.insert(
         "x-field-order".to_owned(),
         serde_json::json!([
-            "name", "host", "port", "tls", "from", "to", "username", "password",
-            "proxy_mode", "proxy_url"
+            "host", "port", "from", "tls", "to", "username", "password", "proxy_mode",
+            "proxy_url"
         ]),
-    );
-    // `name` 独占一行（右侧留空）：让 host | port 成对同行，符合「服务器
-    // 地址 + 端口」的录入习惯。
-    set_extension(
-        &mut schema,
-        "name",
-        "x-end-row",
-        serde_json::Value::Bool(true),
     );
     set_enum(&mut schema, "tls", &["implicit", "starttls", "none"]);
     set_extension(
         &mut schema,
         "to",
         "x-multiline",
+        serde_json::Value::Bool(true),
+    );
+    set_extension(
+        &mut schema,
+        "to",
+        "x-full-width",
         serde_json::Value::Bool(true),
     );
     acmecast_core::inject_proxy_field_annotations(&mut schema);
@@ -347,7 +359,7 @@ impl CredentialType for FeishuCredentialType {
     fn validate(&self, fields: &serde_json::Value) -> acmecast_core::Result<()> {
         let parsed: FeishuFields = serde_json::from_value(fields.clone())
             .map_err(|error| acmecast_core::Error::validation("fields", error.to_string()))?;
-        validate_bot_fields(&parsed.name, &parsed.url)?;
+        validate_bot_fields(&parsed.url)?;
         acmecast_core::validate_proxy_field(fields)
     }
 
@@ -358,10 +370,12 @@ impl CredentialType for FeishuCredentialType {
                 reason: "字段不合法".to_owned(),
             };
         };
+        // 外层凭据记录的展示名（ResolvedCredential.name）才是渠道标识，
+        // 字段内已无 name；连通性测试取 url 作占位名即可（仅用于 ChannelConfig.name 日志）。
         probe(
             self,
             FEISHU_TYPE_ID,
-            &parsed.name,
+            parsed.url.trim(),
             fields,
             self.global_proxy_url.as_deref(),
         )
@@ -403,7 +417,7 @@ impl CredentialType for DingtalkCredentialType {
     fn validate(&self, fields: &serde_json::Value) -> acmecast_core::Result<()> {
         let parsed: DingtalkFields = serde_json::from_value(fields.clone())
             .map_err(|error| acmecast_core::Error::validation("fields", error.to_string()))?;
-        validate_bot_fields(&parsed.name, &parsed.url)?;
+        validate_bot_fields(&parsed.url)?;
         acmecast_core::validate_proxy_field(fields)
     }
 
@@ -417,7 +431,7 @@ impl CredentialType for DingtalkCredentialType {
         probe(
             self,
             DINGTALK_TYPE_ID,
-            &parsed.name,
+            parsed.url.trim(),
             fields,
             self.global_proxy_url.as_deref(),
         )
@@ -459,9 +473,6 @@ impl CredentialType for GenericCredentialType {
     fn validate(&self, fields: &serde_json::Value) -> acmecast_core::Result<()> {
         let parsed: GenericFields = serde_json::from_value(fields.clone())
             .map_err(|error| acmecast_core::Error::validation("fields", error.to_string()))?;
-        if parsed.name.trim().is_empty() {
-            return Err(acmecast_core::Error::validation("name", "不能为空"));
-        }
         validate_http_url(&parsed.url)?;
         if let Some(method) = normalized(&parsed.method) {
             let normalized = method.to_ascii_uppercase();
@@ -475,7 +486,7 @@ impl CredentialType for GenericCredentialType {
         // 适配器侧的规则（请求头合法性、模板占位符）在保存时同样拦截：
         // 配置错误不带进投递路径。错误文案里定位字段，与邮件类型同法。
         let config = ChannelConfig {
-            name: parsed.name.trim().to_owned(),
+            name: String::new(),
             provider: "generic".to_owned(),
             url: parsed.url.trim().to_owned(),
             secret: None,
@@ -515,7 +526,7 @@ impl CredentialType for GenericCredentialType {
         probe(
             self,
             GENERIC_TYPE_ID,
-            &parsed.name,
+            parsed.url.trim(),
             fields,
             self.global_proxy_url.as_deref(),
         )
@@ -557,9 +568,6 @@ impl CredentialType for EmailCredentialType {
     fn validate(&self, fields: &serde_json::Value) -> acmecast_core::Result<()> {
         let parsed: EmailFields = serde_json::from_value(fields.clone())
             .map_err(|error| acmecast_core::Error::validation("fields", error.to_string()))?;
-        if parsed.name.trim().is_empty() {
-            return Err(acmecast_core::Error::validation("name", "不能为空"));
-        }
         let settings = smtp_settings_from(parsed, acmecast_core::effective_proxy_url(fields, None))
             .map_err(|reason| acmecast_core::Error::validation("tls", reason))?;
         settings.validate().map_err(|reason| {
@@ -585,7 +593,7 @@ impl CredentialType for EmailCredentialType {
         probe(
             self,
             EMAIL_TYPE_ID,
-            &parsed.name,
+            parsed.host.trim(),
             fields,
             self.global_proxy_url.as_deref(),
         )
@@ -738,11 +746,8 @@ fn normalized(value: &Option<String>) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// 机器人凭据的公共校验：名称非空、地址为 http(s)。
-fn validate_bot_fields(name: &str, url: &str) -> acmecast_core::Result<()> {
-    if name.trim().is_empty() {
-        return Err(acmecast_core::Error::validation("name", "不能为空"));
-    }
+/// 机器人凭据的公共校验：地址为 http(s)。
+fn validate_bot_fields(url: &str) -> acmecast_core::Result<()> {
     validate_http_url(url)
 }
 
@@ -865,37 +870,31 @@ mod tests {
 
     fn feishu_fields() -> serde_json::Value {
         serde_json::json!({
-            "name": "生产飞书群",
             "url": "https://open.feishu.cn/open-apis/bot/v2/hook/xxxx",
             "secret": "s3cret-sign-key",
         })
     }
 
     #[test]
-    fn feishu_validate_requires_name_and_http_url() {
+    fn feishu_validate_requires_http_url() {
         FeishuCredentialType::default()
             .validate(&feishu_fields())
             .expect("合法字段应通过");
 
-        let blank_name = serde_json::json!({ "name": " ", "url": "https://a.example.com" });
-        let error = FeishuCredentialType::default().validate(&blank_name).unwrap_err();
-        assert!(
-            matches!(&error, acmecast_core::Error::Validation { field, .. } if field == "name"),
-            "{error:?}"
-        );
-
-        let bad_url = serde_json::json!({ "name": "x", "url": "ftp://a.example.com" });
+        let bad_url = serde_json::json!({ "url": "ftp://a.example.com" });
         let error = FeishuCredentialType::default().validate(&bad_url).unwrap_err();
         assert!(
             matches!(&error, acmecast_core::Error::Validation { field, .. } if field == "url"),
             "{error:?}"
         );
+
+        let empty_url = serde_json::json!({ "url": "" });
+        assert!(FeishuCredentialType::default().validate(&empty_url).is_err());
     }
 
     #[test]
     fn feishu_secret_is_optional() {
         let fields = serde_json::json!({
-            "name": "无签名群",
             "url": "https://open.feishu.cn/open-apis/bot/v2/hook/xxxx",
         });
         FeishuCredentialType::default()
@@ -906,21 +905,19 @@ mod tests {
     #[test]
     fn dingtalk_validate_mirrors_feishu() {
         let fields = serde_json::json!({
-            "name": "钉钉群",
             "url": "https://oapi.dingtalk.com/robot/send?access_token=x",
             "secret": "SECxxxx",
         });
         DingtalkCredentialType::default()
             .validate(&fields)
             .expect("合法字段应通过");
-        let missing_name = serde_json::json!({ "name": "", "url": "https://oapi.dingtalk.com/x" });
-        assert!(DingtalkCredentialType::default().validate(&missing_name).is_err());
+        let missing_url = serde_json::json!({ "url": "" });
+        assert!(DingtalkCredentialType::default().validate(&missing_url).is_err());
     }
 
     #[test]
     fn generic_validate_checks_method_whitelist() {
         let valid = serde_json::json!({
-            "name": "自建",
             "url": "https://ops.example.com/hook",
             "method": "put",
             "headers": { "X-API-Key": "sk-xxx" },
@@ -931,7 +928,6 @@ mod tests {
             .expect("合法字段应通过");
 
         let bad_method = serde_json::json!({
-            "name": "自建",
             "url": "https://ops.example.com/hook",
             "method": "GET",
         });
@@ -946,7 +942,6 @@ mod tests {
     fn generic_validate_rejects_illegal_headers_and_template() {
         // 请求头名含控制字符：保存时即拦截，不带进投递路径。
         let bad_header = serde_json::json!({
-            "name": "自建",
             "url": "https://ops.example.com/hook",
             "headers": { "bad header\nname": "v" },
         });
@@ -958,7 +953,6 @@ mod tests {
 
         // 模板含未知占位符：同样在保存时拒绝。
         let bad_template = serde_json::json!({
-            "name": "自建",
             "url": "https://ops.example.com/hook",
             "body_template": "{\"x\": \"{{nope}}\"}",
         });
@@ -972,7 +966,6 @@ mod tests {
     #[test]
     fn email_validate_requires_recipients_and_addresses() {
         let valid = serde_json::json!({
-            "name": "邮件群",
             "host": "smtp.exmail.qq.com",
             "tls": "starttls",
             "from": "no-reply@example.com",
@@ -983,7 +976,6 @@ mod tests {
             .expect("合法字段应通过");
 
         let no_recipients = serde_json::json!({
-            "name": "邮件群",
             "host": "smtp.exmail.qq.com",
             "from": "no-reply@example.com",
             "to": [],
@@ -995,7 +987,6 @@ mod tests {
         );
 
         let bad_from = serde_json::json!({
-            "name": "邮件群",
             "host": "smtp.exmail.qq.com",
             "from": "not-an-address",
             "to": ["ops@example.com"],
@@ -1006,7 +997,6 @@ mod tests {
     #[test]
     fn email_validate_rejects_unknown_tls_mode() {
         let fields = serde_json::json!({
-            "name": "邮件群",
             "host": "smtp.exmail.qq.com",
             "tls": "ssl3",
             "from": "no-reply@example.com",
@@ -1021,13 +1011,15 @@ mod tests {
 
     #[test]
     fn schemas_pin_field_order_and_extensions() {
+        // feishu/dingtalk: url 整行，secret 左半独占
         let rendered = serde_json::to_string(&feishu_fields_schema()).unwrap();
         assert!(
-            rendered.contains(r#""x-field-order":["name","url","secret","proxy_mode","proxy_url"]"#),
+            rendered.contains(r#""x-field-order":["url","secret","proxy_mode","proxy_url"]"#),
             "{rendered}"
         );
-        // 代理字段注入：枚举下拉、中文标签、联动显隐与布局
         let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(value["properties"]["url"]["x-full-width"], serde_json::json!(true));
+        assert_eq!(value["properties"]["secret"]["x-end-row"], serde_json::json!(true));
         assert_eq!(
             value["properties"]["proxy_mode"]["enum"],
             serde_json::json!(["direct", "inherit", "custom"])
@@ -1043,12 +1035,28 @@ mod tests {
             serde_json::json!({ "Equals": { "field": "proxy_mode", "values": ["custom"] } })
         );
 
+        // dingtalk 同构
+        let rendered = serde_json::to_string(&dingtalk_fields_schema()).unwrap();
+        assert!(
+            rendered.contains(r#""x-field-order":["url","secret","proxy_mode","proxy_url"]"#),
+            "{rendered}"
+        );
+
+        // generic: url 整行，method 左半独占，headers/body 整行多行
         let rendered = serde_json::to_string(&generic_fields_schema()).unwrap();
+        assert!(
+            rendered.contains(
+                r#""x-field-order":["url","method","headers","body_template","proxy_mode","proxy_url"]"#
+            ),
+            "{rendered}"
+        );
         assert!(
             rendered.contains(r#""enum":["POST","PUT","PATCH"]"#),
             "method 应注入枚举候选: {rendered}"
         );
         let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(value["properties"]["url"]["x-full-width"], serde_json::json!(true));
+        assert_eq!(value["properties"]["method"]["x-end-row"], serde_json::json!(true));
         assert_eq!(
             value["properties"]["headers"]["x-multiline"],
             serde_json::json!(true)
@@ -1058,26 +1066,29 @@ mod tests {
             serde_json::json!(true)
         );
 
+        // email: host|port / from|tls / to 整行 / username|password
         let rendered = serde_json::to_string(&email_fields_schema()).unwrap();
+        assert!(
+            rendered.contains(r#""x-field-order":["host","port","from","tls","to","username","password","proxy_mode","proxy_url"]"#),
+            "{rendered}"
+        );
         assert!(
             rendered.contains(r#""enum":["implicit","starttls","none"]"#),
             "tls 应注入枚举候选: {rendered}"
         );
         let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
-        assert_eq!(
-            value["properties"]["name"]["x-end-row"],
-            serde_json::json!(true)
-        );
-        assert_eq!(
-            value["properties"]["to"]["x-multiline"],
-            serde_json::json!(true)
+        assert_eq!(value["properties"]["to"]["x-multiline"], serde_json::json!(true));
+        assert_eq!(value["properties"]["to"]["x-full-width"], serde_json::json!(true));
+        // name 已移除，不应再有 x-end-row 在 name 上
+        assert!(
+            value["properties"].get("name").is_none(),
+            "email 已移除 name 字段: {rendered}"
         );
     }
 
     #[test]
     fn debug_impls_redact_secrets() {
         let fields = FeishuFields {
-            name: "群".to_owned(),
             url: "https://a.example.com".to_owned(),
             secret: Some("super-secret".to_owned()),
             proxy_mode: None,
@@ -1087,7 +1098,6 @@ mod tests {
         assert!(!rendered.contains("super-secret"), "{rendered}");
 
         let email = EmailFields {
-            name: "群".to_owned(),
             host: "smtp.example.com".to_owned(),
             port: None,
             tls: None,
