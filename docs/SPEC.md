@@ -358,7 +358,7 @@ SSE 实时推送与终态持久化遵循双轨：
 
 ### 表单页排序和布局（凭据页新建/编辑）
 
-以下 8 类凭据的字段顺序、分组与宽度标注为唯一真实来源，前端按此渲染，不在渲染器内写类型分支。`仅一行`均指独占一行（`x-full-width` 整行或半宽 `x-end-row` 右侧空占位，见宽度标注）。
+以下 12 类凭据的字段顺序、分组与宽度标注为唯一真实来源，前端按此渲染，不在渲染器内写类型分支。`仅一行`均指独占一行（`x-full-width` 整行或半宽 `x-end-row` 右侧空占位，见宽度标注）。
 
 #### `acme.account` — ACME 账号
 
@@ -438,12 +438,51 @@ SSE 实时推送与终态持久化遵循双轨：
 
 与 `cloud.tencent` 完全一致，共用 `tencent_credentials_schema`：`account_site` 仅一行（半宽 + `x-end-row` 独占一行）｜ `secret_id`｜`secret_key` ｜ `proxy_mode`｜`proxy_url`。
 
+#### `notify.generic` — 通用 Webhook
+
+`x-field-order: ["url","method","headers","body_template","proxy_mode","proxy_url"]`
+
+| 行 | 字段 | 宽度标注 |
+|---|---|---|
+| 1 | `url` | 仅一行：`x-full-width` 整行 |
+| 2 | `method` | 仅一行：半宽 + `x-end-row`（枚举下拉半列独占一行，右侧空占位） |
+| 3 | `headers` | 仅一行：`x-multiline` textarea 整行 |
+| 4 | `body_template` | 仅一行：`x-multiline` textarea 整行 |
+| 5 | `proxy_mode` ｜ `proxy_url` | 半宽同行，`proxy_url` 联动显隐；`body_template` 为整行，前驱无需 `x-end-row` |
+
+#### `notify.email` — 邮件
+
+`x-field-order: ["host","port","from","tls","to","username","password","proxy_mode","proxy_url"]`
+
+| 行 | 字段 | 宽度标注 |
+|---|---|---|
+| 1 | `host` ｜ `port` | 半宽同行 |
+| 2 | `from` ｜ `tls` | 半宽同行，`tls` 为枚举下拉（`implicit`/`starttls`/`none`） |
+| 3 | `to` | 仅一行：`x-multiline` + `x-full-width` textarea 整行（每行一个收件人） |
+| 4 | `username` ｜ `password` | 半宽同行 |
+| 5 | `proxy_mode` ｜ `proxy_url` | 半宽同行，`proxy_url` 联动显隐；`password` 已在行尾自然换行，无需 `x-end-row` |
+
+#### `notify.feishu` — 飞书机器人
+
+`x-field-order: ["url","secret","proxy_mode","proxy_url"]`
+
+| 行 | 字段 | 宽度标注 |
+|---|---|---|
+| 1 | `url` | 仅一行：`x-full-width` 整行 |
+| 2 | `secret` | 仅一行：半宽 + `x-end-row`（可选签名密钥，独占一行左侧，右侧空占位） |
+| 3 | `proxy_mode` ｜ `proxy_url` | 半宽同行，`proxy_url` 联动显隐 |
+
+#### `notify.dingtalk` — 钉钉机器人
+
+与 `notify.feishu` 完全一致：`x-field-order: ["url","secret","proxy_mode","proxy_url"]`，`url` 整行 ｜ `secret` 半宽独占一行 ｜ `proxy_mode`｜`proxy_url`。
+
 ### 实现索引
 
 - `crates/acmecast-access/src/credential/acme_account.rs: AcmeAccountType::fields_schema` — `x-field-order` + `ca.x-end-row` + `directory_url.x-full-width` + `credentials.x-multiline`
 - `crates/acmecast-access/src/credential/webdav.rs: webdav_fields_schema` — `x-field-order: ["url","base_path","username","password","proxy_mode","proxy_url"]`
 - `crates/acmecast-access/src/credential/s3.rs: s3_fields_schema` — `x-field-order` 8 字段 + `session_token` 由代理注入补 `x-end-row`
 - `crates/acmecast-deploy/src/ssh_host.rs: ssh_host_fields_schema` — `x-field-order` 9 字段 + `private_key.x-multiline`
+- `crates/acmecast-notify/src/notify_credential.rs: {feishu,dingtalk,generic,email}_fields_schema` — `notify.*` 四类版式（见上）+ `proxy_mode/proxy_url` 注入
 - `crates/acmecast-dns/src/providers/tencent.rs: tencent_credentials_schema` — `account_site.x-end-row` 先于代理注入，`secret_id`｜`secret_key` 同行
 - `crates/acmecast-dns/src/providers/cloudflare.rs: cloudflare_credentials_schema` — `api_token.x-end-row`
 - `crates/acmecast-dns/src/providers/aliyun.rs: aliyun_credentials_schema` — 密钥对同行，代理自然换行
@@ -452,7 +491,7 @@ SSE 实时推送与终态持久化遵循双轨：
 - `frontend/src/components/SchemaForm.tsx: orderedEntries / SchemaForm / ObjectFieldGroup` — `x-field-order` 定序与 `x-*` 渲染
 ## 凭据出网代理与全局代理配置
 
-**全部凭据类型**（`cloud.tencent` / `dns.tencent-eo` / `cloud.cloudflare` / `cloud.aliyun` / `deploy.ssh` / `deploy.s3` / `deploy.webdav` / `acme.account`）支持凭据级代理模式（`proxy_mode` 下拉 + `proxy_url` 条件输入），全局代理经 `config.toml` 的 `[proxy]` 段或环境变量 `ACMECAST_PROXY_URL` 设一次，供凭据 `inherit` 继承（DNS 与部署链路同口径）与 DoH 代理回退共用。存量凭据缺字段视为 `direct`（直连），无需数据库迁移。
+**全部凭据类型**（`cloud.tencent` / `dns.tencent-eo` / `cloud.cloudflare` / `cloud.aliyun` / `deploy.ssh` / `deploy.s3` / `deploy.webdav` / `acme.account` / `notify.feishu` / `notify.dingtalk` / `notify.generic` / `notify.email`）支持凭据级代理模式（`proxy_mode` 下拉 + `proxy_url` 条件输入），全局代理经 `config.toml` 的 `[proxy]` 段或环境变量 `ACMECAST_PROXY_URL` 设一次，供凭据 `inherit` 继承（DNS、部署与通知链路同口径）与 DoH 代理回退共用。存量凭据缺字段视为 `direct`（直连），无需数据库迁移。
 
 ### 全局代理（`ACMECAST_PROXY_URL` / `[proxy]` 段）
 
