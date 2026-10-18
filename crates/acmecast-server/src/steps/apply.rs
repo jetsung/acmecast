@@ -99,6 +99,14 @@ pub struct AcmeApplyInput {
     /// 会在执行时报错要求显式配置。
     #[serde(default)]
     pub dns_zone: Option<String>,
+    /// DNS domain-alias 模式：CNAME 形如
+    /// `_acme-challenge.a.com → myalias.b.com` 时，填 CNAME 目标 FQDN
+    /// （`myalias.b.com`，**不带** `_acme-challenge.` 前缀）。填写后挑战记录
+    /// 的写入名直接取该值，此时 `dns_zone` 必填（记录所属 zone 无法从任意
+    /// alias 可靠推导）。留空走 challenge-alias / 同 zone 模式，写入名仍为
+    /// `_acme-challenge.<dns_zone>`。
+    #[serde(default)]
+    pub dns_alias: Option<String>,
     /// 是否等待 TXT 记录在公共解析器可见后再让 CA 验证。
     ///
     /// 使用内网 DNS（解析器查不到）时应关闭——否则会白等到超时。
@@ -320,6 +328,31 @@ impl PipelineStep for CertApplyStep {
 
     fn input_schema(&self) -> Option<schemars::schema::RootSchema> {
         let mut schema = schemars::schema_for!(AcmeApplyInput);
+        // 布局编排（前端 SchemaForm 求值，orderedEntries 严格按列出的顺序排）：
+        // 账号与挑战类型一行，联系人独占一行（数组默认整行），
+        // DNS 部分两两同行——`dns_credential_id | dns_alias`、`domains | dns_zone`
+        // （domains 是数组字段，默认整行，靠 x-half-width 压成半宽）；
+        // 其余字段（算法、传播等待等）按原相对顺序收尾。
+        // 结构变化时宁可少注入也不丢 schema。
+        if let Some(_) = schema.schema.object.as_ref() {
+            schema.schema.extensions.insert(
+                "x-field-order".to_owned(),
+                serde_json::json!([
+                    "account_credential_id", "challenge", "contacts",
+                    "dns_credential_id", "dns_alias", "domains", "dns_zone",
+                    "key_algorithm", "wait_propagation", "insecure_skip_verify",
+                    "renew_before_days",
+                ]),
+            );
+        }
+        if let Some(schemars::schema::Schema::Object(domains)) = schema
+            .schema
+            .object
+            .as_mut()
+            .and_then(|object| object.properties.get_mut("domains"))
+        {
+            domains.extensions.insert("x-half-width".to_owned(), serde_json::json!(true));
+        }
         // `domains` 配置多个域名时 `dns_zone` 必填：条件由前端 SchemaForm
         // 求值（与 ACME 账号凭据 `directory_url` 的 Equals 同通道）。`dns_zone`
         // 是 Option，schemars 出来是 anyOf 包裹的顶层节点——扩展挂在它上面，
@@ -332,7 +365,12 @@ impl PipelineStep for CertApplyStep {
         {
             zone.extensions.insert(
                 "x-required-when".to_owned(),
-                serde_json::json!({ "MinItems": { "field": "domains", "count": 2 } }),
+                // 两个必填条件的并集：多域名，或 dns_alias 填了值
+                // （domain-alias 模式下 dns_zone 无法推导，必须显式给出）。
+                serde_json::json!({ "Or": [
+                    { "MinItems": { "field": "domains", "count": 2 } },
+                    { "Not": { "Empty": "dns_alias" } },
+                ]}),
             );
         }
         // `key_algorithm` 的枚举值是 snake_case 配置串，下拉里直接显示可读性
@@ -794,6 +832,11 @@ impl CertApplyStep {
         }
         let acme_kind = acmecast_acme::ChallengeKind::Dns01;
 
+        // domain-alias 模式（dns_alias 非空）的前置校验：拒绝带挑战前缀的
+        // 值；dns_zone 必须显式给出（zone 无法从 alias 推导）。在任何 DNS
+        // 调用（含 zone 自动推导的提供商探测）之前失败。
+        let dns_alias = dns_alias_of(input)?;
+
         // 提供商由凭据 type_id 决定：dns_credential_id 给了就按凭据类型取提供商，
         // 没给就自动选择（遍历凭据库逐个探测 zone 托管）。
         // 不再接受独立的 dns_provider 参数——凭据类型即提供商，避免错配。
@@ -841,7 +884,12 @@ impl CertApplyStep {
                 )))
             })?,
         };
-        let record = challenge_record(&zone, &authorization.identifier, &materials.dns_txt_value);
+        let record = challenge_record(
+            &zone,
+            &authorization.identifier,
+            dns_alias.as_deref(),
+            &materials.dns_txt_value,
+        );
         if record.is_delegated() {
             // 跨 zone CNAME 委派：CA 查授权域名一侧，DNS 提供商写在 dns_zone 下。
             // 两名字不同正是该场景的预期，日志两个都打出来，便于对照 CA 侧现象。
@@ -1053,6 +1101,40 @@ fn generate_key_and_csr(
     Ok((key.serialize_pem(), csr.der().to_vec()))
 }
 
+/// 归一化 `dns_alias` 输入并做 domain-alias 模式的前置校验，必须在任何
+/// DNS 调用（含 zone 自动推导的提供商探测）之前执行：
+///
+/// - 去空白，空白视为未填（返回 `None`，走 challenge-alias / 同 zone 模式）；
+/// - 带 `_acme-challenge.` 前缀时拒绝——那是 challenge-alias 模式的语义，
+///   应改用 `dns_zone` 表达；
+/// - 非空白而 `dns_zone` 留空/纯空白时失败——domain-alias 的写入名是任意
+///   FQDN，所属 zone 无法可靠推导，必须显式给出。
+fn dns_alias_of(input: &AcmeApplyInput) -> Result<Option<String>> {
+    let alias = input
+        .dns_alias
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
+    if let Some(alias) = &alias {
+        if alias.starts_with("_acme-challenge.") {
+            return Err(acmecast_pipeline::Error::Core(acmecast_core::Error::Internal(
+                format!(
+                    "dns_alias `{alias}` 不应带 _acme-challenge. 前缀：challenge-alias 模式请改用 dns_zone 表达"
+                ),
+            )));
+        }
+        if input.dns_zone.as_deref().map_or(true, |z| z.trim().is_empty()) {
+            return Err(acmecast_pipeline::Error::Core(acmecast_core::Error::Internal(
+                format!(
+                    "dns_alias `{alias}` 为 domain-alias 模式，必须显式配置 dns_zone（记录所属 zone 无法从 alias 推导）"
+                ),
+            )));
+        }
+    }
+    Ok(alias)
+}
+
 /// 按最终选定的 zone 构造挑战记录。
 ///
 /// 两个名字各司其职：
@@ -1066,9 +1148,18 @@ fn generate_key_and_csr(
 ///   而 CA 查询名仍是 `_acme-challenge.skiy.net`。
 ///
 /// 两者相同时退化为 `TxtRecord::new`，既有同 zone 场景行为不变。
-fn challenge_record(zone: &str, identifier: &str, value: &str) -> TxtRecord {
+///
+/// `dns_alias` 非空（去空白后）时为 domain-alias 模式
+/// （CNAME 形如 `_acme-challenge.a.com → myalias.b.com`）：
+/// 写入名直接取 `dns_alias` 原值，不再拼接 `_acme-challenge.` 前缀；
+/// `zone` 仍由 `complete_challenge` 保证来自显式 `dns_zone`。留空时写入名
+/// 为 `_acme-challenge.<zone>`，既有 challenge-alias / 同 zone 行为不变。
+fn challenge_record(zone: &str, identifier: &str, dns_alias: Option<&str>, value: &str) -> TxtRecord {
     let ca_name = challenge_record_name(identifier);
-    let write_name = challenge_write_name(zone);
+    let write_name = match dns_alias.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(alias) => alias.to_owned(),
+        None => challenge_write_name(zone),
+    };
     if write_name == ca_name {
         return TxtRecord::new(zone, write_name, value, 300);
     }
@@ -1262,8 +1353,8 @@ fn classify_dns_error(err: &acmecast_dns::Error) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        CertKeyAlgorithm, challenge_record, credential_effective_proxy, generate_key_and_csr,
-        normalize_contacts, zone_of,
+        AcmeApplyInput, CertKeyAlgorithm, DnsChallengeKind, challenge_record,
+        credential_effective_proxy, dns_alias_of, generate_key_and_csr, normalize_contacts, zone_of,
     };
 
     #[test]
@@ -1287,8 +1378,11 @@ mod tests {
         let rendered = serde_json::to_value(zone).expect("dns_zone schema 应能序列化");
         assert_eq!(
             rendered["x-required-when"],
-            serde_json::json!({ "MinItems": { "field": "domains", "count": 2 } }),
-            "dns_zone 应携带多域名必填条件：{rendered}"
+            serde_json::json!({ "Or": [
+                { "MinItems": { "field": "domains", "count": 2 } },
+                { "Not": { "Empty": "dns_alias" } },
+            ]}),
+            "dns_zone 应携带多域名与 domain-alias 两个必填条件的并集：{rendered}"
         );
         let description = rendered["description"].as_str().expect("dns_zone 应有说明");
         assert!(
@@ -1399,7 +1493,7 @@ mod tests {
     fn a_cname_delegated_zone_splits_the_two_record_names() {
         // 流水线 #12 的真实配置：域名 *.skiy.net 的挑战记录 CNAME 委派到
         // 666517.xyz 托管。写入名落在 dns_zone 下，CA 查询名留在授权域名一侧。
-        let record = challenge_record("666517.xyz", "skiy.net", "value");
+        let record = challenge_record("666517.xyz", "skiy.net", None, "value");
 
         assert_eq!(
             record.name,
@@ -1422,7 +1516,7 @@ mod tests {
 
     #[test]
     fn a_same_zone_setup_keeps_both_names_identical() {
-        let record = challenge_record("skiy.net", "skiy.net", "value");
+        let record = challenge_record("skiy.net", "skiy.net", None, "value");
 
         assert_eq!(record.name, "_acme-challenge.skiy.net");
         assert_eq!(record.ca_name, "_acme-challenge.skiy.net");
@@ -1437,7 +1531,7 @@ mod tests {
         // `_acme-challenge.a.example.com`——名字不同但同属一个 zone，属普通
         // 委派而非 CNAME 委派，权威首跳应落在 example.com。
         let zone = zone_of("a.example.com").expect("三级域名可推导 zone");
-        let record = challenge_record(&zone, "a.example.com", "value");
+        let record = challenge_record(&zone, "a.example.com", None, "value");
 
         assert_eq!(record.name, "_acme-challenge.example.com");
         assert_eq!(record.ca_name, "_acme-challenge.a.example.com");
@@ -1446,6 +1540,171 @@ mod tests {
             "两个名字同属 example.com，不该判成 CNAME 委派"
         );
         assert_eq!(record.ca_zone(), "example.com");
+    }
+
+    #[test]
+    fn a_domain_alias_writes_to_the_alias_name_without_prefix() {
+        // domain-alias 模式：CNAME 形如
+        // `_acme-challenge.a.com → myalias.b.com`，写入名直接取 dns_alias
+        // 原值，不拼接前缀；CA 查询名仍按授权域名派生，判为跨 zone 委派。
+        let record = challenge_record("b.com", "a.com", Some("myalias.b.com"), "value");
+
+        assert_eq!(record.name, "myalias.b.com", "写入名应取 dns_alias 原值");
+        assert_eq!(record.ca_name, "_acme-challenge.a.com");
+        assert_eq!(record.zone, "b.com");
+        assert!(record.is_delegated());
+        assert_eq!(
+            record.relative_name().expect("写入名属于 dns_zone"),
+            "myalias"
+        );
+        assert_eq!(record.ca_zone(), "a.com");
+    }
+
+    #[test]
+    fn a_blank_domain_alias_falls_back_to_the_existing_behavior() {
+        // dns_alias 留空/纯空白与未填一致：写入名仍是 _acme-challenge.<zone>。
+        for alias in [None, Some(""), Some("   ")] {
+            let record = challenge_record("b.com", "a.com", alias, "value");
+            assert_eq!(record.name, "_acme-challenge.b.com", "alias={alias:?}");
+        }
+    }
+
+    #[test]
+    fn a_domain_alias_with_challenge_prefix_is_rejected() {
+        // dns_alias 带 _acme-challenge. 前缀是 challenge-alias 语义，应拒绝并
+        // 提示改用 dns_zone（纯函数校验，对应 3.5 中 provider 调用前的拒绝路径）。
+        let input = AcmeApplyInput {
+            domains: vec!["a.com".to_owned()],
+            key_algorithm: CertKeyAlgorithm::default(),
+            challenge: DnsChallengeKind::Dns01,
+            account_credential_id: 1,
+            dns_credential_id: None,
+            dns_zone: Some("b.com".to_owned()),
+            dns_alias: Some("_acme-challenge.b.com".to_owned()),
+            wait_propagation: true,
+            contacts: vec![],
+            insecure_skip_verify: false,
+            renew_before_days: None,
+        };
+        let error = dns_alias_of(&input).expect_err("带前缀的 dns_alias 应被拒绝");
+        let message = error.to_string();
+        assert!(message.contains("_acme-challenge.b.com"), "{message}");
+        assert!(message.contains("dns_zone"), "应提示改用 dns_zone: {message}");
+    }
+
+    #[test]
+    fn a_domain_alias_outside_the_zone_fails_relative_name() {
+        // 写入名不属于 dns_zone 时由 relative_name（provider 调用时）报错。
+        let record = challenge_record("b.com", "a.com", Some("myalias.other.com"), "value");
+        let error = record
+            .relative_name()
+            .expect_err("myalias.other.com 不属于 b.com")
+            .to_string();
+        assert!(
+            error.contains("myalias.other.com") && error.contains("b.com"),
+            "错误应可定位：{error}"
+        );
+    }
+
+    #[test]
+    fn a_domain_alias_without_dns_zone_fails_before_any_dns_call() {
+        // domain-alias 模式必须显式 dns_zone；错误含 alias 值与提示，且在任何
+        // DNS 调用（含 zone 推导探测）之前——纯函数校验保证这一点。
+        let base = || AcmeApplyInput {
+            domains: vec!["a.com".to_owned()],
+            key_algorithm: CertKeyAlgorithm::default(),
+            challenge: DnsChallengeKind::Dns01,
+            account_credential_id: 1,
+            dns_credential_id: None,
+            dns_zone: None,
+            dns_alias: Some("myalias.b.com".to_owned()),
+            wait_propagation: true,
+            contacts: vec![],
+            insecure_skip_verify: false,
+            renew_before_days: None,
+        };
+        for zone in [None, Some(""), Some("   ")] {
+            let input = AcmeApplyInput {
+                dns_zone: zone.map(str::to_owned),
+                ..base()
+            };
+            let error = dns_alias_of(&input).expect_err("dns_zone 留空/纯空白应失败");
+            let message = error.to_string();
+            assert!(message.contains("myalias.b.com"), "错误应含 alias 值: {message}");
+            assert!(
+                message.contains("dns_zone"),
+                "应提示显式配置 dns_zone: {message}"
+            );
+        }
+        // 正常搭配：dns_zone 非空白时校验通过，返回归一化后的 alias。
+        let input = AcmeApplyInput {
+            dns_zone: Some("b.com".to_owned()),
+            ..base()
+        };
+        assert_eq!(
+            dns_alias_of(&input).expect("正常搭配应通过").as_deref(),
+            Some("myalias.b.com")
+        );
+    }
+
+    #[test]
+    fn schema_declares_dns_alias_with_required_when_union() {
+        use std::sync::Arc;
+
+        use super::CertApplyStep;
+        use acmecast_dns::DnsProviderRegistry;
+        use acmecast_pipeline::PipelineStep as _;
+
+        let step = CertApplyStep::new(Arc::new(DnsProviderRegistry::new()));
+        let schema = step.input_schema().expect("cert.apply 应声明输入结构");
+        let rendered = serde_json::to_value(
+            schema
+                .schema
+                .object
+                .as_ref()
+                .expect("顶层应是对象")
+                .properties
+                .get("dns_alias")
+                .expect("dns_alias 应在 properties 里"),
+        )
+        .expect("dns_alias schema 应能序列化");
+        let description = rendered["description"].as_str().expect("dns_alias 应有说明");
+        assert!(
+            description.contains("domain-alias"),
+            "说明应提到 domain-alias 模式：{description}"
+        );
+        assert!(
+            description.contains("_acme-challenge."),
+            "说明应提醒值不带挑战前缀：{description}"
+        );
+    }
+
+    #[test]
+    fn schema_uses_dns_layout_field_order_and_half_width_domains() {
+        use std::sync::Arc;
+
+        use super::CertApplyStep;
+        use acmecast_dns::DnsProviderRegistry;
+        use acmecast_pipeline::PipelineStep as _;
+
+        let step = CertApplyStep::new(Arc::new(DnsProviderRegistry::new()));
+        let schema = step.input_schema().expect("cert.apply 应声明输入结构");
+        let rendered = serde_json::to_value(&schema.schema).expect("schema 应能序列化");
+        assert_eq!(
+            rendered["x-field-order"],
+            serde_json::json!([
+                "account_credential_id", "challenge", "contacts",
+                "dns_credential_id", "dns_alias", "domains", "dns_zone",
+                "key_algorithm", "wait_propagation", "insecure_skip_verify",
+                "renew_before_days",
+            ]),
+            "布局：账号 | 挑战一行，联系人独占一行，凭据 | alias 一行，域名 | zone 一行：{rendered}"
+        );
+        let domains = rendered["properties"]["domains"].clone();
+        assert_eq!(
+            domains["x-half-width"], serde_json::json!(true),
+            "domains 应压成半宽与 dns_zone 同行：{domains}"
+        );
     }
 
     #[test]

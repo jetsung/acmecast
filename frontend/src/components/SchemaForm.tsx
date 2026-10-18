@@ -120,6 +120,12 @@ interface Extension {
    * 但右侧留空」的布局（如 SSH 变体的主机档案、重载命令）。
    */
   "x-end-row"?: boolean;
+  /**
+   * 强制半宽（调用方注入，后端 schema 注入）：非标量字段（数组等，默认整行）
+   * 也按 span 12 渲染，与相邻字段同行——如 cert.apply 的 domains 与
+   * dns_zone 同行。优先级低于 x-full-width / x-multiline / x-target-schemas。
+   */
+  "x-half-width"?: boolean;
 }
 
 type SchemaObject = JsonSchemaNode & Extension;
@@ -132,6 +138,8 @@ interface Condition {
   Empty?: string;
   /** 与：全部子条件命中时命中。 */
   And?: Condition[];
+  /** 或：任一子条件命中时命中（如 cert.apply 的 dns_zone：多域名或填了 dns_alias）。 */
+  Or?: Condition[];
   /** 非：子条件不命中时命中（如「目标已选」= `Not(Empty(credential_id))`）。 */
   Not?: Condition;
   /**
@@ -258,6 +266,9 @@ function conditionSatisfied(condition: Condition | undefined, values: Record<str
   if (condition.And) {
     return condition.And.every((c) => conditionSatisfied(c, values));
   }
+  if (condition.Or) {
+    return condition.Or.some((c) => conditionSatisfied(c, values));
+  }
   if (condition.Not) {
     return !conditionSatisfied(condition.Not, values);
   }
@@ -317,6 +328,7 @@ function isKnownCondition(condition: Condition): boolean {
     condition.In !== undefined ||
     condition.Empty !== undefined ||
     condition.And !== undefined ||
+    condition.Or !== undefined ||
     condition.MinItems !== undefined ||
     condition.Not !== undefined
   );
@@ -378,15 +390,18 @@ export function SchemaForm({ schema, form, namePrefix = [], disabled }: SchemaFo
         }
 
         // 宽度按内容定:变体子表单、多行文本域(如私钥 PEM)占整行,
-        // 其余单行标量两个一行。与 ObjectFieldGroup 的子字段规则一致。
+        // 其余单行标量两个一行；x-half-width 允许数组等非标量字段也压成
+        // 半宽与邻字段同行（如 cert.apply 的 domains | dns_zone）。
         // type 可能是数组(Option<T> 生成 ["string","null"]),取第一个真实类型。
         const topType = Array.isArray(node.type) ? node.type[0] : node.type;
         const topIsScalar =
           topType === "integer" || topType === "number" || topType === "boolean" || topType === "string";
         const span =
-          node["x-target-schemas"] || node["x-multiline"] || node["x-full-width"] || !topIsScalar
+          node["x-target-schemas"] || node["x-multiline"] || node["x-full-width"]
             ? 24
-            : 12;
+            : node["x-half-width"] || topIsScalar
+              ? 12
+              : 24;
         const labelInfo = fieldLabel(node, name, values as Record<string, unknown>);
 
         return (

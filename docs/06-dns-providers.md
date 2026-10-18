@@ -177,3 +177,18 @@ _acme-challenge.example.com.  CNAME  oversea.example.net.
 `CNAME` 的语义是“此名别处定”（RFC 1034），同名处**不允许**再有 `TXT`。已有 `CNAME` 时，往同名写 `TXT` 要么被 `DNS` 服务商拒绝，要么写入成功但递归查询时 `CNAME` 会**遮蔽** `TXT` —— `acmecast` 的权威直查会同时取 `TXT + CNAME`，`CNAME` 存在时按 `CA` 的跟随语义跟到目标区（[authoritative.rs:104](../crates/acmecast-dns/src/authoritative.rs#L104)），原区 `TXT` 对验证者不可见。
 
 **规则：** 挑战委托（`_acme-challenge.x CNAME _acme-challenge.y.`）是允许的，但它要求**目标区**上能查到 `TXT`；**业务泛 `CNAME` 与挑战 `TXT` 混在同名上是不允许的**。[故障排查](15-troubleshooting.md)有 `CNAME` 遮蔽的最小复现与 `dig` 排查步骤。
+
+### domain-alias 模式（CNAME 目标不带挑战前缀）
+
+CNAME 目标**可以不带** `_acme-challenge.` 前缀——即 challenge 委托形如
+`_acme-challenge.a.com CNAME myalias.b.com.`（目标 `myalias.b.com` 是任意
+自由命名的名字）。这是 domain-alias 模式，此时不要用
+`dns_zone` 表达（那会把写入名固定为 `_acme-challenge.<dns_zone>`，与
+CNAME 目标对不上），而应填 `dns_alias: myalias.b.com`：写入名直接取该值，
+`dns_zone` 仍填目标所属 zone（`b.com`）且**必须显式给出**。两种模式的
+CNAME 形态与字段对照：
+
+| CNAME 形态 | acmecast 字段 |
+|---|---|
+| `_acme-challenge.a.com → _acme-challenge.b.com`（challenge-alias 模式） | `dns_zone: b.com` |
+| `_acme-challenge.a.com → myalias.b.com`（domain-alias 模式） | `dns_alias: myalias.b.com` + `dns_zone: b.com` |

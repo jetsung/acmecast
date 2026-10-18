@@ -179,7 +179,7 @@ favicon 能力 MUST 可被自动化验证，避免后续重构或路由变更导
 
 - `domains`：流水线输入的域名列表，元素为 `example.com` 或 `*.example.com` 通配形式。
 - `dns_zone`：挑战记录写入的托管区域名称，用于构造 `_acme-challenge.<dns_zone>` 的写入位置。
-- “合法 zone”：含至少一个点、非首尾为空段的域名，如 `example.com`、`gcli.cn`、`x.idev.top`。
+- `dns_alias`：domain-alias 模式下挑战记录的写入名（任意 FQDN，不带 `_acme-challenge.` 前缀），填写时 `dns_zone` 必填。留空走 challenge-alias / 同 zone 模式。
 
 ### 规则
 
@@ -210,7 +210,7 @@ favicon 能力 MUST 可被自动化验证，避免后续重构或路由变更导
 无法从 <domain> 推导 DNS zone，请显式配置 dns_zone
 ```
 
-且前端 `cert.apply` 的 `dns_zone` 字段在 `domains.length >= 2` 时标记为必填（`x-required-when: MinItems(field=domains,count=2)`）。
+`dns_zone` 的必填条件为「`domains` 至少 2 项」与「`dns_alias` 非空白」的**并集**（命中任一即必填）。前端 `cert.apply` 的 `dns_zone` 字段 schema 携带条件必填标记（`x-required-when`），使前端能据此联动校验；描述 MUST 说明显式配置的适用场景。
 
 #### R5 单域推导的通用口径
 若 `domains` 为单域且 `dns_zone` 未设置，推导口径为“多域名中的域名去除第一个点前的前缀”：
@@ -222,12 +222,23 @@ favicon 能力 MUST 可被自动化验证，避免后续重构或路由变更导
 #### R6 跨 zone 委托
 当挑战记录写入位置与 CA 侧查询名分离（`_acme-challenge.<dns_zone>` 与 `_acme-challenge.<授权域名>` CNAME 委派），`dns_zone` 按托管实际位置填写，提供商侧写入名由 `challenge_write_name(_acme-challenge.<dns_zone>)` 与 CA 查询名 `challenge_record_name(_acme-challenge.<identifier>)` 分别构造。
 
+#### R7 domain-alias 模式（`dns_alias` 非空白）
+当 `dns_alias` 非空白时进入 domain-alias 模式：挑战记录写入名 MUST 直接取 `dns_alias` 的值（原样使用，不拼接 `_acme-challenge.` 前缀），表达 CNAME 形如 `_acme-challenge.A.com → myalias.B.com` 的委派形态。此模式下 `dns_zone` MUST 同时非空白——写入名所属 zone 无法从任意 `dns_alias` 可靠推断，必须显式给出；留空或纯空白时在任何 DNS 调用之前以可定位错误失败，错误信息含 `dns_alias` 值并提示 domain-alias 模式必须显式配置 `dns_zone`，不出现推导 zone 的调用。
+
+- 写入名 MUST 属于 `dns_zone`（经 `relative_name` 校验），不属时以可定位错误失败，错误信息指出写入名 `<dns_alias>` 不属于 zone `<dns_zone>`。
+- `dns_alias` 的值 MUST 不含 `_acme-challenge.` 前缀（否则与 challenge-alias 模式语义混淆）；填写带该前缀的值时 MUST 在任何 DNS 调用之前以可定位错误失败并提示改用 `dns_zone` 表达 challenge-alias 模式。空白（空字符串或纯空白）视为未填，走 challenge-alias / 同 zone 模式。
+- CA 查询名恒为 `_acme-challenge.<授权域名去通配前缀>`，与 `dns_alias` / `dns_zone` 均无关。写入名与 CA 查询名不同时（domain-alias 与跨 zone challenge-alias 两种情形皆是）视为跨 zone CNAME 委派，传播等待与日志 MUST 使用 CA 查询名、DNS 提供商调用 MUST 使用写入名。
+- domain-alias 模式下传播等待的解析器查询与权威 NS 直查均以 CA 查询名为目标并跟随 CNAME 链判定可见性，写入名可见不足以放行。
+
 #### 实现索引
 
 - `crates/acmecast-server/src/steps/apply.rs: zone_of` — 单标签剥离与验证
 - `crates/acmecast-server/src/steps/apply.rs: resolve_wildcard_zone` — 多级通配的逐级探测，`probe` 以 `find_txt` 误码 `NoExist/找不到 zone/not exist/InvalidDomainName` 判定托管
+- `crates/acmecast-server/src/steps/apply.rs: challenge_record` — 按 `dns_alias` 分流构造 `TxtRecord`（非空取原值、留空走 `challenge_write_name(zone)`），`TxtRecord::new` / `TxtRecord::delegated` 两条分支不变
+- `crates/acmecast-server/src/steps/apply.rs: dns_alias_of` — `dns_alias` 纯函数校验（带挑战前缀拒绝、留空视为未填）
+- `crates/acmecast-server/src/steps/apply.rs: complete_challenge` — `dns_alias` 非空白而 `dns_zone` 留空时的前置校验；zone 解析分支不动（domain-alias 模式下 `dns_zone` 必非空，走第一分支）
 - `crates/acmecast-server/src/steps/provider_select.rs` — `dns_credential_id` 未指定时按注册表稳定序遍历 DNS 类凭据自动选择
-- 前端校验：`cert.apply` 的 `dns_zone` 在多域时必填
+- 前端校验：`cert.apply` 的 `dns_zone` 在多域或 `dns_alias` 非空白时必填（条件并集）
 
 #### 用例对照表
 
@@ -240,6 +251,41 @@ favicon 能力 MUST 可被自动化验证，避免后续重构或路由变更导
 | `skiy.net` | `skiy.net` | R3 |
 | `*.com` | 无法推导，必填 | R4 |
 | `["example.com","*.example.com"]` | 必填 `dns_zone` | R4 |
+| `a.com` + `dns_zone=b.com` + `dns_alias=myalias.b.com` | 显式 `b.com`、写入名 `myalias.b.com` | R7 |
+| `dns_alias=myalias.other.com` + `dns_zone=b.com` | 报错（写入名不属于 zone） | R7 |
+| `dns_alias=_acme-challenge.b.com` | 报错（带前缀，改用 `dns_zone`） | R7 |
+| `dns_alias` 非空白 + `dns_zone` 留空 | 报错（domain-alias 必须显式 `dns_zone`） | R7 |
+
+## cert.apply 表单字段顺序与布局
+
+`cert.apply` 暴露给表单的输入 schema 的顶层对象 MUST 携带 `x-field-order`，按下列顺序列出全部顶层字段：`account_credential_id`、`challenge`、`contacts`、`dns_credential_id`、`dns_alias`、`domains`、`dns_zone`、`key_algorithm`、`wait_propagation`、`insecure_skip_verify`、`renew_before_days`，使前端按固定顺序渲染，对抗 `serde_json::Map` 按字母序重排 `properties`。
+
+### 字段顺序
+
+账号与挑战字段在前、DNS 字段紧随其后、其余字段按序收尾：
+
+| 段 | 字段 |
+|---|---|
+| 账号 | `account_credential_id` |
+| 挑战 | `challenge` |
+| 联系人 | `contacts` |
+| DNS | `dns_credential_id`、`dns_alias`、`domains`、`dns_zone` |
+| 其余 | `key_algorithm`、`wait_propagation`、`insecure_skip_verify`、`renew_before_days` |
+
+### `domains` 半宽布局
+
+`domains` 字段（数组字段，默认整行渲染）MUST 在输入 schema 携带 `x-half-width: true`，使前端将其压成半宽，与 `dns_zone` 同行。DNS 相关字段两两同行：`dns_credential_id` 与 `dns_alias` 同行（各半宽），`domains`（半宽）与 `dns_zone` 同行，`contacts` 独占一行。
+
+### `dns_alias` schema 声明
+
+- `dns_alias` 字段 MUST 为可选 string，描述 MUST 说明 domain-alias 模式语义、值为不带 `_acme-challenge.` 前缀的 CNAME 目标 FQDN，且不得引用其他外部工具的参数名。
+- `dns_zone` 的条件必填标记覆盖「`dns_alias` 非空白」（与「`domains` ≥ 2」取并集）；`dns_alias` 留空且仅 1 个域名时 `dns_zone` 不被要求必填。
+
+### 实现索引
+
+- `crates/acmecast-server/src/steps/apply.rs: AcmeApplyInput` — `dns_alias: Option<String>` 字段（`#[serde(default)]` + `#[schemars(...)]` 描述）
+- `crates/acmecast-server/src/steps/apply.rs` — `cert.apply` 输入 schema 的顶层 `x-field-order` 与 `domains.x-half-width` 注入
+- `frontend/src/components/SchemaForm.tsx: orderedEntries / SchemaForm` — `x-field-order` 定序与 `x-half-width` 渲染（既有能力，无需新增分支）
 
 ## DNS 提供商选择与 DoH 排序
 

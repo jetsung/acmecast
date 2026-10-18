@@ -87,6 +87,29 @@ describe("SchemaForm", () => {
     expect(spacers[0].className).toContain("ant-col-12");
   });
 
+  it("x-half-width：数组等非标量字段压成半宽，与相邻字段同行", () => {
+    // cert.apply 的布局：domains（array，默认整行）标注 x-half-width 后
+    // 与 dns_zone 同行；未标注的数组字段仍占整行。
+    render(
+      <Harness
+        onFinish={vi.fn()}
+        schema={objectSchema({
+          domains: { type: "array", items: { type: "string" }, "x-half-width": true },
+          dns_zone: { type: ["string", "null"] },
+          contacts: { type: "array", items: { type: "string" } },
+        })}
+      />,
+    );
+
+    const cols = Array.from(document.querySelectorAll<HTMLElement>(".ant-form-item")).map(
+      (item) => item.closest(".ant-col")?.className ?? "",
+    );
+    expect(cols).toHaveLength(3);
+    expect(cols[0]).toContain("ant-col-12");
+    expect(cols[1]).toContain("ant-col-12");
+    expect(cols[2]).toContain("ant-col-24");
+  });
+
   it("acme ca 固定半宽：ca（x-end-row）半宽独占一行，directory_url（x-full-width）另起整行", () => {
     render(
       <Harness
