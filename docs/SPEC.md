@@ -955,6 +955,12 @@ ORDER BY (archived_at IS NULL) DESC,  -- 活跃 (1) 排前，已归档 (0) 排�
 
 其中 `<prefix>` = `domain_file_prefix(primary_domain)`（通配 `*.example.com` → `_wildcard.example.com`），与主存储共用同一函数（`acmecast_cert::domain_file_prefix`），拆链共用 `acmecast_cert::ca_pem_of`。
 
+**本次补充（部署侧对齐）：** 文件类部署目标（`local` / `ssh` / `s3` / `webdav`，`tencent-ssl` 除外）的默认产出 MUST 同样对齐上述 3 文件布局（`fullchain.cer` + `ca.cer` + `key`，不单独产出叶子 `cer`），`fullchain.cer` 为 `chain_pem` 原样，`ca.cer` 按 PEM 拆链规则生成。部署目标的 `ca.cer`/`fullchain.cer` 命名与主存储一致，且 `domain_file_prefix` 规则同步（`*.example.com` → `_wildcard.example.com`）。部署侧路径以 `/` 结尾视为目录文件夹时，补全后的默认文件名 MUST 同为 `<prefix>.fullchain.cer / <prefix>.ca.cer / <prefix>.key`（保存时 `cert.apply` 主域可解析则直接拼 `domain_file_prefix` 前缀，否则 `local/ssh` 回落固定名与 `S3/WebDAV` 回落 `{domain}` 占位——部署时展开），`tencent-ssl` 保持 2 文件（云 API 无路径）不变，不改变证书原有命名。
+
+### 部署目录补全文件名同源（含文件夹模式带前缀）
+
+文件类部署目标（`local/ssh/s3/webdav`，`tencent-ssl` 除外）以 `/` 结尾的目录输入补全时，默认文件名 MUST 与 `certs/ssl/` 落盘命名同源：`<prefix>.fullchain.cer`、`<prefix>.ca.cer`、`<prefix>.key`（`<prefix>` = `domain_file_prefix(primary_domain)`，保存时同流水线 `cert.apply` 主域可解析则直接拼前缀，否则回落与部署时按主域展开），确保用户 `fullchain/key/ca` 三字段均填 `"data/certs/ssl/"` 或 `"/tmp/t1/"` 这类目录时按当前证书主域补全为带前缀的 3 文件。通配 `*.example.com` 时前缀为 `_wildcard.example.com`。
+
 ### 腾讯云 2 文件语义（对比声明）
 
 `tencent-ssl` 部署目标保持 2 文件语义：上传参数 `CertificatePublicKey=chain_pem`（fullchain）与 `CertificatePrivateKey=key_pem`，不涉及文件化与 `ca.cer` 拆分。文档与校验口径 MUST 显式声明该差异，避免与文件类目标的 3 文件混淆——实现上 MUST NOT 引入 `ca.cer` 拆分逻辑。
@@ -970,15 +976,37 @@ ORDER BY (archived_at IS NULL) DESC,  -- 活跃 (1) 排前，已归档 (0) 排�
 | `s3` | `fullchain_filename` / `ca_filename` | `cert_filename` | `ca_filename` ← `<prefix>.ca.cer` |
 | `webdav` | `fullchain_path` / `ca_path` | `cert_path` | `ca_path` ← `<prefix>.ca.cer` |
 
-### 保存时目录补全与持久化
+### 流水线保存时目录补全与持久化（含文件夹模式带前缀）
 
-文件类目标的路径/文件名字段以 `/` 结尾视为目录。`PipelineRepository::save` MUST 在校验与入库前对 `cert.deploy` 步骤的 `config` 做补全，并以补全后的值持久化（前端回显即为部署实际使用的路径）：
+文件类目标（`local / ssh / s3 / webdav`，`tencent-ssl` 除外）的路径/文件名字段以 `/` 结尾视为目录文件夹，文件夹模式下 `fullchain / ca / key` 三字段分别独立补全。`PipelineRepository::save` MUST 在校验与入库前对 `cert.deploy` 步骤的 `config` 做补全，并以补全后的值持久化（前端回显即为部署实际使用的路径），`tencent-ssl` 分支 MUST 跳过（无路径字段）。
 
-- `local`/`ssh`：`fullchain_path`（含旧别名 `cert_path`）→ `<目录>fullchain.cer`，`ca_path` → `<目录>ca.cer`，`key_path` → `<目录>key`。
-- `s3`：`prefix` 归一化为 `<prefix>/`；`fullchain_filename`/`cert_filename` → `<目录>{domain}.fullchain.cer`，`ca_filename` → `<目录>{domain}.ca.cer`，`key_filename` → `<目录>{domain}.key`。
-- `webdav`：`base_path` 归一化为 `<base>/`；`fullchain_path`/`cert_path` → `<目录>{domain}.fullchain.cer`，`ca_path` → `<目录>{domain}.ca.cer`，`key_path` → `<目录>{domain}.key`。
-- 空白、缺省与非 `/` 结尾的值 MUST 保持原样；目录判据仅看 `/` 后缀，不做 `is_dir()` 探测。`{domain}` 在部署时按 `domain_file_prefix(primary_domain)` 展开。
-- 部署执行期 MUST 保留同一补全作为兜底，覆盖未重新保存的存量配置；`S3`/`WebDAV` 的 `ca` 内容为空（单张链）时跳过对应 PUT，但 `DeployOutcome.paths` 仍列出 3 个预期键。
+#### 目录判据
+
+系统 MUST 以 `value.trim().ends_with('/')` 为唯一目录判据；仅当值以 `/` 结尾时视为目录并触发补全，非 `/` 结尾、空白、缺省的值 MUST 保持原样不补全，不做 `is_dir()` 探测。
+
+#### 补全规则（保存时按主域前缀）
+
+补全时优先取同流水线 `cert.apply` 步骤的 `domains[0]` 或关联证书主域，经 `domain_file_prefix` 派生 `<prefix>`（通配 `*.example.com` → `_wildcard.example.com`）：
+
+| 目标 | 目录字段 | 主域可解析 | 主域缺失 |
+|---|---|---|---|
+| `local` / `ssh` | `fullchain_path`（含旧别名 `cert_path`）→ `<目录><prefix>.fullchain.cer`，`ca_path` → `<目录><prefix>.ca.cer`，`key_path` → `<目录><prefix>.key` | 直接拼带前缀文件名并入库，如 `*.example.com` + `/tmp/t1/` → `/tmp/t1/_wildcard.example.com.fullchain.cer` 等 | 回落固定名 `fullchain.cer / ca.cer / key`，如 `/tmp/t1/` → `/tmp/t1/fullchain.cer` |
+| `s3` | `prefix` 归一化为 `<prefix>/`；`fullchain_filename`/`cert_filename` → `<目录><prefix>.fullchain.cer`，`ca_filename` → `<目录><prefix>.ca.cer`，`key_filename` → `<目录><prefix>.key` | 同上直接拼前缀，如 `example.com` + `certs/` → `certs/example.com.fullchain.cer` | 回落 `{domain}` 占位模板 `"<目录>{domain}.fullchain.cer"` 等，部署时按 `domain_file_prefix(primary_domain)` 展开 |
+| `webdav` | `base_path` 归一化为 `<base>/`；`fullchain_path`/`cert_path` → `<目录><prefix>.fullchain.cer`，`ca_path` → `<目录><prefix>.ca.cer`，`key_path` → `<目录><prefix>.key` | 同上 | 回落 `{domain}` 占位，部署时展开 |
+
+文件夹模式三字段均支持：通配 `*.example.com` 时 `fullchain_path="/tmp/t1/"`、`key_path="/tmp/t1/"`、`ca_path="/tmp/t1/"` 分别补为 `/tmp/t1/_wildcard.example.com.fullchain.cer` / `.ca.cer` / `.key`；相对路径 `certs/ssl/` 同样以 `/` 结尾触发补全。
+
+#### 校验与持久化时序
+
+`PipelineRepository::save` MUST 先执行目录补全归一化，再执行后续校验与持久化；补全后的完整路径参与必填等校验并写入 `pipeline_step.input`。`tencent-ssl` 目标的 `config` 含路径键时不触发补全，原样入库。
+
+#### 执行期兜底与文件名前缀不变
+
+部署执行期若路径仍以 `/` 结尾（历史存量未重保存），MUST 按 `domain_file_prefix(primary_domain)` 动态补全为 `<prefix>.fullchain.cer / <prefix>.ca.cer / <prefix>.key`，文件名 MUST 与 `certs/ssl/` 落盘命名同源。`S3`/`WebDAV` 的 `ca` 内容为空（单张链）时跳过对应 PUT，但 `DeployOutcome.paths` 仍列出 3 个预期键。
+
+#### 前端说明
+
+`GET /api/tasks/cert.deploy/schema` 的 `x-target-schemas` 与前端表单提示 MUST 说明：`fullchain/ca/key` 路径以 `/` 结尾视为目录文件夹模式，保存时按当前证书主域自动补全为 `<prefix>.fullchain.cer` 等带前缀文件名（通配 `*.example.com` → `_wildcard.example.com.*`，`tencent-ssl` 不参与）。
 
 ### local 三文件路径、权限与目录/留空语义
 
@@ -1025,7 +1053,70 @@ ORDER BY (archived_at IS NULL) DESC,  -- 活跃 (1) 排前，已归档 (0) 排�
 - `crates/acmecast-deploy/src/targets/tencent.rs` — 2 文件上传（`CertificatePublicKey=chain_pem` + `CertificatePrivateKey=key_pem`），不拆 `ca.cer`
 - `docs/07-deploy-targets.md` — 各目标字段表与共享 3 文件语义
 
-## SSH 部署跳板机（bastion / jump host）
+## S3 与 WebDAV 部署目标（存储类目标）
+
+`s3` 与 `webdav` 为存储类文件部署目标，默认产出同为 3 文件（`fullchain.cer / ca.cer / key`），字段与 `local/ssh` 的目录补全规则同源，差异仅为对象键/URL 语义与前缀归一化。
+
+### S3 部署目标
+
+`s3` 将证书材料以对象形式写入 S3 兼容存储。写入对象由 3 文件派生：默认对象键为 `<prefix>.fullchain.cer / <prefix>.ca.cer / <prefix>.key`（`<prefix>` = `domain_file_prefix(primary_domain)`，通配 `_wildcard`），不单独产生叶子 `cer`。输入字段：`credential_id`（必填，`deploy.s3` 凭据）、`prefix`（可选，对象键前缀）、`cert_filename`/`fullchain_filename`/`ca_filename`/`key_filename` 模板（可选，`cert_filename` 视为 `fullchain_filename` 别名）、`force_path_style`/`insecure_skip_verify`/`force` 均可选。凭据中取 `access_key`/`secret_key`（可选 `session_token`），流水线 input 不存明文。
+
+- 未自定义模板时对象键按主域派生 `fullchain.cer / ca.cer / key`，后缀对齐主存储，不产生旧 `cert.pem / key.pem`，亦不单独产生叶子 `cer`；自定义模板的 `{domain}` 占位替换为新 `prefix`。
+- `prefix` 归一化：去空白与首尾 `/` 后为空则 `""`，否则补 `/` 后缀（如 `acme` → `acme/`）；对象键为 `<prefix>{domain}.fullchain.cer` 等拼接结果。
+- 目录输入保存时按主域前缀补全：`cert_filename / fullchain_filename / ca_filename / key_filename` 以 `/` 结尾视为目录，保存时按同流水线 `cert.apply` 主域经 `domain_file_prefix` 补全为 `"<目录><prefix>.fullchain.cer"` 等并持久化，主域缺失时回落 `"<目录>{domain}.fullchain.cer"` 占位、部署时展开；`ca.cer` 为空（单张链）时跳过 PUT 但 `paths` 仍列出。
+- 存量仅含 `cert_filename` 的配置视为 `fullchain_filename` 别名，`ca.cer` 按默认派生。
+
+### WebDAV 部署目标
+
+`webdav` 将证书材料写入 WebDAV，默认路径为 `<prefix>.fullchain.cer / <prefix>.ca.cer / <prefix>.key` 3 文件（通配 `_wildcard`）。输入字段：`credential_id`（必填，`deploy.webdav` 凭据）、`base_path`（可选）、`cert_path`/`fullchain_path`/`ca_path`/`key_path` 模板（可选，`cert_path` 视为 `fullchain_path` 别名）、`insecure_skip_verify`/`force` 均可选。`ca.cer` 按拆链规则生成。
+
+- `base_path` 归一化同 `prefix`（空则 `""`，否则 `<base>/`）。
+- 路径/模板字段以 `/` 结尾视为目录：保存时 MUST 按同流水线 `cert.apply` 主域补全为目录 + `<prefix>.fullchain.cer / <prefix>.ca.cer / <prefix>.key` 并持久化，主域缺失时回落 `{domain}` 占位、部署时展开；`ca_path` 目录同样触发补全。
+
+### 路径拼接单斜杠归一化
+
+`s3` 与 `webdav` 拼接 `prefix` / `base_path` 与文件路径（含以 `/` 开头的绝对路径）时，衔接处 MUST 只有且仅有一个 `/`，路径内部的连续 `/` MUST 一并折叠；协议部分（`s3://` / `https://`）单独组装，不受归一化影响。实现由 `crates/acmecast-deploy/src/targets/mod.rs::join_path(base, path)` 统一：剥 `base` 尾部 `/` 与 `path` 头部 `/` 后单 `/` 衔接，`webdav_paths` 的 URL 与 S3 的 3 个展示键 + 实际 `PUT` 键共 4 个拼接点全部接入。
+
+### 目录补全持久化与执行期兜底
+
+文件类目标的路径字段以 `/` 结尾视为目录时，系统 MUST 在 `PipelineRepository::save` 阶段即补全并写回 DB，前端回显即为补全后的完整路径；部署执行期 MUST 保留以 `/` 结尾的兜底补全，确保未重保存的历史配置仍可部署成功。保存后回显与部署时动态补全的文件名同为 `<prefix>.fullchain.cer / <prefix>.ca.cer / <prefix>.key`，与 `certs/ssl/` 落盘命名同源。
+
+### S3/WebDAV 上传超时与代理继承
+
+S3 与 WebDAV 的部署上传（S3 `PutObject`、WebDAV `MKCOL`/`PUT`）MUST 受 `[network] timeout_secs` / `ACMECAST_NETWORK_TIMEOUT_SECS` 超时约束（默认 30 秒），超时以可读错误失败（S3 含 bucket 与对象键、WebDAV 含 URL），绝不永久挂起。跳过写入（`skipped_write`）时不发起网络调用，不受超时约束；目录补全不改变超时语义，超时仍以最终补全后的对象键/URL 计时与报错。凭据 `proxy_mode=inherit` 时 MUST 继承全局代理（`[proxy] url` / `ACMECAST_PROXY_URL`），与 DNS 提供商同口径。
+
+## 部署目录补全的执行可靠性与日志增强
+
+承接上节目录补全，`cert.deploy` 在执行期的可靠性与可观测性按本节增强，覆盖 SSH 写入可见性、逐行路径日志、指纹收敛，与目录补全的持久化/兜底同源（`domain_file_prefix`，通配 `*.example.com` → `_wildcard.example.com`）。
+
+### SSH 远端写入失败必须可见
+
+`ssh` 目标的远端命令通道 MUST 只以 `ExitStatus` 为终态判定结果——`Eof` 先于退出码到达时 MUST NOT 提前结束等待并把退出码默认为 0；命令不发退出码时由既有超时兜底。远端写入脚本 MUST 在写入前 `mkdir -p '<父目录>'`（与 `local` 的 `create_dir_all` 同口径），任何一步失败 MUST 以 `远端写入失败（退出码 N）: …` 的可读错误失败，MUST NOT 误报部署成功。实现上远端写入脚本提取为 `remote_write_script`，顺序为 `mkdir -p` → 临时写入 → 替换，确保 `/tmp/t1/` 这类目录补全后的父目录不存在时自动创建。
+
+### 步骤日志逐行列出传输目标路径
+
+`cert.deploy` 步骤日志对非 `tencent-ssl` 目标（`local / ssh / s3 / webdav`）MUST 在 `已部署到目标 <target>` 摘要行之后逐行列出本次传输的目标路径（每个文件一行，形如 `  → <路径>`，与 `DeployOutcome.paths` 一致，含跳过写入时）；`tencent-ssl` 为云 API 语义（无文件路径）MUST NOT 输出逐行路径，仅保留结构化证书 ID 输出。该逐行日志便于按路径到目标上逐一核对。
+
+### SSH 证书写入先于重载且失败不掩盖
+
+`SshTarget::deploy` 在 `DeployMode::Write` 时 MUST 先完成全部远端文件写入（`fullchain.cer`/`ca.cer`/`key`，`ca` 可选）再执行 `reload_command`，任一 `write_file` 失败 MUST 以可读错误整体失败且不再执行重载，避免“重载成功掩盖写入失败”；跳板与直连路径的写入清单同为 `ssh_files()` 展开结果，目录补全（`/tmp/t1/` → `_wildcard.*`）在跳板链路同样生效。
+
+### SSH 跳板机使用写入运行日志
+
+当 `cert.deploy` 的 `target` 为 `ssh` 且 `config.bastion_credential_id` 非空时，系统 MUST 在 `deploy targets:` 与可选的 `proxy: via ...` 日志之后写入一条 `bastion: via <host[:port]> (id=...)` 的信息日志以表明经跳板连接，失败分支亦保留；直连（`bastion_credential_id` 为空/缺失）时 MUST NOT 输出该行，日志不含口令或密钥（与上节跳板机章节的引用与连接流程一致，此处为日志可观测性约束）。
+
+### 非 cloud.tencent 目标每次上传不检测指纹
+
+除 `target` 为 `cloud.tencent` / `tencent-ssl` 外，所有 `cert.deploy` 目标（`ssh`/`local`/`s3`/`webdav` 等）MUST 每次均以 `DeployMode::Write` 执行，不检测指纹是否一致，不触发 `skipped_write`；仅 `cloud.tencent` / `tencent-ssl` 在指纹与上次一致且未强制时可跳过写入但仍执行重载。存量 `DeploymentEntry` 的旧指纹保留但不再参与非腾讯云目标的判定。
+
+### 实现索引（本节）
+
+- `crates/acmecast-deploy/src/targets/ssh.rs: run_channel / remote_write_script` — 仅认 `ExitStatus`，`mkdir -p` 父目录
+- `crates/acmecast-server/src/steps/deploy.rs: CertDeployStep::execute` — 逐行 `→ <路径>` 日志（非 `tencent-ssl`）与 `bastion: via` 日志
+- `crates/acmecast-deploy/src/targets/ssh.rs: SshTarget::deploy` — 写入先于重载、失败短路
+- `crates/acmecast-deploy/src/deployer.rs: decide_mode` — 仅 `tencent-ssl` / `cloud.tencent` 走指纹一致判定，其余强制 `Write`
+- `crates/acmecast-deploy/src/targets/mod.rs: join_path` — 单斜杠归一化（与上节 S3/WebDAV 拼接共用）
+
 
 当目标主机不在公网或被防火墙隔离、仅可通过一台跳板机访问时，`cert.deploy(ssh)` 支持引用另一份 `deploy.ssh` 凭据作为跳板机，经跳板机的 SSH `direct-tcpip` channel 转发到目标主机。跳板是流水线步骤层面的组合，`deploy.ssh` 凭据类型与 `SshHostFields` 字段不变。
 
