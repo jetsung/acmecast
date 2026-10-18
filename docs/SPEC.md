@@ -621,6 +621,8 @@ SSE 实时推送与终态持久化遵循双轨：
 | 4 | `private_key` | 一行 `x-multiline` textarea 整行 |
 | 5 | `proxy_mode` ｜ `proxy_url` | 半宽同行；`private_key` 为整行，前驱无需 `x-end-row` |
 
+`deploy.ssh` 档案创建与更新时校验：主机与用户非空白、端口在 1–65535 范围内、认证材料（`private_key` 或 `password`）恰好提供其一。认证材料的判定口径在校验、连通性测试、部署前合并三处保持一致：`private_key` 或 `password` 为空串（含纯空白，保存前由系统统一 `trim_credential_strings` 去首尾空白）SHALL 视为未提供，与读取认证材料时（`auth_material`）把空串过滤为缺席同口径。一方为非空、另一方为空串或纯空白时按"恰好其一"通过；两方均为空串/纯空白/缺失时按"两者皆缺"拒绝并指向 `private_key`；两方均非空时按"两者皆有"拒绝并指向 `private_key`。编辑既有档案清空 `private_key`、改填 `password` 的场景 MUST 可正常保存，不因 `Some("")` 被误判为"已提供"而报"两者皆有"。
+
 #### `cloud.tencent` — 腾讯云
 
 `x-field-order: ["account_site","secret_id","secret_key","proxy_mode","proxy_url"]`（与 `dns.tencent-eo` 共用 `tencent_credentials_schema`）
@@ -697,6 +699,9 @@ SSE 实时推送与终态持久化遵循双轨：
 - `crates/acmecast-access/src/credential/webdav.rs: webdav_fields_schema` — `x-field-order: ["url","base_path","username","password","proxy_mode","proxy_url"]`
 - `crates/acmecast-access/src/credential/s3.rs: s3_fields_schema` — `x-field-order` 8 字段 + `session_token` 由代理注入补 `x-end-row`
 - `crates/acmecast-deploy/src/ssh_host.rs: ssh_host_fields_schema` — `x-field-order` 9 字段 + `private_key.x-multiline`
+- `crates/acmecast-deploy/src/ssh_host.rs: SshHostFields::validate` — 认证材料空串判定口径（`as_deref().map(str::trim).filter(!is_empty)` 归一化后走恰好其一，与 `auth_material` 同口径）
+- `crates/acmecast-deploy/src/ssh_host.rs: auth_material` — 读取认证材料时把空串过滤为缺席的既有口径
+- `crates/acmecast-server/src/handlers.rs: save_credential` — 保存前 `trim_credential_strings` 统一去首尾空白
 - `crates/acmecast-notify/src/notify_credential.rs: {feishu,dingtalk,generic,email}_fields_schema` — `notify.*` 四类版式（见上）+ `proxy_mode/proxy_url` 注入
 - `crates/acmecast-dns/src/providers/tencent.rs: tencent_credentials_schema` — `account_site.x-end-row` 先于代理注入，`secret_id`｜`secret_key` 同行
 - `crates/acmecast-dns/src/providers/cloudflare.rs: cloudflare_credentials_schema` — `api_token.x-end-row`

@@ -459,7 +459,7 @@ export function PipelineEditorPage() {
           <Select
             mode="multiple"
             allowClear
-            style={{ width: 560 }}
+            style={{ width: 760 }}
             placeholder="选择通知渠道（通知类凭据）"
             options={notificationChannelOptions}
             // 下拉列表展开时展示完整格式（含渠道类型）；选中后标签由 labelRender 渲染。
