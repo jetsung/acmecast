@@ -45,7 +45,7 @@ function Brand() {
         <SafetyCertificateOutlined />
       </div>
       <div style={{ lineHeight: 1.2 }}>
-        <div style={{ fontWeight: 600, fontSize: 16, color: "#1c2333" }}>acmecast</div>
+        <div style={{ fontWeight: 600, fontSize: 16, color: "#1c2333" }}>AcmeCast</div>
         <div style={{ fontSize: 12, color: "#8a93a6" }}>证书自动化控制台</div>
       </div>
     </div>

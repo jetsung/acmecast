@@ -30,7 +30,7 @@ function Brand() {
         <SafetyCertificateOutlined />
       </div>
       <Typography.Title level={4} style={{ margin: 0 }}>
-        acmecast 控制台
+        AcmeCast 控制台
       </Typography.Title>
       <Typography.Text type="secondary">证书自动签发与部署</Typography.Text>
     </div>

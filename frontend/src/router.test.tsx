@@ -65,6 +65,6 @@ describe("路由懒加载", () => {
     // LoginPage 是真实模块（未 mock）：必须等它的 chunk 解析出来才看得到表单。
     // antd 会在两个汉字之间自动插空格（"登 录"），所以用正则匹配。
     expect(await screen.findByRole("button", { name: /登\s*录/ })).toBeTruthy();
-    expect(screen.getByText("acmecast 控制台")).toBeTruthy();
+    expect(screen.getByText("AcmeCast 控制台")).toBeTruthy();
   });
 });

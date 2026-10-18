@@ -1,7 +1,8 @@
 /**
  * 流水线「通知」多选（运行结束简讯渠道）的端到端验证：
  * - 「通知」下拉只列通知类凭据（`notify.feishu` / `notify.dingtalk` /
- *   `notify.generic` / `notify.email`），标签为「名称（id=N）— 渠道类型」；
+ *   `notify.generic` / `notify.email`），下拉列表文字为「名称（id=N）— 渠道类型」，
+ *   选中后选择框内标签为「名称（id=N）」（不含渠道类型）；
  * - 保存时提交数字 ID 数组（`notification_channels`）；
  * - 重新打开编辑页回显选中状态；复制流水线时预填。
  *
@@ -24,8 +25,11 @@ const CREDENTIAL_TYPES = [
   { type_id: "cloud.cloudflare", display_name: "Cloudflare", schema: {} },
 ];
 
-const FEISHU_LABEL = "ops-feishu（id=50）— 飞书机器人";
-const MAIL_LABEL = "ops-mail（id=51）— 邮件";
+const FEISHU_LABEL = "ops-feishu（id=50）";
+const MAIL_LABEL = "ops-mail（id=51）";
+/** 下拉列表展开时的完整文字（含渠道类型，optionRender 渲染）。 */
+const FEISHU_FULL_LABEL = `${FEISHU_LABEL}— 飞书机器人`;
+const MAIL_FULL_LABEL = `${MAIL_LABEL}— 邮件`;
 
 test.beforeEach(async ({ page }) => {
   // 路由守卫只看令牌是否存在，塞一个即可通过。
@@ -82,15 +86,26 @@ test("通知下拉只列通知类凭据，保存时提交 ID 数组", async ({ p
   const channels = page.getByLabel("通知");
   await expect(channels).toHaveAttribute("role", "combobox");
   await channels.click();
-  await expect(page.locator(`.ant-select-item-option[title="${FEISHU_LABEL}"]`)).toBeVisible();
-  await expect(page.locator(`.ant-select-item-option[title="${MAIL_LABEL}"]`)).toBeVisible();
+  // 下拉列表文字仍为完整格式（option 的 title 取自短格式 label，内容由 optionRender 渲染）。
+  const feishuOption = page.locator(`.ant-select-item-option[title="${FEISHU_LABEL}"]`);
+  const mailOption = page.locator(`.ant-select-item-option[title="${MAIL_LABEL}"]`);
+  await expect(feishuOption).toBeVisible();
+  await expect(feishuOption).toContainText(FEISHU_FULL_LABEL);
+  await expect(mailOption).toBeVisible();
+  await expect(mailOption).toContainText(MAIL_FULL_LABEL);
   await expect(page.locator('.ant-select-item-option[title="le-prod（id=7）"]')).toHaveCount(0);
   await expect(page.locator('.ant-select-item-option[title="some-dns（id=8）"]')).toHaveCount(0);
 
   // 多选下拉勾选后不收起，可连续勾选。
-  await page.locator(`.ant-select-item-option[title="${FEISHU_LABEL}"]`).click();
-  await page.locator(`.ant-select-item-option[title="${MAIL_LABEL}"]`).click();
+  await feishuOption.click();
+  await mailOption.click();
   await page.keyboard.press("Escape");
+
+  // 选中后标签为短格式，不含渠道类型。
+  const feishuTag = page.locator(`.ant-select-selection-item[title="${FEISHU_LABEL}"]`);
+  await expect(feishuTag).toBeVisible();
+  await expect(feishuTag).not.toContainText("—");
+  await expect(page.locator(`.ant-select-selection-item[title="${MAIL_LABEL}"]`)).toBeVisible();
 
   // antd 会在两个汉字之间插空格（"保 存"），用正则匹配。
   await page.getByRole("button", { name: /保\s*存/ }).click();
@@ -118,7 +133,11 @@ test("编辑既有流水线时回显已选通知渠道", async ({ page }) => {
 
   await page.goto("/pipelines/5");
 
-  await expect(page.locator(`.ant-select-selection-item[title="${FEISHU_LABEL}"]`)).toBeVisible();
+  // 选中项标签为短格式，不含渠道类型。
+  const feishuTag = page.locator(`.ant-select-selection-item[title="${FEISHU_LABEL}"]`);
+  await expect(feishuTag).toBeVisible();
+  await expect(feishuTag).toContainText(FEISHU_LABEL);
+  await expect(feishuTag).not.toContainText("—");
   await expect(page.locator(`.ant-select-selection-item[title="${MAIL_LABEL}"]`)).toBeVisible();
 });
 
@@ -156,6 +175,8 @@ test("复制流水线时预填通知渠道", async ({ page }) => {
   // antd 会在两个汉字之间插空格（"复 制"），用正则匹配。
   await page.getByRole("button", { name: /复\s*制/ }).click();
 
-  // 新建页预填源流水线的通知渠道。
-  await expect(page.locator(`.ant-select-selection-item[title="${FEISHU_LABEL}"]`)).toBeVisible();
+  // 新建页预填源流水线的通知渠道：选中项同样只显示短格式。
+  const feishuTag = page.locator(`.ant-select-selection-item[title="${FEISHU_LABEL}"]`);
+  await expect(feishuTag).toBeVisible();
+  await expect(feishuTag).not.toContainText("—");
 });
