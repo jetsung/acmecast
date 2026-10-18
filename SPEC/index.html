@@ -1,0 +1,4467 @@
+
+<!doctype html>
+<html lang="zh" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="证书自动签发与部署系统：ACME 申请、流水线编排、自动续期与部署">
+      
+      
+      
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="zensical-0.0.71">
+    
+    
+      
+        <title>AcmeCast 项目规范（SPEC） - AcmeCast</title>
+      
+    
+    
+      
+        
+      
+      <link rel="stylesheet" href="../assets/stylesheets/modern/main.e442bf79.min.css">
+      
+        
+          
+        
+        <link rel="stylesheet" href="../assets/stylesheets/modern/palette.b60ce83d.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,500,500i,700,700i%7CJetBrains+Mono:400,400i,700,700i&amp;display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("..",location),__md_scope.pathname.endsWith("/")||(__md_scope=new URL(__md_scope.pathname+"/",location)),__md_hash=e=>[...e].reduce(((e,t)=>(e<<5)-e+t.charCodeAt(0)),0),__md_get=(e,t=localStorage,_=__md_scope)=>JSON.parse(t.getItem(_.pathname+"."+e)),__md_set=(e,t,_=localStorage,a=__md_scope)=>{try{_.setItem(a.pathname+"."+e,JSON.stringify(t))}catch(e){}},document.documentElement.setAttribute("data-platform",navigator.platform)</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer" aria-hidden="true"></label>
+    <div data-md-component="skip">
+      <a href="#__skip" class="md-skip">
+        跳转至
+      </a>
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="页眉">
+    <a href="./.." title="AcmeCast" class="md-header__button md-logo" aria-label="AcmeCast" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 5v16M20.001 19A2 2 0 0 0 22 17V5a2 2 0 0 0-1.999-2L16 3.002A5 5 0 0 0 12 5a5 5 0 0 0-4-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 1.999 2H8a5 5 0 0 1 4 2 5 5 0 0 1 4-2z"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer" aria-label="导航栏">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-menu" viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h16"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            AcmeCast
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              AcmeCast 项目规范（SPEC）
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="切换到浅色模式"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="切换到浅色模式" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-sun-moon" viewBox="0 0 24 24"><path d="M12 2v2M14.837 16.385a6 6 0 1 1-7.223-7.222c.624-.147.97.66.715 1.248a4 4 0 0 0 5.26 5.259c.589-.255 1.396.09 1.248.715M16 12a4 4 0 0 0-4-4M19 5l-1.256 1.256M20 12h2"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="切换到深色模式"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="切换到深色模式" for="__palette_2" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="切换到跟随系统"  type="radio" name="__palette" id="__palette_2">
+    
+      <label class="md-header__button md-icon" title="切换到跟随系统" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-moon" viewBox="0 0 24 24"><path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search" aria-label="查找">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog" aria-label="查找">
+  <button type="button" class="md-search__button">
+    查找
+  </button>
+</div>
+      
+    
+    <div class="md-header__source">
+      
+        <a href="https://github.com/jetsung/acmecast" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.3.1 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2026 Fonticons, Inc.--><path fill="currentColor" d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    jetsung/acmecast
+  </div>
+</a>
+      
+    </div>
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="导航栏" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="./.." title="AcmeCast" class="md-nav__button md-logo" aria-label="AcmeCast" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 5v16M20.001 19A2 2 0 0 0 22 17V5a2 2 0 0 0-1.999-2L16 3.002A5 5 0 0 0 12 5a5 5 0 0 0-4-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 1.999 2H8a5 5 0 0 1 4 2 5 5 0 0 1 4-2z"/></svg>
+
+    </a>
+    AcmeCast
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/jetsung/acmecast" title="前往仓库" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.3.1 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2026 Fonticons, Inc.--><path fill="currentColor" d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    jetsung/acmecast
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="./.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  首页
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../01-architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  架构设计
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../02-getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  快速开始
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../03-configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  配置参考
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../04-credentials/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  凭据体系
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../05-pipelines/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  流水线
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../06-dns-providers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  DNS 提供商与传播检查
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../07-deploy-targets/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  部署目标
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../08-scheduling/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  定时调度与自动续期
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../09-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  REST API
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../10-certificates/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  证书管理
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../11-database/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  数据库与数据目录
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../12-development/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  本地开发
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../13-docker-deployment/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Docker 部署
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../14-docker-image/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Docker 镜像
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../15-troubleshooting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  排障与已知限制
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../16-favicon-logo/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Favicon LOGO 生成提示词
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  
+                    
+                    
+                    
+                      
+                    
+                    
+                      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+                      <div class="md-sidebar-button__wrapper">
+                        <label class="md-sidebar-button" for="__toc"></label>
+                      </div>
+                    
+                  
+                  <div class="md-sidebar__inner">
+                    
+
+
+<nav class="md-nav md-nav--secondary" aria-label="目录">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      目录
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        品牌与命名规范
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="品牌与命名规范">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#acmecast" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        展示层品牌名为 AcmeCast
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        技术标识符保持小写形态
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        配置与数据路径保持小写
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        文档与站点品牌提及统一
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        本地存储与内部注释豁免
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_6" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        实现索引
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pwa-manifestconsole-favicon" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        控制台站点图标与 PWA Manifest（console-favicon）
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="控制台站点图标与 PWA Manifest（console-favicon）">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#favicon" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Favicon 静态资源清单
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#html" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        HTML 入口声明
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pwa-web-app-manifest" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        PWA Web App Manifest
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_7" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        后端静态托管可达性
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_8" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        视觉一致性与源同步
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_9" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        可验证性与回归防护
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_10" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        实现索引
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dns-zone" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        DNS Zone 自动推导
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="DNS Zone 自动推导">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#_11" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        术语
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_12" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        规则
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="规则">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#r1" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        R1 通配符单域
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#r2" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        R2 非通配三级及以上单域
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#r3" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        R3 单域且本身为二级域名
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#r4" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        R4 无法推导或多域必填
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#r5" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        R5 单域推导的通用口径
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#r6-zone" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        R6 跨 zone 委托
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#r7-domain-alias-dns_alias" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        R7 domain-alias 模式（<code>dns_alias</code> 非空白）
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_13" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        实现索引
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_14" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        用例对照表
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#certapply" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        cert.apply 表单字段顺序与布局
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="cert.apply 表单字段顺序与布局">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#_15" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        字段顺序
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#domains" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>domains</code> 半宽布局
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#dns_alias-schema" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>dns_alias</code> schema 声明
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_16" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        实现索引
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dns-doh" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        DNS 提供商选择与 DoH 排序
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="DNS 提供商选择与 DoH 排序">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#_17" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        显式指定凭据
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#dns_credential_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        自动选择（<code>dns_credential_id</code> 为空）
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#doh" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        DoH 解析器排序
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_18" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        实现索引
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dns" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        DNS 传播等待时序与轮次日志
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="DNS 传播等待时序与轮次日志">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#_19" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        启动两行日志
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_20" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        四阶段等分时序
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#miss" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        miss 日志入库精简（双轨语义）
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_21" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        实现索引
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#doh_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        DoH 解析器熔断剔除与代理自动回退
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="DoH 解析器熔断剔除与代理自动回退">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#doh_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        DoH 代理自动回退
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_22" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        触发与计数
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_23" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        失败分类
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_24" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        剔除与降级
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_25" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        作用域
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_26" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        实现索引
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#acme-ca-acmeaccount-ca" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        内建 ACME CA（凭据 <code>acme.account</code> 的 <code>ca</code>）
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#capabilities" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        凭据能力标记（<code>capabilities</code>）
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="凭据能力标记（capabilities）">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#_27" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        受控类型
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_28" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        存储与归一化
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#api" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        API 透传与校验
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_29" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        凭据表单
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_30" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        凭据列表
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_31" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        流水线下拉过滤
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_32" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        流水线保存与执行校验
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_33" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        连通性测试
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_34" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        实现索引
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#display_name" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        凭据类型展示名（<code>display_name</code>）
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="凭据类型展示名（display_name）">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#_35" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        实现索引
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#type_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        凭据 type_id 命名空间
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="凭据 type_id 命名空间">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#_36" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        旧→新映射
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_37" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        凭据白名单同步
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#type_id_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        存量凭据 type_id 自动迁移
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_38" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        实现索引
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_39" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        凭据字段表单布局约定
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="凭据字段表单布局约定">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#_40" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        表单页排序和布局（凭据页新建/编辑）
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="表单页排序和布局（凭据页新建&#x2f;编辑）">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#acmeaccount-acme" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>acme.account</code> — ACME 账号
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#deploywebdav-webdav" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>deploy.webdav</code> — WebDAV
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#deploys3-s3" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>deploy.s3</code> — S3 兼容存储
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#deployssh-ssh" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>deploy.ssh</code> — SSH 主机
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cloudtencent" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>cloud.tencent</code> — 腾讯云
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cloudcloudflare-cloudflare" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>cloud.cloudflare</code> — Cloudflare
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cloudaliyun" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>cloud.aliyun</code> — 阿里云
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#dnstencent-eo-edgeone" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>dns.tencent-eo</code> — 腾讯云 EdgeOne
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#notifygeneric-webhook" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>notify.generic</code> — 通用 Webhook
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#notifyemail" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>notify.email</code> — 邮件
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#notifyfeishu" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>notify.feishu</code> — 飞书机器人
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#notifydingtalk" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>notify.dingtalk</code> — 钉钉机器人
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_41" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        实现索引
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_42" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        凭据出网代理与全局代理配置
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="凭据出网代理与全局代理配置">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#acmecast_proxy_url-proxy" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        全局代理（<code>ACMECAST_PROXY_URL</code> / <code>[proxy]</code> 段）
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#network-acmecast_network_timeout_secs" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        网络操作超时（<code>[network]</code> 段 / <code>ACMECAST_NETWORK_TIMEOUT_SECS</code>）
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#proxy_mode-proxy_url" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        凭据级代理模式（<code>proxy_mode</code> + <code>proxy_url</code>）
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_43" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        出网路径与连通性测试
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_44" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        实现索引
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_45" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        运行历史代理与部署目标日志
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="运行历史代理与部署目标日志">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#proxy" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        代理使用日志（<code>proxy:</code> 行）
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#deploy-targets" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        部署目标信息日志（<code>deploy targets:</code> 行）
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_46" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        实现索引
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#certdeploy" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        部署平台化日志（<code>cert.deploy</code>）
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="部署平台化日志（cert.deploy）">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#_47" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        实现索引
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_48" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        证书存储查询与续期归档
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="证书存储查询与续期归档">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#_49" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        查询排序
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_50" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        归档守卫
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_51" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        归档语义
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_52" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        实现索引
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_53" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        材料缺失降级为标记吊销终态
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_54" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        吊销搬迁完整性
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_55" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        前端提示区分
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_56" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        实现索引（续）
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_57" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        跳过注入兼容回退读取与可诊断失败
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="跳过注入兼容回退读取与可诊断失败">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#_58" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        兼容回退候选路径
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_59" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        回退命中
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_60" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        回退全部失败的领域错误
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_61" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        日志收敛
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_62" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        作用域与不变量
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_63" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        实现索引
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-2" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        文件类部署目标 3 文件布局与腾讯云 2 文件区分
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="文件类部署目标 3 文件布局与腾讯云 2 文件区分">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#3" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        3 文件集合（文件类目标）
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_64" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        部署目录补全文件名同源（含文件夹模式带前缀）
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        腾讯云 2 文件语义（对比声明）
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_65" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        字段与别名兼容
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_66" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        流水线保存时目录补全与持久化（含文件夹模式带前缀）
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="流水线保存时目录补全与持久化（含文件夹模式带前缀）">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#_67" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        目录判据
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_68" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        补全规则（保存时按主域前缀）
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_69" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        校验与持久化时序
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_70" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        执行期兜底与文件名前缀不变
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_71" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        前端说明
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#local" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        local 三文件路径、权限与目录/留空语义
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ssh-allowclear" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        SSH 三文件路径、目录/留空语义、表单两行两列与 allowClear
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_72" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        实现索引
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#s3-webdav" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        S3 与 WebDAV 部署目标（存储类目标）
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="S3 与 WebDAV 部署目标（存储类目标）">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#s3" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        S3 部署目标
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#webdav" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        WebDAV 部署目标
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_73" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        路径拼接单斜杠归一化
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_74" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        目录补全持久化与执行期兜底
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#s3webdav" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        S3/WebDAV 上传超时与代理继承
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_75" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        部署目录补全的执行可靠性与日志增强
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="部署目录补全的执行可靠性与日志增强">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ssh" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        SSH 远端写入失败必须可见
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_76" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        步骤日志逐行列出传输目标路径
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ssh_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        SSH 证书写入先于重载且失败不掩盖
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ssh_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        SSH 跳板机使用写入运行日志
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cloudtencent_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        非 cloud.tencent 目标每次上传不检测指纹
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_77" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        实现索引（本节）
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#bastion_credential_id" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        跳板凭据引用（<code>bastion_credential_id</code>）
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_78" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        独立解析与认证
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_79" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        连接流程
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_80" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        超时口径
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_81" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        前端步骤表单联动
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_82" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        作用域与不变量
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#_83" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        实现索引
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+                
+
+
+
+  
+
+
+              
+              <article class="md-content__inner md-typeset">
+                <a id="__skip" tabindex="-1"></a>
+                
+                  
+
+  
+  
+
+
+<h1 id="acmecast-spec">AcmeCast 项目规范（SPEC）<a class="headerlink" href="#acmecast-spec" title="Permanent link">&para;</a></h1>
+<p>本文件为全局规范，涵盖品牌与命名、控制台站点图标与 PWA Manifest、ACME 账号、DNS 校验与证书生命周期、凭据出网代理与全局代理配置、运行历史可观测性等产品行为，<code>docs/SPEC.md</code> 为唯一真实来源。下文首节为品牌与命名规范，次节为控制台站点图标与 PWA Manifest（<code>console-favicon</code>），再次为 DNS Zone 推导，其余为内建 CA、凭据代理、日志规范等全局约定。</p>
+<h2 id="_1">品牌与命名规范<a class="headerlink" href="#_1" title="Permanent link">&para;</a></h2>
+<p>用户可见品牌名统一为 <code>AcmeCast</code>（首字母 <code>A</code> 与 <code>C</code> 大写，其余小写），技术标识符保持 <code>acmecast</code> / <code>ACMECAST</code> 小写形态，二者以白名单式豁免边界划分，不做全局正则批量替换，也不引入技术标识符的破坏性变更。若未来需更名技术标识符，另起变更。</p>
+<h3 id="acmecast">展示层品牌名为 AcmeCast<a class="headerlink" href="#acmecast" title="Permanent link">&para;</a></h3>
+<p>用户可见的品牌字样 MUST 显示为 <code>AcmeCast</code>，不出现全小写 <code>acmecast</code> 作为展示用品牌名。适用范围：</p>
+<table>
+<thead>
+<tr>
+<th>触点</th>
+<th>期望文案</th>
+<th>备注</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>前端浏览器标题 <code>frontend/index.html</code> <code>&lt;title&gt;</code></td>
+<td><code>AcmeCast 控制台</code></td>
+<td>构建产物 <code>dist/index.html</code> 同步</td>
+</tr>
+<tr>
+<td>侧边栏品牌区 <code>frontend/src/layout/AppLayout.tsx</code> Brand 组件</td>
+<td><code>AcmeCast</code></td>
+<td>副文案 <code>证书自动化控制台</code> 保持不变，样式（渐变图标、字号、色值）不变</td>
+</tr>
+<tr>
+<td>登录页品牌标题 <code>frontend/src/pages/Login.tsx</code></td>
+<td><code>AcmeCast 控制台</code></td>
+<td>副标题 <code>证书自动签发与部署</code> 保持不变</td>
+</tr>
+<tr>
+<td>README 首屏 <code>README.md</code></td>
+<td>一级标题 <code># AcmeCast</code>，正文首提 <code>AcmeCast</code></td>
+<td>技术标识符 <code>ACMECAST_*</code> / <code>ghcr.io/jetsung/acmecast</code> / 路径保持原文</td>
+</tr>
+<tr>
+<td>文档站 <code>docs/index.md</code> 与 <code>site/</code> 搜索/页面文案</td>
+<td>站点标题与首段为 <code>AcmeCast</code></td>
+<td><code>site/search.json</code> 为构建产物，改源后需重建</td>
+</tr>
+<tr>
+<td>OpenAPI <code>crates/acmecast-server/src/openapi.rs</code> <code>info.title</code></td>
+<td><code>AcmeCast API</code></td>
+<td>Swagger UI 与 <code>openapi-typescript</code> 生成的客户端直接可见</td>
+</tr>
+<tr>
+<td>面向用户的日志与错误提示中的品牌称呼</td>
+<td><code>AcmeCast</code></td>
+<td>技术标识符上下文除外</td>
+</tr>
+</tbody>
+</table>
+<p>前端断言同步：<code>frontend/src/router.test.tsx</code> 中对品牌文案的断言 MUST 与上述展示保持一致（<code>AcmeCast 控制台</code>）。</p>
+<h3 id="_2">技术标识符保持小写形态<a class="headerlink" href="#_2" title="Permanent link">&para;</a></h3>
+<p>以下技术标识符 MUST 保持现有小写/全大写下划线形态，不随展示层更名而变更，不新增大小写变体：</p>
+<table>
+<thead>
+<tr>
+<th>类别</th>
+<th>保持形态</th>
+<th>示例</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Rust crate 名（11 个）</td>
+<td><code>acmecast-*</code> 小写</td>
+<td><code>acmecast-core</code>、<code>acmecast-server</code>、<code>acmecast-dns</code> 等 11 个内部 crate</td>
+</tr>
+<tr>
+<td>环境变量前缀</td>
+<td><code>ACMECAST__</code> / <code>ACMECAST_*</code> 全大写下划线</td>
+<td><code>ACMECAST__JWT_SECRET</code>、<code>ACMECAST_CONFIG</code>、<code>ACMECAST_NETWORK_TIMEOUT_SECS</code>、<code>ACMECAST_DOH_RESOLVERS</code></td>
+</tr>
+<tr>
+<td>二进制名</td>
+<td><code>acmecast-server</code> 小写</td>
+<td>—</td>
+</tr>
+<tr>
+<td>Docker 镜像</td>
+<td><code>ghcr.io/jetsung/acmecast</code> 小写</td>
+<td>含容器名</td>
+</tr>
+<tr>
+<td>仓库路径</td>
+<td><code>github.com/jetsung/acmecast</code> 小写</td>
+<td>—</td>
+</tr>
+<tr>
+<td>npm 包名</td>
+<td><code>acmecast-frontend</code> 小写</td>
+<td>—</td>
+</tr>
+<tr>
+<td>User-Agent</td>
+<td><code>acmecast/&lt;version&gt;</code> 小写</td>
+<td>出站请求头</td>
+</tr>
+<tr>
+<td>CLI 可执行名前缀</td>
+<td><code>acmecast-*</code> 小写</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<h3 id="_3">配置与数据路径保持小写<a class="headerlink" href="#_3" title="Permanent link">&para;</a></h3>
+<p>配置文件与数据文件路径、示例中的小写标识 MUST 保持不变，不因展示层更名而改为 <code>AcmeCast</code> 路径或大小写变体：</p>
+<table>
+<thead>
+<tr>
+<th>路径/标识</th>
+<th>保持形态</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>默认配置查找顺序</td>
+<td><code>./config.yaml</code> → <code>./config.yml</code> → <code>/etc/acmecast/config.yaml</code></td>
+</tr>
+<tr>
+<td>示例数据</td>
+<td><code>data/acmecast.db</code>、<code>data/config.toml</code> 模板路径</td>
+</tr>
+<tr>
+<td>User-Agent</td>
+<td><code>acmecast/&lt;version&gt;</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="_4">文档与站点品牌提及统一<a class="headerlink" href="#_4" title="Permanent link">&para;</a></h3>
+<p><code>README.md</code>、<code>docs/index.md</code>、<code>site/</code> 搜索与页面文案、<code>docker/compose.yaml</code> 注释、<code>mise.toml</code> / <code>prek.toml</code> / <code>data/config.toml</code> 模板注释中面向读者的品牌提及 MUST 使用 <code>AcmeCast</code>，技术标识符（crate 名、环境变量、路径、镜像名）在注释中的原文保持小写豁免，不被批量替换。判定规则：注释中若品牌词后紧跟技术标识符示例（如 <code>ACMECAST_JWT_SECRET</code>），仅改品牌称呼部分，技术标识符原文豁免。</p>
+<h3 id="_5">本地存储与内部注释豁免<a class="headerlink" href="#_5" title="Permanent link">&para;</a></h3>
+<p>以下 MUST 保持小写不变，不因展示层更名而迁移或重命名，避免引入存储迁移与无意义重命名：</p>
+<table>
+<thead>
+<tr>
+<th>豁免项</th>
+<th>保持形态</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>前端本地存储 key</td>
+<td><code>acmecast-auth</code> (<code>frontend/src/auth/store.ts</code>)</td>
+<td>会话不因更名丢失，无需迁移脚本</td>
+</tr>
+<tr>
+<td>源码内部注释中对 crate/模块路径的引用</td>
+<td><code>acmecast-core</code> 等</td>
+<td>保持小写原文</td>
+</tr>
+<tr>
+<td>测试中临时文件名前缀</td>
+<td><code>acmecast-*</code></td>
+<td>保持小写</td>
+</tr>
+</tbody>
+</table>
+<h3 id="_6">实现索引<a class="headerlink" href="#_6" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>frontend/index.html</code> — <code>&lt;title&gt;AcmeCast 控制台&lt;/title&gt;</code></li>
+<li><code>frontend/src/layout/AppLayout.tsx</code> — 侧边栏 Brand 组件文本 <code>AcmeCast</code></li>
+<li><code>frontend/src/pages/Login.tsx</code> — 登录页品牌标题 <code>AcmeCast 控制台</code></li>
+<li><code>frontend/src/router.test.tsx</code> — 品牌文案断言同步</li>
+<li><code>frontend/src/auth/store.ts</code> — <code>acmecast-auth</code> 本地存储 key 豁免（保持小写）</li>
+<li><code>crates/acmecast-server/src/openapi.rs</code> — <code>#[openapi(info(title = "AcmeCast API"))]</code></li>
+<li><code>README.md</code> — 一级标题 <code># AcmeCast</code> 与首段品牌提及</li>
+<li><code>docs/index.md</code> / <code>site/search.json</code> — 站点标题与搜索文案 <code>AcmeCast</code>（<code>site/</code> 需重建）</li>
+<li><code>docker/compose.yaml</code> / <code>mise.toml</code> / <code>prek.toml</code> / <code>data/config.toml</code> — 模板注释中面向读者的品牌称呼 <code>AcmeCast</code>，技术标识符原文豁免</li>
+<li>技术标识符保留清单：<code>Cargo.toml</code> 中 11 个 <code>acmecast-*</code> crate、<code>ACMECAST__*</code> / <code>ACMECAST_*</code> 环境变量、<code>acmecast-server</code> 二进制、<code>ghcr.io/jetsung/acmecast</code> 镜像、<code>acmecast/&lt;version&gt;</code> User-Agent</li>
+</ul>
+<h2 id="pwa-manifestconsole-favicon">控制台站点图标与 PWA Manifest（console-favicon）<a class="headerlink" href="#pwa-manifestconsole-favicon" title="Permanent link">&para;</a></h2>
+<p>为 AcmeCast 控制台提供浏览器标签页、书签、移动端主屏的站点图标与 PWA 可安装能力，基于登录页品牌标识一次性生成多尺寸 favicon 与 Web App Manifest，并在前端入口与后端静态托管中建立可验证的引用契约。<code>frontend/public</code> 为运行时权威副本，Vite 将其 verbatim 拷贝至 <code>frontend/dist</code> 根目录，随 Docker <code>frontend-builder → /static</code> 由后端 <code>ServeDir</code> 托管。</p>
+<h3 id="favicon">Favicon 静态资源清单<a class="headerlink" href="#favicon" title="Permanent link">&para;</a></h3>
+<p><code>frontend/public</code> MUST 包含 favicon 静态资源集合，并 verbatim 拷贝至 <code>frontend/dist</code> 根目录与运行期 <code>/static</code>。集合 MUST 包含：</p>
+<table>
+<thead>
+<tr>
+<th>资源</th>
+<th>规格</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>favicon.ico</code></td>
+<td>含 16×16、32×32、48×48 三档</td>
+<td>多尺寸 ICO，兼容旧浏览器/书签自动探测</td>
+</tr>
+<tr>
+<td><code>favicon-32x32.png</code></td>
+<td>32×32 PNG</td>
+<td>现代浏览器首选</td>
+</tr>
+<tr>
+<td><code>favicon-16x16.png</code></td>
+<td>16×16 PNG</td>
+<td>现代浏览器首选</td>
+</tr>
+<tr>
+<td><code>apple-touch-icon.png</code></td>
+<td>180×180 PNG</td>
+<td>iOS 主屏/高分屏</td>
+</tr>
+<tr>
+<td><code>site.webmanifest</code></td>
+<td>合法 JSON（见下节）</td>
+<td>PWA 可安装元数据</td>
+</tr>
+</tbody>
+</table>
+<p>所有位图 MUST 由 LOGO 源派生并提交至仓库；派生 MUST 经仓库脚本 <code>scripts/generate-favicon.sh</code>（<code>just favicon &lt;图片路径&gt; [输出目录]</code>）完成，该脚本支持 <code>png</code>/<code>jpg</code>/<code>svg</code> 输入且同一输入多次运行输出字节一致（<code>-strip</code> 去元数据、ICO 目录项按 16/32/48 排序、SVG 光栅化统一 8-bit 色深）。构建链路（<code>pnpm -C frontend build</code> / Docker <code>frontend-builder</code>）不执行生成，仅拷贝已提交的成品。</p>
+<ul>
+<li>构建产物一致性：执行 <code>pnpm -C frontend build</code> 后 <code>frontend/dist</code> 下上述 5 文件 MUST 存在且与 <code>frontend/public</code> 对应文件字节一致。</li>
+<li>ICO 多尺寸：以二进制解析 <code>favicon.ico</code>，目录项 MUST 至少包含 16、32、48 三档且每档可独立解码为有效位图。</li>
+<li>Apple Touch Icon：<code>apple-touch-icon.png</code> 图像头 MUST 为 180×180、色深 ≥ 24 位，不得为 32×32 拉伸放大图；透明背景与圆角留白保留。</li>
+</ul>
+<h3 id="html">HTML 入口声明<a class="headerlink" href="#html" title="Permanent link">&para;</a></h3>
+<p><code>frontend/index.html</code> 的 <code>&lt;head&gt;</code> MUST 声明 favicon 与 PWA manifest 引用，声明 MUST 包含且 <code>href</code> MUST 为站点根路径绝对路径（<code>/</code> 前缀），不得使用相对路径或带 hash 的构建产物路径，确保在任意前端路由（<code>/pipelines</code>、<code>/certificates/xxx</code>、<code>/login</code> 等）下均可解析：</p>
+<div class="language-html highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="p">&lt;</span><span class="nt">link</span> <span class="na">rel</span><span class="o">=</span><span class="s">"icon"</span> <span class="na">href</span><span class="o">=</span><span class="s">"/favicon.ico"</span> <span class="na">sizes</span><span class="o">=</span><span class="s">"any"</span><span class="p">&gt;</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="p">&lt;</span><span class="nt">link</span> <span class="na">rel</span><span class="o">=</span><span class="s">"icon"</span> <span class="na">type</span><span class="o">=</span><span class="s">"image/png"</span> <span class="na">sizes</span><span class="o">=</span><span class="s">"32x32"</span> <span class="na">href</span><span class="o">=</span><span class="s">"/favicon-32x32.png"</span><span class="p">&gt;</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="p">&lt;</span><span class="nt">link</span> <span class="na">rel</span><span class="o">=</span><span class="s">"icon"</span> <span class="na">type</span><span class="o">=</span><span class="s">"image/png"</span> <span class="na">sizes</span><span class="o">=</span><span class="s">"16x16"</span> <span class="na">href</span><span class="o">=</span><span class="s">"/favicon-16x16.png"</span><span class="p">&gt;</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="p">&lt;</span><span class="nt">link</span> <span class="na">rel</span><span class="o">=</span><span class="s">"apple-touch-icon"</span> <span class="na">href</span><span class="o">=</span><span class="s">"/apple-touch-icon.png"</span><span class="p">&gt;</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="p">&lt;</span><span class="nt">link</span> <span class="na">rel</span><span class="o">=</span><span class="s">"manifest"</span> <span class="na">href</span><span class="o">=</span><span class="s">"/site.webmanifest"</span><span class="p">&gt;</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="p">&lt;</span><span class="nt">meta</span> <span class="na">name</span><span class="o">=</span><span class="s">"theme-color"</span> <span class="na">content</span><span class="o">=</span><span class="s">"#4f63f2"</span><span class="p">&gt;</span>
+</span></code></pre></div>
+<ul>
+<li>声明与资源一一对应：<code>index.html</code> 中每个 <code>href</code> 去掉前导 <code>/</code> 后 MUST 对应 <code>frontend/public</code> 下真实文件存在；逐项请求 MUST 返回 <code>200</code> 且 <code>Content-Type</code> 正确（<code>favicon.ico</code> 为 <code>image/x-icon</code> 或 <code>image/vnd.microsoft.icon</code>，PNG 为 <code>image/png</code>，<code>site.webmanifest</code> 为 <code>application/manifest+json</code> 或 <code>application/json</code>）。</li>
+<li><code>sizes="any"</code> 使现代浏览器优先选 PNG、旧浏览器回落 ICO；<code>theme-color</code> 固定为品牌主色 <code>#4f63f2</code>。</li>
+</ul>
+<h3 id="pwa-web-app-manifest">PWA Web App Manifest<a class="headerlink" href="#pwa-web-app-manifest" title="Permanent link">&para;</a></h3>
+<p><code>frontend/public/site.webmanifest</code> MUST 为合法 JSON，MUST 包含以下字段且满足浏览器可安装性校验（Lighthouse/DevTools 不报缺失 icon 或 start_url）：</p>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="p">{</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">"name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"AcmeCast"</span><span class="p">,</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span><span class="nt">"short_name"</span><span class="p">:</span><span class="w"> </span><span class="s2">"AcmeCast"</span><span class="p">,</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">  </span><span class="nt">"start_url"</span><span class="p">:</span><span class="w"> </span><span class="s2">"/"</span><span class="p">,</span>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">  </span><span class="nt">"display"</span><span class="p">:</span><span class="w"> </span><span class="s2">"standalone"</span><span class="p">,</span>
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">  </span><span class="nt">"background_color"</span><span class="p">:</span><span class="w"> </span><span class="s2">"#ffffff"</span><span class="p">,</span>
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">  </span><span class="nt">"theme_color"</span><span class="p">:</span><span class="w"> </span><span class="s2">"#4f63f2"</span><span class="p">,</span>
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">  </span><span class="nt">"icons"</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="nt">"src"</span><span class="p">:</span><span class="w"> </span><span class="s2">"/favicon-32x32.png"</span><span class="p">,</span><span class="w"> </span><span class="nt">"sizes"</span><span class="p">:</span><span class="w"> </span><span class="s2">"32x32"</span><span class="p">,</span><span class="w"> </span><span class="nt">"type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"image/png"</span><span class="w"> </span><span class="p">},</span>
+</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">    </span><span class="p">{</span><span class="w"> </span><span class="nt">"src"</span><span class="p">:</span><span class="w"> </span><span class="s2">"/apple-touch-icon.png"</span><span class="p">,</span><span class="w"> </span><span class="nt">"sizes"</span><span class="p">:</span><span class="w"> </span><span class="s2">"180x180"</span><span class="p">,</span><span class="w"> </span><span class="nt">"type"</span><span class="p">:</span><span class="w"> </span><span class="s2">"image/png"</span><span class="w"> </span><span class="p">}</span>
+</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">  </span><span class="p">]</span>
+</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="p">}</span>
+</span></code></pre></div>
+<ul>
+<li><code>name</code>/<code>short_name</code> MUST 均为 <code>AcmeCast</code>；<code>icons</code> MUST 至少包含 32×32 与 180×180 两档，<code>src</code> 指向 <code>/favicon-32x32.png</code> 与 <code>/apple-touch-icon.png</code> 且 <code>type</code> 为 <code>image/png</code>，<code>sizes</code> 与实际 PNG 资源一致。</li>
+<li><code>start_url</code> MUST 为 <code>/</code>；<code>display</code> MUST 为 <code>standalone</code> 或 <code>minimal-ui</code>。</li>
+<li><code>theme_color</code> MUST 为 <code>#4f63f2</code>，<code>background_color</code> MUST 为 <code>#ffffff</code>。</li>
+<li>不实现 Service Worker、离线缓存与推送；PWA 仅提供 Manifest 层可安装元数据。不引入 SVG favicon / <code>mask-icon</code>。</li>
+</ul>
+<h3 id="_7">后端静态托管可达性<a class="headerlink" href="#_7" title="Permanent link">&para;</a></h3>
+<p>后端对 <code>ACMECAST_STATIC_DIR</code>（Docker 镜像中为 <code>/static</code>，由 <code>frontend/dist</code> 拷贝而来）的静态托管 MUST 使 favicon 资源通过与前端同源的 HTTP 路径可达，且不得被 SPA fallback 误判为前端路由。<code>ServeDir::new(static_dir).fallback(ServeFile::new(index))</code> 的行为 MUST 满足：当请求路径命中 <code>static_dir</code> 下的真实文件时返回该文件，仅当文件不存在时才回落到 <code>index.html</code>。</p>
+<ul>
+<li>直接请求：<code>GET /favicon.ico</code>、<code>GET /favicon-32x32.png</code>、<code>GET /apple-touch-icon.png</code>、<code>GET /site.webmanifest</code> MUST 返回 <code>200</code>，<code>Content-Type</code> 分别为图标/图像/manifest 类型，响应体与 <code>frontend/dist</code> 下对应文件一致，且不返回 <code>index.html</code> 的 HTML 内容。</li>
+<li>SPA 回落不遮蔽：<code>GET /non-existent-route</code> 返回 <code>index.html</code>（SPA fallback），而 <code>GET /favicon.ico</code> 仍返回 ICO 文件，二者行为可区分。</li>
+<li>浏览器自动探测兜底：未解析 <code>index.html</code> 而直接探测 <code>GET /favicon.ico</code> 时仍返回 <code>200</code> 的 ICO 文件，不依赖 HTML 声明。</li>
+<li><code>Content-Type</code> 与可缓存响应头由 <code>ServeDir</code> 默认或显式配置提供，至少允许浏览器缓存；<code>site.webmanifest</code> 不被 <code>fallback</code> 吞没。</li>
+</ul>
+<h3 id="_8">视觉一致性与源同步<a class="headerlink" href="#_8" title="Permanent link">&para;</a></h3>
+<p>所有 favicon 派生图 MUST 与源 LOGO 在视觉上一致：图形主体、品牌色、圆角/留白比例保持一致，不得引入额外文字或边框。源 LOGO 为登录页登录框上方的品牌标识（<code>frontend/src/pages/Login.tsx</code> 的 <code>Brand</code> 组件：渐变圆角方块 <code>#4f63f2 → #7b5bf5</code> 135° 对角渐变 + 白色盾形对勾），<code>frontend/public</code> 下的 favicon 为控制台运行时权威副本。</p>
+<ul>
+<li>后续 LOGO 变更时 MUST 先更新 <code>Brand</code> 视觉（或按 <code>openspec/changes/add-favicon-from-logo/logo-prompt.md</code> 的提示词生成新 SVG/PNG 源），再经 <code>just favicon &lt;新图路径&gt;</code> 一次性重新生成派生尺寸并提交，<code>frontend/dist</code> 构建产物同步更新。</li>
+<li>生成规范（见 <code>logo-prompt.md</code>）：圆角方形充满整张画布、尖角透明（alpha 非白底）、135° 渐变 <code>#4f63f2 → #7b5bf5</code>、白色描边盾牌 + 对勾、扁平极简无阴影/文字。</li>
+</ul>
+<h3 id="_9">可验证性与回归防护<a class="headerlink" href="#_9" title="Permanent link">&para;</a></h3>
+<p>favicon 能力 MUST 可被自动化验证，避免后续重构或路由变更导致图标丢失：</p>
+<ul>
+<li>构建产物校验：<code>frontend/public</code> 下任一必需文件缺失后执行构建，<code>frontend/dist</code> 中对应文件亦缺失，可被 CI 中的产物存在性断言捕获。</li>
+<li>后端冒烟：对 <code>GET /favicon.ico</code> / <code>GET /favicon-32x32.png</code> / <code>GET /apple-touch-icon.png</code> / <code>GET /site.webmanifest</code> 的集成/冒烟测试 MUST 断言 <code>200</code> 与正确 <code>Content-Type</code>，<code>site.webmanifest</code> 额外断言 JSON 合法且 <code>name</code>/<code>icons</code>/<code>start_url</code> 完整；未正确挂载 <code>ACMECAST_STATIC_DIR</code> 或 <code>ServeDir</code> 配置错误时测试失败。</li>
+<li>前端断言：任意路由下 <code>document.querySelector('link[rel="icon"]')</code>、<code>link[rel="apple-touch-icon"]</code>、<code>link[rel="manifest"]</code> 与 <code>meta[name="theme-color"]</code> 存在且 <code>href</code> 以 <code>/</code> 开头。</li>
+</ul>
+<h3 id="_10">实现索引<a class="headerlink" href="#_10" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>frontend/public/favicon.ico</code> / <code>favicon-32x32.png</code> / <code>favicon-16x16.png</code> / <code>apple-touch-icon.png</code> / <code>site.webmanifest</code> — favicon 静态资源权威副本（提交产物）</li>
+<li><code>frontend/index.html</code> — <code>&lt;head&gt;</code> 内 favicon/manifest/<code>theme-color</code> 声明（<code>/</code> 绝对路径）</li>
+<li><code>frontend/dist/*</code> — Vite verbatim 拷贝产物（构建后与 <code>public</code> 字节一致）</li>
+<li><code>scripts/generate-favicon.sh</code> + <code>justfile: favicon</code> — 派生重生成脚本（支持 png/jpg/svg、字节可复现，不进构建链路）</li>
+<li><code>openspec/changes/add-favicon-from-logo/logo-prompt.md</code> — LOGO 重生成提示词（圆角方形/透明尖角/渐变/盾牌对勾）</li>
+<li><code>crates/acmecast-server/src/lib.rs: ServeDir::new(static_dir).fallback(ServeFile::new(index))</code> — 静态托管（文件命中优先、缺失回落 <code>index.html</code>，无需代码改动）</li>
+<li><code>docker/Dockerfile: frontend-builder → /static</code> — 前端构建产物拷贝至运行镜像</li>
+<li><code>frontend/src/pages/Login.tsx: Brand</code> — LOGO 源（渐变圆角方块 <code>#4f63f2 → #7b5bf5</code> + 白色盾形对勾）</li>
+</ul>
+<h2 id="dns-zone">DNS Zone 自动推导<a class="headerlink" href="#dns-zone" title="Permanent link">&para;</a></h2>
+<p>流水线 <code>cert.apply</code> 的 <code>dns_zone</code> 为空时按本节推导；无法推导或多域时置为必填。</p>
+<h3 id="_11">术语<a class="headerlink" href="#_11" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>domains</code>：流水线输入的域名列表，元素为 <code>example.com</code> 或 <code>*.example.com</code> 通配形式。</li>
+<li><code>dns_zone</code>：挑战记录写入的托管区域名称，用于构造 <code>_acme-challenge.&lt;dns_zone&gt;</code> 的写入位置。</li>
+<li><code>dns_alias</code>：domain-alias 模式下挑战记录的写入名（任意 FQDN，不带 <code>_acme-challenge.</code> 前缀），填写时 <code>dns_zone</code> 必填。留空走 challenge-alias / 同 zone 模式。</li>
+</ul>
+<h3 id="_12">规则<a class="headerlink" href="#_12" title="Permanent link">&para;</a></h3>
+<h4 id="r1">R1 通配符单域<a class="headerlink" href="#r1" title="Permanent link">&para;</a></h4>
+<p>当 <code>domains</code> 仅含一个元素且为 <code>*.xxx.xx</code> 形式时，<code>dns_zone</code> 缺省为剥离前缀 <code>*.</code> 后剩余的合法 zone。</p>
+<ul>
+<li>输入 <code>*.gcli.cn</code> → 推导 <code>gcli.cn</code></li>
+<li>输入 <code>*.example.com</code> → 推导 <code>example.com</code></li>
+<li>输入 <code>*.x.idev.top</code> → 候选逐级为 <code>x.idev.top</code>、<code>idev.top</code>，取提供商侧首个已托管者；若均无，则回退 <code>x.idev.top</code> 并由创建阶段报错（不在此处吞错）。</li>
+<li>若剥离后非合法 zone（如 <code>*.com</code>、<code>*.</code>、<code>*.example.</code>），视为无法推导，按 R4 处理。</li>
+</ul>
+<h4 id="r2">R2 非通配三级及以上单域<a class="headerlink" href="#r2" title="Permanent link">&para;</a></h4>
+<p>当 <code>domains</code> 仅含一个元素且非通配、形如 <code>xx.xxx.xx</code>（三级及以上）时，<code>dns_zone</code> 缺省为去除第一个点前的前缀后剩余部分。</p>
+<ul>
+<li>输入 <code>a.example.com</code> → <code>example.com</code></li>
+<li>输入 <code>a.b.example.com</code> → <code>b.example.com</code></li>
+<li>仅当剩余仍含点时有效（确保至少两段），否则按 R4 处理。</li>
+</ul>
+<h4 id="r3">R3 单域且本身为二级域名<a class="headerlink" href="#r3" title="Permanent link">&para;</a></h4>
+<p>当 <code>domains</code> 仅含一个元素且本身就是二级域名（<code>xxx.xx</code>，恰含一个点）时，<code>dns_zone</code> 即其本身。</p>
+<ul>
+<li>输入 <code>skiy.net</code>、<code>example.com</code> → 推导自身 <code>skiy.net</code>、<code>example.com</code></li>
+</ul>
+<h4 id="r4">R4 无法推导或多域必填<a class="headerlink" href="#r4" title="Permanent link">&para;</a></h4>
+<p>当无法通过 R1–R3 推导（如 <code>*.com</code>、空输入、非合法形态）或 <code>domains</code> 含多个域名时，<code>dns_zone</code> 为必填，缺失则在校验或执行期报错：</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>无法从 &lt;domain&gt; 推导 DNS zone，请显式配置 dns_zone
+</span></code></pre></div>
+<p><code>dns_zone</code> 的必填条件为「<code>domains</code> 至少 2 项」与「<code>dns_alias</code> 非空白」的<strong>并集</strong>（命中任一即必填）。前端 <code>cert.apply</code> 的 <code>dns_zone</code> 字段 schema 携带条件必填标记（<code>x-required-when</code>），使前端能据此联动校验；描述 MUST 说明显式配置的适用场景。</p>
+<h4 id="r5">R5 单域推导的通用口径<a class="headerlink" href="#r5" title="Permanent link">&para;</a></h4>
+<p>若 <code>domains</code> 为单域且 <code>dns_zone</code> 未设置，推导口径为“多域名中的域名去除第一个点前的前缀”：</p>
+<ul>
+<li>非通配：取第一个点后的剩余（<code>xx.xxx.xx</code> → <code>xxx.xx</code>）</li>
+<li>通配：等同 R1 的“去 <code>*.</code>”（<code>*.xxx.xx</code> → <code>xxx.xx</code>）</li>
+<li>该值须为合法 zone，否则按 R4 报错。</li>
+</ul>
+<h4 id="r6-zone">R6 跨 zone 委托<a class="headerlink" href="#r6-zone" title="Permanent link">&para;</a></h4>
+<p>当挑战记录写入位置与 CA 侧查询名分离（<code>_acme-challenge.&lt;dns_zone&gt;</code> 与 <code>_acme-challenge.&lt;授权域名&gt;</code> CNAME 委派），<code>dns_zone</code> 按托管实际位置填写，提供商侧写入名由 <code>challenge_write_name(_acme-challenge.&lt;dns_zone&gt;)</code> 与 CA 查询名 <code>challenge_record_name(_acme-challenge.&lt;identifier&gt;)</code> 分别构造。</p>
+<h4 id="r7-domain-alias-dns_alias">R7 domain-alias 模式（<code>dns_alias</code> 非空白）<a class="headerlink" href="#r7-domain-alias-dns_alias" title="Permanent link">&para;</a></h4>
+<p>当 <code>dns_alias</code> 非空白时进入 domain-alias 模式：挑战记录写入名 MUST 直接取 <code>dns_alias</code> 的值（原样使用，不拼接 <code>_acme-challenge.</code> 前缀），表达 CNAME 形如 <code>_acme-challenge.A.com → myalias.B.com</code> 的委派形态。此模式下 <code>dns_zone</code> MUST 同时非空白——写入名所属 zone 无法从任意 <code>dns_alias</code> 可靠推断，必须显式给出；留空或纯空白时在任何 DNS 调用之前以可定位错误失败，错误信息含 <code>dns_alias</code> 值并提示 domain-alias 模式必须显式配置 <code>dns_zone</code>，不出现推导 zone 的调用。</p>
+<ul>
+<li>写入名 MUST 属于 <code>dns_zone</code>（经 <code>relative_name</code> 校验），不属时以可定位错误失败，错误信息指出写入名 <code>&lt;dns_alias&gt;</code> 不属于 zone <code>&lt;dns_zone&gt;</code>。</li>
+<li><code>dns_alias</code> 的值 MUST 不含 <code>_acme-challenge.</code> 前缀（否则与 challenge-alias 模式语义混淆）；填写带该前缀的值时 MUST 在任何 DNS 调用之前以可定位错误失败并提示改用 <code>dns_zone</code> 表达 challenge-alias 模式。空白（空字符串或纯空白）视为未填，走 challenge-alias / 同 zone 模式。</li>
+<li>CA 查询名恒为 <code>_acme-challenge.&lt;授权域名去通配前缀&gt;</code>，与 <code>dns_alias</code> / <code>dns_zone</code> 均无关。写入名与 CA 查询名不同时（domain-alias 与跨 zone challenge-alias 两种情形皆是）视为跨 zone CNAME 委派，传播等待与日志 MUST 使用 CA 查询名、DNS 提供商调用 MUST 使用写入名。</li>
+<li>domain-alias 模式下传播等待的解析器查询与权威 NS 直查均以 CA 查询名为目标并跟随 CNAME 链判定可见性，写入名可见不足以放行。</li>
+</ul>
+<h4 id="_13">实现索引<a class="headerlink" href="#_13" title="Permanent link">&para;</a></h4>
+<ul>
+<li><code>crates/acmecast-server/src/steps/apply.rs: zone_of</code> — 单标签剥离与验证</li>
+<li><code>crates/acmecast-server/src/steps/apply.rs: resolve_wildcard_zone</code> — 多级通配的逐级探测，<code>probe</code> 以 <code>find_txt</code> 误码 <code>NoExist/找不到 zone/not exist/InvalidDomainName</code> 判定托管</li>
+<li><code>crates/acmecast-server/src/steps/apply.rs: challenge_record</code> — 按 <code>dns_alias</code> 分流构造 <code>TxtRecord</code>（非空取原值、留空走 <code>challenge_write_name(zone)</code>），<code>TxtRecord::new</code> / <code>TxtRecord::delegated</code> 两条分支不变</li>
+<li><code>crates/acmecast-server/src/steps/apply.rs: dns_alias_of</code> — <code>dns_alias</code> 纯函数校验（带挑战前缀拒绝、留空视为未填）</li>
+<li><code>crates/acmecast-server/src/steps/apply.rs: complete_challenge</code> — <code>dns_alias</code> 非空白而 <code>dns_zone</code> 留空时的前置校验；zone 解析分支不动（domain-alias 模式下 <code>dns_zone</code> 必非空，走第一分支）</li>
+<li><code>crates/acmecast-server/src/steps/provider_select.rs</code> — <code>dns_credential_id</code> 未指定时按注册表稳定序遍历 DNS 类凭据自动选择</li>
+<li>前端校验：<code>cert.apply</code> 的 <code>dns_zone</code> 在多域或 <code>dns_alias</code> 非空白时必填（条件并集）</li>
+</ul>
+<h4 id="_14">用例对照表<a class="headerlink" href="#_14" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th>输入 domains</th>
+<th>推导 dns_zone</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>*.gcli.cn</code></td>
+<td><code>gcli.cn</code></td>
+<td>R1</td>
+</tr>
+<tr>
+<td><code>*.x.idev.top</code></td>
+<td><code>x.idev.top</code> 或其父域的已托管者</td>
+<td>R1 + 逐级探测</td>
+</tr>
+<tr>
+<td><code>a.example.com</code></td>
+<td><code>example.com</code></td>
+<td>R2</td>
+</tr>
+<tr>
+<td><code>a.b.example.com</code></td>
+<td><code>b.example.com</code></td>
+<td>R2</td>
+</tr>
+<tr>
+<td><code>skiy.net</code></td>
+<td><code>skiy.net</code></td>
+<td>R3</td>
+</tr>
+<tr>
+<td><code>*.com</code></td>
+<td>无法推导，必填</td>
+<td>R4</td>
+</tr>
+<tr>
+<td><code>["example.com","*.example.com"]</code></td>
+<td>必填 <code>dns_zone</code></td>
+<td>R4</td>
+</tr>
+<tr>
+<td><code>a.com</code> + <code>dns_zone=b.com</code> + <code>dns_alias=myalias.b.com</code></td>
+<td>显式 <code>b.com</code>、写入名 <code>myalias.b.com</code></td>
+<td>R7</td>
+</tr>
+<tr>
+<td><code>dns_alias=myalias.other.com</code> + <code>dns_zone=b.com</code></td>
+<td>报错（写入名不属于 zone）</td>
+<td>R7</td>
+</tr>
+<tr>
+<td><code>dns_alias=_acme-challenge.b.com</code></td>
+<td>报错（带前缀，改用 <code>dns_zone</code>）</td>
+<td>R7</td>
+</tr>
+<tr>
+<td><code>dns_alias</code> 非空白 + <code>dns_zone</code> 留空</td>
+<td>报错（domain-alias 必须显式 <code>dns_zone</code>）</td>
+<td>R7</td>
+</tr>
+</tbody>
+</table>
+<h2 id="certapply">cert.apply 表单字段顺序与布局<a class="headerlink" href="#certapply" title="Permanent link">&para;</a></h2>
+<p><code>cert.apply</code> 暴露给表单的输入 schema 的顶层对象 MUST 携带 <code>x-field-order</code>，按下列顺序列出全部顶层字段：<code>account_credential_id</code>、<code>challenge</code>、<code>contacts</code>、<code>dns_credential_id</code>、<code>dns_alias</code>、<code>domains</code>、<code>dns_zone</code>、<code>key_algorithm</code>、<code>wait_propagation</code>、<code>insecure_skip_verify</code>、<code>renew_before_days</code>，使前端按固定顺序渲染，对抗 <code>serde_json::Map</code> 按字母序重排 <code>properties</code>。</p>
+<h3 id="_15">字段顺序<a class="headerlink" href="#_15" title="Permanent link">&para;</a></h3>
+<p>账号与挑战字段在前、DNS 字段紧随其后、其余字段按序收尾：</p>
+<table>
+<thead>
+<tr>
+<th>段</th>
+<th>字段</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>账号</td>
+<td><code>account_credential_id</code></td>
+</tr>
+<tr>
+<td>挑战</td>
+<td><code>challenge</code></td>
+</tr>
+<tr>
+<td>联系人</td>
+<td><code>contacts</code></td>
+</tr>
+<tr>
+<td>DNS</td>
+<td><code>dns_credential_id</code>、<code>dns_alias</code>、<code>domains</code>、<code>dns_zone</code></td>
+</tr>
+<tr>
+<td>其余</td>
+<td><code>key_algorithm</code>、<code>wait_propagation</code>、<code>insecure_skip_verify</code>、<code>renew_before_days</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="domains"><code>domains</code> 半宽布局<a class="headerlink" href="#domains" title="Permanent link">&para;</a></h3>
+<p><code>domains</code> 字段（数组字段，默认整行渲染）MUST 在输入 schema 携带 <code>x-half-width: true</code>，使前端将其压成半宽，与 <code>dns_zone</code> 同行。DNS 相关字段两两同行：<code>dns_credential_id</code> 与 <code>dns_alias</code> 同行（各半宽），<code>domains</code>（半宽）与 <code>dns_zone</code> 同行，<code>contacts</code> 独占一行。</p>
+<h3 id="dns_alias-schema"><code>dns_alias</code> schema 声明<a class="headerlink" href="#dns_alias-schema" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>dns_alias</code> 字段 MUST 为可选 string，描述 MUST 说明 domain-alias 模式语义、值为不带 <code>_acme-challenge.</code> 前缀的 CNAME 目标 FQDN，且不得引用其他外部工具的参数名。</li>
+<li><code>dns_zone</code> 的条件必填标记覆盖「<code>dns_alias</code> 非空白」（与「<code>domains</code> ≥ 2」取并集）；<code>dns_alias</code> 留空且仅 1 个域名时 <code>dns_zone</code> 不被要求必填。</li>
+</ul>
+<h3 id="_16">实现索引<a class="headerlink" href="#_16" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>crates/acmecast-server/src/steps/apply.rs: AcmeApplyInput</code> — <code>dns_alias: Option&lt;String&gt;</code> 字段（<code>#[serde(default)]</code> + <code>#[schemars(...)]</code> 描述）</li>
+<li><code>crates/acmecast-server/src/steps/apply.rs</code> — <code>cert.apply</code> 输入 schema 的顶层 <code>x-field-order</code> 与 <code>domains.x-half-width</code> 注入</li>
+<li><code>frontend/src/components/SchemaForm.tsx: orderedEntries / SchemaForm</code> — <code>x-field-order</code> 定序与 <code>x-half-width</code> 渲染（既有能力，无需新增分支）</li>
+</ul>
+<h2 id="dns-doh">DNS 提供商选择与 DoH 排序<a class="headerlink" href="#dns-doh" title="Permanent link">&para;</a></h2>
+<p><code>cert.apply</code> 的 DNS-01 流程以 <code>dns_credential_id</code> 为唯一凭据参数，不再接受 <code>dns_provider</code> 输入字段——提供商标识由凭据记录的 <code>type_id</code> 直接推导（如 <code>cloud.cloudflare</code> 类型凭据 → Cloudflare 提供商）。已有流水线配置中残留的 <code>dns_provider</code> 值在加载时被静默忽略，行为以凭据 <code>type_id</code> 为准。</p>
+<h3 id="_17">显式指定凭据<a class="headerlink" href="#_17" title="Permanent link">&para;</a></h3>
+<p><code>dns_credential_id</code> 非空时，系统从 <code>CredentialStore::resolve()</code> 返回的凭据 <code>type_id</code> 推导提供商标识，以此提供商完成 TXT 记录的写入、传播等待的解析器排序与记录清理。</p>
+<h3 id="dns_credential_id">自动选择（<code>dns_credential_id</code> 为空）<a class="headerlink" href="#dns_credential_id" title="Permanent link">&para;</a></h3>
+<p>未指定凭据时，系统遍历凭据库中所有 DNS 类凭据（凭据 <code>type_id</code> 即候选标识），逐个探测其能否管理目标 zone，取第一个探测通过的（凭据，提供商）组合。候选遍历顺序为：按凭据 <code>type_id</code> 的注册表稳定序，同一类型多条凭据按 ID 升序。每个失败候选的原因经步骤日志输出；全部失败时步骤报错，错误中汇总各候选原因。</p>
+<h3 id="doh">DoH 解析器排序<a class="headerlink" href="#doh" title="Permanent link">&para;</a></h3>
+<p>传播等待阶段用于判定"CA 能否看到 TXT"的公共解析器集合按提供商标识感知排序：首选提供商对应的同厂商 DoH 端点排第一，其后按固定序排列其余厂商 DoH 作为兜底。排序规则：</p>
+<table>
+<thead>
+<tr>
+<th>提供商</th>
+<th>首选 DoH</th>
+<th>兜底序</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cloud.cloudflare</code></td>
+<td>Cloudflare</td>
+<td>Cloudflare → 阿里 → 腾讯 → Google</td>
+</tr>
+<tr>
+<td><code>cloud.aliyun</code></td>
+<td>阿里</td>
+<td>阿里 → Cloudflare → 腾讯 → Google</td>
+</tr>
+<tr>
+<td><code>cloud.tencent</code> / <code>dns.tencent-eo</code></td>
+<td>腾讯</td>
+<td>腾讯 → Cloudflare → 阿里 → Google</td>
+</tr>
+<tr>
+<td>其他 / 未传参</td>
+<td>—</td>
+<td>Cloudflare → 阿里 → 腾讯 → Google</td>
+</tr>
+</tbody>
+</table>
+<p>"任意一家可见即就绪"的判定语义不变。<code>ACMECAST_DOH_RESOLVERS</code> 显式设置时提供商感知分支不生效，按环境变量语义构造集合（<code>none</code> 即跳过解析器阶段）。</p>
+<h3 id="_18">实现索引<a class="headerlink" href="#_18" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>crates/acmecast-server/src/steps/apply.rs: complete_challenge</code> — 从凭据 <code>type_id</code> 推导提供商标识</li>
+<li><code>crates/acmecast-server/src/steps/provider_select.rs</code> — 注册表稳定序遍历自动选择</li>
+<li><code>crates/acmecast-dns/src/propagation.rs: prioritize_for_provider</code> — 提供商感知 DoH 排序</li>
+</ul>
+<h2 id="dns">DNS 传播等待时序与轮次日志<a class="headerlink" href="#dns" title="Permanent link">&para;</a></h2>
+<p><code>cert.apply</code> 的 DNS-01 传播等待由 <code>wait_until_visible_phased</code> 驱动，分四段等分调度，任一段命中即成功返回；<code>round x miss</code> 日志在入库前精简至仅保留最后一条，SSE 实时流保持全量。</p>
+<h3 id="_19">启动两行日志<a class="headerlink" href="#_19" title="Permanent link">&para;</a></h3>
+<p>传播等待启动时产生两行 <code>info</code> 日志，顺序固定，均在 <code>round 1 miss</code> 之前：</p>
+<ol>
+<li><code>propagation start timeout=&lt;s&gt; interval=&lt;s&gt; (record: _acme-challenge.&lt;domain&gt;)</code> — 首行，内容不变。</li>
+<li><code>provider dns: &lt;provider_id&gt; (&lt;resolver1&gt;, &lt;resolver2&gt;, ...)</code> — 次行命中 DNS，命中集为整组 <code>ext_refs</code> 经 <code>prioritize_for_provider</code> 排序后的 <code>name()</code> 序列（<code>provider=cloudflare</code> 时整组 <code>Cloudflare DNS, 阿里 DNS, 腾讯 DNSPod, Google DNS</code>，首位为 Cloudflare），与后续 <code>round x miss (resolvers: ...)</code> 的 resolver 标识同源。</li>
+</ol>
+<p><code>provider</code> 未知/空时次行按固定兜底序 <code>Cloudflare → 阿里 → 腾讯 → Google</code>，但两行顺序不变。<code>propagation start</code> 本行不追加解析器上下文。</p>
+<h3 id="_20">四阶段等分时序<a class="headerlink" href="#_20" title="Permanent link">&para;</a></h3>
+<p><code>wait_until_visible_phased</code> 以 <code>timeout</code> 等分为四段，末段 DoH 再拆半：</p>
+<table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>时间窗</th>
+<th>查询集</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>hit</code></td>
+<td><code>[0, timeout/4)</code></td>
+<td>整组 <code>ext_refs</code> provider 优先（首位为 <code>provider</code> 对应的 DoH）</td>
+</tr>
+<tr>
+<td><code>authoritative</code></td>
+<td><code>[timeout/4, timeout/2)</code></td>
+<td>权威 NS（<code>AuthoritativeResolver</code>），<strong>不排除</strong>已在 hit 出现的单家</td>
+</tr>
+<tr>
+<td><code>all_dns</code></td>
+<td><code>[timeout/2, 3*timeout/4)</code></td>
+<td>整组 <code>ext_refs</code></td>
+</tr>
+<tr>
+<td><code>doh</code></td>
+<td><code>[3*timeout/4, timeout)</code></td>
+<td>再拆半：<code>doh_single [3*timeout/4, 7*timeout/8)</code> 仅命中单家 → <code>doh_full [7*timeout/8, timeout)</code> 整组 ext_refs provider 优先</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li>任一阶段命中即 <code>on_progress(hit)</code> 并成功返回，不等待后续阶段。</li>
+<li><code>provider=cloudflare</code> 且 <code>ext_refs</code> 含四家时：<code>hit</code> 查整组 <code>Cloudflare DNS, 阿里 DNS, 腾讯 DNSPod, Google DNS</code>（首位 Cloudflare），<code>doh_single</code> 仅查 <code>Cloudflare DNS</code> 单家，<code>authoritative</code> 仍查权威 NS（不因已在 hit 出现而剔除），<code>doh_full</code> 查整组 <code>Cloudflare, 阿里, 腾讯, Google</code> 且首位为 Cloudflare。</li>
+<li><code>ACMECAST_DOH_RESOLVERS=none</code>（或解析器切片为空）时三组均为空，走"提供商侧确认即就绪"短路。</li>
+</ul>
+<h3 id="miss">miss 日志入库精简（双轨语义）<a class="headerlink" href="#miss" title="Permanent link">&para;</a></h3>
+<p>SSE 实时推送与终态持久化遵循双轨：</p>
+<ul>
+<li><strong>SSE 实时流</strong>（<code>RunExecutionSink::emit</code> → <code>HistoryCache::push_log</code> + <code>SseBroadcaster::broadcast_log</code>）：全量 <code>round x miss</code>，每轮 miss 产生一条 <code>log</code> 事件，含命中 DNS 行（整组），不因后续精简而提前过滤。</li>
+<li><strong>入库前精简</strong>（<code>execute_run</code> 组装 <code>step_logs</code> 后、<code>HistoryRepository::finish</code> 前）：对 <code>message</code> 匹配 <code>round \d+ miss</code> 且含 <code>resolvers:</code> 的条目，仅保留最后一条（<code>rposition</code>），其余 <code>retain</code> 移除。命中 DNS 行（整组）、<code>round x hit</code>、<code>propagation start</code>、<code>propagation succeeded</code> 等非 miss 日志不受影响。</li>
+</ul>
+<p>精简仅影响持久化与后续 <code>GET /api/histories/{id}/logs</code> / 缓存重放返回的持久化视图；SSE 已推送的实时流不受影响。空/单条/无 miss 时为 no-op。</p>
+<h3 id="_21">实现索引<a class="headerlink" href="#_21" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>crates/acmecast-dns/src/propagation.rs: wait_until_visible_phased</code> — 四阶段等分调度 + 命中整组行 + 末段拆半</li>
+<li><code>crates/acmecast-server/src/steps/apply.rs: complete_challenge</code> — 提供整组 <code>ext_refs</code>（provider 优先）给 phased 的 hit/doh_full 阶段</li>
+<li><code>crates/acmecast-server/src/run.rs: execute_run</code> — <code>compact_propagation_miss_logs</code> 切入点（落库前压缩）</li>
+<li><code>crates/acmecast-pipeline/src/runner.rs</code> — <code>mpsc → EventSink::emit(Log)</code> 增量分流（SSE 全量）</li>
+</ul>
+<h2 id="doh_1">DoH 解析器熔断剔除与代理自动回退<a class="headerlink" href="#doh_1" title="Permanent link">&para;</a></h2>
+<p>传播等待的 DoH 解析器集合在单次运行内支持连续网络失败熔断剔除，避免对确定不可达端点（如国内不可达的 <code>cloudflare-dns.com</code> / <code>dns.google</code>）的无效轮询（<code>#154</code> 实测每轮每端点 <code>LOOKUP_TIMEOUT=5s</code> 超时）。熔断仅裁剪本轮 DoH 查询子集，不改变"任一家可见即就绪"与四段等分超时语义。同时，DoH 解析器无凭据关联，无法通过凭据 <code>proxy_mode</code> 配置代理；当全局 <code>ACMECAST_PROXY_URL</code> 已配且 DoH 直连网络失败时，MUST 自动经代理回退重试，使国内不可达的 DoH 端点也能经代理完成传播确认。</p>
+<h3 id="doh_2">DoH 代理自动回退<a class="headerlink" href="#doh_2" title="Permanent link">&para;</a></h3>
+<ul>
+<li>DoH 解析器的传输层初始为直连（<code>ReqwestTransport::new()</code>），不因全局 <code>ACMECAST_PROXY_URL</code> 已配而默认走代理——避免代理不可用导致全部 DoH 端点首轮即失败。</li>
+<li>DoH 端点直连查询发生"网络不可用"失败（见下节失败分类）且全局 <code>ACMECAST_PROXY_URL</code> 已配置时，MUST 自动用 <code>ReqwestTransport::with_proxy(global_proxy_url)</code> 构建代理传输层并重试该端点查询一次：</li>
+<li>重试成功（命中期望 TXT 或未命中 <code>Ok(_)</code>）→ 该端点视为可达，结果参与传播判定，并缓存该端点"需经代理"的传输偏好，后续轮次与后续阶段（<code>doh_single</code>/<code>doh_full</code>）直接用代理传输层查询，不再每轮重复直连探测。</li>
+<li>重试仍网络失败 → 计入该端点的连续失败计数（即直连失败 + 代理回退失败 = 2 次连续失败，下一轮再失败即第 3 次触发熔断剔除）。</li>
+<li>全局 <code>ACMECAST_PROXY_URL</code> 未配置 → 不做代理回退，直连失败直接计次。</li>
+<li>传输偏好缓存（<code>HashMap&lt;endpoint, ProxyPreference&gt;</code>：<code>Direct</code> / <code>Proxy</code>）仅本轮传播会话内有效，下次运行 MUST 重置；<code>doh_single → doh_full</code> 切段时跨段保留。</li>
+<li>代理回退仅影响 DoH 解析器，MUST NOT 改变权威 NS 直查与 <code>all_dns</code> 阶段的传输层；MUST NOT 改变凭据出网行为（凭据按自身 <code>proxy_mode</code> 独立构建传输层）。</li>
+</ul>
+<h3 id="_22">触发与计数<a class="headerlink" href="#_22" title="Permanent link">&para;</a></h3>
+<ul>
+<li>同一 DoH 端点连续 3 次"网络不可用"失败 MUST 从本轮 <code>active_resolvers</code> 剔除，后续轮次不再查询该端点，仅查询剩余 <code>active</code>；阈值 3 写死，不做配置项。</li>
+<li>每端点独立维护连续失败计数（<code>HashMap&lt;endpoint, u8&gt;</code>）与 <code>active: Vec&lt;&amp;dyn DnsResolver&gt;</code> 子集，维护落在 <code>crates/acmecast-dns/src/propagation.rs</code> 的等待循环内（<code>wait_until_visible</code> 与 <code>wait_until_visible_phased</code> 的 <code>doh</code> 段），不下沉至 <code>HttpTransport</code> / <code>ReqwestTransport</code> 层；<code>probe_resolvers</code> 返回后按端点更新，<code>doh_single → doh_full</code> 切段时剔除状态跨段保留；Key 取端点归一化 endpoint 字符串，与 <code>resolvers.rs</code> 去重键一致。</li>
+<li>成功（命中期望 TXT）或"未命中" MUST 清零该端点的连续失败计数，下一次网络失败重新从 1 开始计数，避免"2 次失败 + 1 次未命中"被误剔除。</li>
+<li>熔断仅本轮传播会话内有效，下次流水线运行 MUST 重置，所有端点重新参与查询。</li>
+</ul>
+<h3 id="_23">失败分类<a class="headerlink" href="#_23" title="Permanent link">&para;</a></h3>
+<ul>
+<li>MUST 将连接超时（含 <code>LOOKUP_TIMEOUT=5s</code> 的 <code>tokio::time::timeout</code> 超时，已包装为 <code>Error::provider("…超时…")</code>）、连接拒绝、TLS 握手失败、代理不可达（全局 <code>ACMECAST_PROXY_URL</code> 指向的代理连不上）、DoH 端点域名解析失败等传输层 <code>Err</code> 归为"网络不可用"并计数；<code>reqwest::Error::is_connect</code> / <code>is_timeout</code> 与代理连接失败同口径，与凭据级代理的错误分类一致。</li>
+<li>MUST 将 HTTP 200 但无期望 TXT（含 <code>Ok([])</code> 空集或 <code>Ok(非期望值)</code>）视为"未命中"，MUST NOT 计入熔断、计数清零；<code>Ok</code> 一律不剔除可达端点。</li>
+<li>代理回退重试的结果同样按上述分类：重试 <code>Ok</code> → 清零计数 + 缓存代理偏好；重试 <code>Err(网络不可用)</code> → 计入连续失败。</li>
+</ul>
+<h3 id="_24">剔除与降级<a class="headerlink" href="#_24" title="Permanent link">&para;</a></h3>
+<ul>
+<li>计数达到 3 时 MUST <code>retain</code> 剔除并记 <code>warn</code>，含端点标识与连续失败次数。</li>
+<li><code>active</code> 被剔空（全部 DoH 均被熔断）时 MUST 记 <code>warn "DoH全部不可用，跳过DoH验证"</code> 并跳过 DoH 阶段等待，不再轮询 DoH，直接按既有超时策略进入下一阶段或返回，避免卡死。</li>
+<li>传播成功/超时的终态日志 MUST 附带剔除列表以便排障；<code>on_progress</code> / 日志中可观测到剔除端点。</li>
+</ul>
+<h3 id="_25">作用域<a class="headerlink" href="#_25" title="Permanent link">&para;</a></h3>
+<ul>
+<li>仅影响 DoH 解析器：<code>wait_until_visible</code> 的 <code>resolvers</code> 全量 DoH 与 <code>wait_until_visible_phased</code> 的 <code>doh</code> 段；权威 NS 直查与 <code>all_dns</code> 阶段 MUST 保持全量探测，不受熔断裁剪、不受代理回退影响。</li>
+<li><code>ACMECAST_DOH_RESOLVERS=none</code> 或解析器集合为空（短路成功）时本机制不生效。</li>
+<li><code>probe_resolvers</code> 串行遍历 <code>active</code> 子集，剔除后遍历变短，无并发竞态；日志除剔除 <code>warn</code> 与终态列表外不额外刷屏。</li>
+</ul>
+<h3 id="_26">实现索引<a class="headerlink" href="#_26" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>crates/acmecast-dns/src/propagation.rs: wait_until_visible</code> — DoH 全量熔断（计数/<code>active</code>/<code>probe_resolvers</code> 后更新/剔空降级）+ 代理回退（直连失败 → 读全局 <code>ACMECAST_PROXY_URL</code> → <code>with_proxy</code> 重试 → 缓存偏好）</li>
+<li><code>crates/acmecast-dns/src/propagation.rs: wait_until_visible_phased</code> — 仅 <code>doh</code> 段熔断与代理回退，跨 <code>doh_single</code>/<code>doh_full</code> 保留状态与偏好</li>
+<li><code>crates/acmecast-dns/src/propagation.rs: probe_resolvers</code> — 返回 <code>Ok</code>/<code>Err</code> 供分类（<code>Ok</code> 清零，<code>Err(网络不可用)</code> 计次/触发回退）</li>
+<li><code>crates/acmecast-dns/src/resolvers.rs: doh_transport_from / doh_transport</code> — DoH 传输层构建（初始直连，代理回退时按全局 <code>ACMECAST_PROXY_URL</code> 构建）</li>
+</ul>
+<h2 id="acme-ca-acmeaccount-ca">内建 ACME CA（凭据 <code>acme.account</code> 的 <code>ca</code>）<a class="headerlink" href="#acme-ca-acmeaccount-ca" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>别名 <code>ca</code></th>
+<th>目录 URL（<code>CaKind::builtin_url</code>）</th>
+<th>EAB</th>
+<th>有效期</th>
+<th>通配</th>
+<th>SAN</th>
+<th>教程 / 申请入口</th>
+<th>备注</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>letsencrypt</code> / <code>le</code></td>
+<td><a href="https://acme-v02.api.letsencrypt.org/directory">https://acme-v02.api.letsencrypt.org/directory</a></td>
+<td>否</td>
+<td>90 天</td>
+<td>是</td>
+<td>100</td>
+<td><a href="https://github.com/acmesh-official/acme.sh/wiki/CA">https://github.com/acmesh-official/acme.sh/wiki/CA</a></td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>letsencrypt-staging</code> / <code>le-staging</code></td>
+<td><a href="https://acme-staging-v02.api.letsencrypt.org/directory">https://acme-staging-v02.api.letsencrypt.org/directory</a></td>
+<td>否</td>
+<td>—</td>
+<td>是</td>
+<td>100</td>
+<td>同上</td>
+<td>测试环境</td>
+</tr>
+<tr>
+<td><code>zerossl</code></td>
+<td><a href="https://acme.zerossl.com/v2/DV90">https://acme.zerossl.com/v2/DV90</a></td>
+<td>是（凭据空时必填，创建后由 <code>credentials</code> 复用，下同）</td>
+<td>90 天</td>
+<td>是</td>
+<td>100</td>
+<td><a href="https://app.zerossl.com/developer">https://app.zerossl.com/developer</a></td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>google</code> / <code>gts</code></td>
+<td><a href="https://dv.acme-v02.api.pki.goog/directory">https://dv.acme-v02.api.pki.goog/directory</a></td>
+<td>是</td>
+<td>90 天</td>
+<td>是</td>
+<td>100</td>
+<td><a href="https://docs.cloud.google.com/certificate-manager/docs/public-ca-tutorial#request-key-hmac">https://docs.cloud.google.com/certificate-manager/docs/public-ca-tutorial#request-key-hmac</a></td>
+<td>需 Google Cloud HMAC</td>
+</tr>
+<tr>
+<td><code>google-test</code> / <code>gts-test</code></td>
+<td><a href="https://dv.acme-v02.test-api.pki.goog/directory">https://dv.acme-v02.test-api.pki.goog/directory</a></td>
+<td>是</td>
+<td>—</td>
+<td>是</td>
+<td>100</td>
+<td>同上（测试目录）</td>
+<td>测试目录</td>
+</tr>
+<tr>
+<td><code>freessl</code> / <code>free-ssl</code></td>
+<td><a href="https://acme.litessl.com/acme/v2/directory">https://acme.litessl.com/acme/v2/directory</a></td>
+<td>是</td>
+<td>90 天</td>
+<td>是</td>
+<td>—</td>
+<td><a href="https://freessl.cn/automation/eab-manager">https://freessl.cn/automation/eab-manager</a></td>
+<td>国内 FreeSSL</td>
+</tr>
+<tr>
+<td><code>custom</code>（示例 1: Actalis）</td>
+<td><a href="https://acme-api.actalis.com/acme/directory">https://acme-api.actalis.com/acme/directory</a></td>
+<td>按目标 CA</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td><a href="https://guide.actalis.com/ssl/activation/acme">https://guide.actalis.com/ssl/activation/acme</a></td>
+<td>需自行配置 <code>custom</code></td>
+</tr>
+<tr>
+<td><code>custom</code>（示例 2: SSL.com）</td>
+<td><a href="https://acme.ssl.com/sslcom-dv-ecc">https://acme.ssl.com/sslcom-dv-ecc</a> 或 <a href="https://acme.ssl.com/sslcom-dv-rsa">https://acme.ssl.com/sslcom-dv-rsa</a></td>
+<td>按订阅</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td><a href="https://www.ssl.com/guide/ssl-tls-certificate-issuance-and-revocation-with-acme/">https://www.ssl.com/guide/ssl-tls-certificate-issuance-and-revocation-with-acme/</a></td>
+<td><code>custom</code> 演示，原内置已移除，ECC/RSA 按 <code>key_algorithm</code> 二选一</td>
+</tr>
+<tr>
+<td><code>custom</code>（通用）</td>
+<td>（无内置，需显式 <code>directory_url</code>）</td>
+<td>按目标 CA</td>
+<td>—</td>
+<td>—</td>
+<td>—</td>
+<td><a href="https://github.com/acmesh-official/acme.sh/wiki/CA">https://github.com/acmesh-official/acme.sh/wiki/CA</a></td>
+<td>任意 RFC8555 CA（需显式配置）</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><code>resolve_directory_url(ca, custom_url)</code>: <code>custom_url</code> 非空以其为准，否则取 <code>builtin_url</code>；<code>custom</code> 且空时报错“自定义 ACME 必须填写 Directory URL”。</li>
+<li>表单 <code>acme.account</code> 的 <code>ca</code> 字段：<code>x-enum-labels</code> 为上述中英文展示名，<code>x-help-links</code> 按值注入对应教程；<code>eab_kid</code>/<code>eab_hmac_key</code> 对 <code>freessl/zerossl/google/google-test</code> 在 <code>credentials</code> 为空时 <code>x-required-when: And(In[ca], Empty[credentials])</code>，有有效 <code>credentials</code>（JSON）时豁免复用。</li>
+</ul>
+<h2 id="capabilities">凭据能力标记（<code>capabilities</code>）<a class="headerlink" href="#capabilities" title="Permanent link">&para;</a></h2>
+<p>同一云平台（腾讯云 / Cloudflare / 阿里云）的密钥权限可按使用场景拆分为 DNS 与部署两类。凭据记录新增 <code>capabilities</code> 字段，用于声明该凭据可用于 <code>dns</code>（DNS-01 挑战）与 <code>deploy</code>（证书部署），贯穿存储、API、表单、下拉过滤与执行校验。</p>
+<h3 id="_27">受控类型<a class="headerlink" href="#_27" title="Permanent link">&para;</a></h3>
+<p>仅 <code>cloud.tencent</code>、<code>cloud.cloudflare</code>、<code>cloud.aliyun</code> 三类凭据支持能力标记；其他类型（<code>dns.tencent-eo</code>、<code>deploy.ssh</code>、<code>deploy.s3</code>、<code>deploy.webdav</code>、<code>acme.account</code> 等）不暴露、不持久化、不返回该字段。</p>
+<table>
+<thead>
+<tr>
+<th>能力值</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>dns</code></td>
+<td>可用于 <code>cert.apply</code> 的 DNS-01 挑战（TXT 记录写入与清理）</td>
+</tr>
+<tr>
+<td><code>deploy</code></td>
+<td>可用于 <code>cert.deploy</code> 的证书部署（如腾讯云 SSL）</td>
+</tr>
+</tbody>
+</table>
+<h3 id="_28">存储与归一化<a class="headerlink" href="#_28" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>acmecast_credential.capabilities</code> 以 JSON 数组文本存储，默认值 <code>["dns","deploy"]</code>。</li>
+<li>归一化：写入前白名单过滤、去重、排序，保证 <code>["deploy","dns"]</code> 与 <code>["dns","deploy"]</code> 库中形式一致。</li>
+<li>缺省 / 空 / 非法 JSON 视为双能力 <code>["dns","deploy"]</code>，保证存量受控凭据在新过滤逻辑下不被误隐藏。</li>
+</ul>
+<h3 id="api">API 透传与校验<a class="headerlink" href="#api" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>CredentialRequest</code> 携带 <code>capabilities: Option&lt;Vec&lt;String&gt;&gt;</code>，<code>CredentialResponse</code> / <code>CredentialDetailResponse</code> 返回 <code>capabilities: Vec&lt;String&gt;</code>（非受控类型返回空）。</li>
+<li>受控类型：<code>None</code> 视为未传（服务端补默认双能力）；空数组或含非法值返回 400 且 <code>field=capabilities</code>；至少选一项。</li>
+<li>非受控类型：忽略输入，不持久化、不返回。</li>
+</ul>
+<h3 id="_29">凭据表单<a class="headerlink" href="#_29" title="Permanent link">&para;</a></h3>
+<ul>
+<li>凭据编辑弹窗在 <code>type_id</code> 为受控类型时展示「可用权限」多选（<code>Checkbox.Group</code>，选项 <code>DNS</code> / <code>部署</code>），新建默认双选，编辑回填现值，切换类型时重置或隐藏。</li>
+<li>能力字段为外层表单项（与 <code>name</code> / <code>remark</code> 同级），独占一行，不进 <code>SchemaForm</code>，不与其他字段并排。</li>
+</ul>
+<h3 id="_30">凭据列表<a class="headerlink" href="#_30" title="Permanent link">&para;</a></h3>
+<ul>
+<li>列表新增「可用权限」列：受控类型展示 <code>DNS</code> / <code>部署</code> 标签（双选并列），非受控类型显示 <code>—</code>。</li>
+<li>该列保持与「名称」「类型」「备注」等列一致的默认左对齐，不得设置为居中对齐（<code>align: "center"</code>）。</li>
+</ul>
+<h3 id="_31">流水线下拉过滤<a class="headerlink" href="#_31" title="Permanent link">&para;</a></h3>
+<p>流水线步骤编辑表单中凭据下拉按能力过滤，过滤依据为凭据列表 API 返回的 <code>capabilities</code>：</p>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>过滤条件</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>dns_credential_id</code>（<code>cert.apply</code>）</td>
+<td>仅列 <code>capabilities</code> 含 <code>dns</code> 的凭据</td>
+</tr>
+<tr>
+<td><code>credential_id</code>（<code>cert.deploy</code> 的 <code>tencent-ssl</code> 变体）</td>
+<td>仅列 <code>type_id == "cloud.tencent"</code> 且 <code>capabilities</code> 含 <code>deploy</code> 的凭据</td>
+</tr>
+</tbody>
+</table>
+<p>缺省（空 / 非受控类型）视为双能力，不因能力被过滤。过滤后下拉仍保留名称 + <code>id</code> + 备注的可读性约定。</p>
+<h3 id="_32">流水线保存与执行校验<a class="headerlink" href="#_32" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>保存校验</strong>：流水线保存时，<code>cert.apply</code> 的 <code>dns_credential_id</code> 与 <code>cert.deploy</code> 的 <code>tencent-ssl credential_id</code> 引用凭据的能力不含所需用途时，返回 400 并提示凭据 ID、名称与缺失能力，不发起云端调用。</li>
+<li><strong>执行校验</strong>：部署执行时（如 <code>TencentSslTarget::resolve</code>），在解密字段之前、任何云端调用之前校验 <code>deploy</code> 能力，缺失时以可读错误失败。</li>
+</ul>
+<h3 id="_33">连通性测试<a class="headerlink" href="#_33" title="Permanent link">&para;</a></h3>
+<p>凭据连通性测试仅校验凭据在对应云平台的身份有效性，不因 <code>capabilities</code> 取值而改变探测目标或判定结果。能力仅影响流水线侧的「能否被选 / 能否执行」。</p>
+<h3 id="_34">实现索引<a class="headerlink" href="#_34" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>crates/acmecast-store/src/capability.rs</code> — 能力枚举、受控类型白名单、归一化与解析（<code>parse</code> / <code>normalize</code> / <code>to_text</code> / <code>is_controlled</code>）</li>
+<li><code>crates/acmecast-store/src/entity/credential.rs</code> — <code>capabilities</code> 列与 <code>ActiveModel</code></li>
+<li><code>crates/acmecast-access/src/credential_store.rs: ResolvedCredential</code> — 解析后凭据携带 <code>capabilities</code></li>
+<li><code>crates/acmecast-server/src/handlers.rs: resolve_capabilities_text</code> — API 层校验（空数组 / 非法值 400）</li>
+<li><code>crates/acmecast-server/src/handlers.rs: validate_pipeline_credential_capabilities</code> — 流水线保存时能力校验</li>
+<li><code>crates/acmecast-deploy/src/targets/tencent.rs: resolve_tencent_credentials</code> — 部署执行时 <code>deploy</code> 能力校验</li>
+<li><code>frontend/src/pages/credentials/CredentialListPage.tsx</code> — 凭据表单多选与列表标签列</li>
+<li><code>frontend/src/pages/pipelines/PipelineEditorPage.tsx: hasCapability</code> — 流水线下拉能力过滤</li>
+</ul>
+<h2 id="display_name">凭据类型展示名（<code>display_name</code>）<a class="headerlink" href="#display_name" title="Permanent link">&para;</a></h2>
+<p>凭据类型的展示名由后端 <code>CredentialType::display_name()</code> 提供，<code>GET /api/credential-types</code> 返回 <code>display_name</code>，前端新建/编辑弹窗的类型下拉与凭据列表均直接使用该值，不在前端做字符串裁剪。展示名不再用中文括号 <code>（…）</code> 追加使用范围标注——能力多选与列表能力标签已表达用途。</p>
+<table>
+<thead>
+<tr>
+<th><code>type_id</code></th>
+<th>展示名</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cloud.tencent</code></td>
+<td>腾讯云</td>
+</tr>
+<tr>
+<td><code>dns.tencent-eo</code></td>
+<td>腾讯云 EdgeOne</td>
+</tr>
+<tr>
+<td><code>cloud.cloudflare</code></td>
+<td>Cloudflare</td>
+</tr>
+<tr>
+<td><code>cloud.aliyun</code></td>
+<td>阿里云</td>
+</tr>
+<tr>
+<td><code>deploy.ssh</code></td>
+<td>SSH 主机</td>
+</tr>
+<tr>
+<td><code>deploy.s3</code></td>
+<td>S3 兼容存储</td>
+</tr>
+<tr>
+<td><code>deploy.webdav</code></td>
+<td>WebDAV</td>
+</tr>
+<tr>
+<td><code>acme.account</code></td>
+<td>ACME 账号</td>
+</tr>
+</tbody>
+</table>
+<p><code>type_id</code> 采用带命名空间的点分命名（见「凭据 type_id 命名空间」节），展示名不受标识变更影响。依赖 <code>display_name</code> 做精确匹配的外部脚本需更新。</p>
+<h3 id="_35">实现索引<a class="headerlink" href="#_35" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>crates/acmecast-server/src/credentials.rs</code> — <code>display_name()</code> 返回短名称</li>
+<li><code>crates/acmecast-server/src/handlers.rs: list_credential_types</code> — 透传 <code>display_name</code></li>
+<li><code>frontend/src/pages/credentials/CredentialListPage.tsx</code> — 类型下拉 <code>options[].label = display_name</code></li>
+</ul>
+<h2 id="type_id">凭据 type_id 命名空间<a class="headerlink" href="#type_id" title="Permanent link">&para;</a></h2>
+<p>凭据 <code>type_id</code> 采用带命名空间的点分命名，使标识本身即表达用途归属。DNS 提供商的 <code>type_id</code> 与凭据 <code>type_id</code> 1:1 对齐（<code>cert.apply</code> 靠 <code>credential.type_id == dns_provider.type_id</code> 自动选择），两边同步使用新标识。</p>
+<table>
+<thead>
+<tr>
+<th>前缀</th>
+<th>语义</th>
+<th>类型</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>acme.</code></td>
+<td>ACME 账号</td>
+<td><code>acme.account</code></td>
+</tr>
+<tr>
+<td><code>cloud.</code></td>
+<td>通用云平台（DNS + 部署双能力）</td>
+<td><code>cloud.tencent</code>、<code>cloud.aliyun</code>、<code>cloud.cloudflare</code></td>
+</tr>
+<tr>
+<td><code>dns.</code></td>
+<td>仅 DNS</td>
+<td><code>dns.tencent-eo</code></td>
+</tr>
+<tr>
+<td><code>deploy.</code></td>
+<td>仅部署</td>
+<td><code>deploy.ssh</code>、<code>deploy.s3</code>、<code>deploy.webdav</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>cloud.*</code> 三类同时是能力标记的受控类型（<code>capabilities</code>）。部署目标标识（<code>s3</code>/<code>webdav</code>/<code>tencent-ssl</code>/<code>ssh</code>/<code>local</code>）作为部署目标注册表的 key 不受此变更影响，只改它们接受的<strong>凭据</strong> <code>type_id</code> 白名单（<code>ACCEPTED_CREDENTIAL_TYPES</code> 与 schema 的 <code>x-credential-types</code> 注入值）。</p>
+<h3 id="_36">旧→新映射<a class="headerlink" href="#_36" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>旧 type_id</th>
+<th>新 type_id</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cloudflare</code></td>
+<td><code>cloud.cloudflare</code></td>
+</tr>
+<tr>
+<td><code>aliyun</code></td>
+<td><code>cloud.aliyun</code></td>
+</tr>
+<tr>
+<td><code>tencent</code></td>
+<td><code>cloud.tencent</code></td>
+</tr>
+<tr>
+<td><code>tencent-eo</code></td>
+<td><code>dns.tencent-eo</code></td>
+</tr>
+<tr>
+<td><code>ssh</code></td>
+<td><code>deploy.ssh</code></td>
+</tr>
+<tr>
+<td><code>s3</code></td>
+<td><code>deploy.s3</code></td>
+</tr>
+<tr>
+<td><code>webdav</code></td>
+<td><code>deploy.webdav</code></td>
+</tr>
+<tr>
+<td><code>acme.account</code></td>
+<td><code>acme.account</code>（不变）</td>
+</tr>
+</tbody>
+</table>
+<h3 id="_37">凭据白名单同步<a class="headerlink" href="#_37" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>CONTROLLED_TYPES</code>：<code>["cloud.tencent", "cloud.cloudflare", "cloud.aliyun"]</code></li>
+<li>部署目标 <code>ACCEPTED_CREDENTIAL_TYPES</code>：<code>tencent-ssl → ["cloud.tencent"]</code>、<code>s3 → ["deploy.s3"]</code>、<code>webdav → ["deploy.webdav"]</code></li>
+<li>前端 <code>DNS_CREDENTIAL_TYPE_IDS</code>：<code>cloud.cloudflare</code>、<code>cloud.aliyun</code>、<code>cloud.tencent</code>、<code>dns.tencent-eo</code></li>
+<li>前端 <code>CAPABILITY_CONTROLLED_TYPES</code>：同 <code>CONTROLLED_TYPES</code></li>
+<li>前端 <code>SSH_HOST_TYPE_ID</code>：<code>"deploy.ssh"</code>，<code>ACME_ACCOUNT_TYPE_ID</code>：<code>"acme.account"</code>（不变）</li>
+</ul>
+<h3 id="type_id_1">存量凭据 type_id 自动迁移<a class="headerlink" href="#type_id_1" title="Permanent link">&para;</a></h3>
+<p>系统升级时通过数据库迁移将 <code>acmecast_credential.type_id</code> 的旧值重写为新值（上表 7 条映射，<code>acme.account</code> 不动）。迁移幂等：重复执行不再改已是新值或不命中旧值的行；对空库无影响。失败时由现有 <code>migrate_with</code> 机制中止启动并指明失败版本。</p>
+<h3 id="_38">实现索引<a class="headerlink" href="#_38" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>crates/acmecast-server/src/credentials.rs</code> — 凭据 <code>type_id()</code> 返回新标识</li>
+<li><code>crates/acmecast-dns/src/providers/{cloudflare,aliyun,tencent,tencent_eo}.rs</code> — DNS 提供商 <code>type_id()</code> 同步</li>
+<li><code>crates/acmecast-dns/src/propagation.rs</code> — DoH resolver 感知的 type_id 字符串同步</li>
+<li><code>crates/acmecast-store/src/capability.rs: CONTROLLED_TYPES</code> — 受控类型白名单</li>
+<li><code>crates/acmecast-deploy/src/targets/{s3,webdav,tencent}.rs</code> — <code>ACCEPTED_CREDENTIAL_TYPES</code> 与 <code>x-credential-types</code> 注入</li>
+<li><code>crates/acmecast-deploy/src/ssh_host.rs: SSH_HOST_TYPE_ID</code> — SSH 主机档案标识</li>
+<li><code>crates/acmecast-access/src/credential/{s3,webdav}.rs</code> — <code>TYPE_ID</code> 常量</li>
+<li><code>crates/acmecast-store/src/migration/</code> — 存量 type_id 迁移文件（幂等）</li>
+<li><code>frontend/src/pages/credentials/CredentialListPage.tsx</code> — <code>CAPABILITY_CONTROLLED_TYPES</code></li>
+<li><code>frontend/src/pages/pipelines/PipelineEditorPage.tsx</code> — <code>DNS_CREDENTIAL_TYPE_IDS</code>、<code>SSH_HOST_TYPE_ID</code>、<code>CAPABILITY_CONTROLLED_TYPES</code></li>
+</ul>
+<h2 id="_39">凭据字段表单布局约定<a class="headerlink" href="#_39" title="Permanent link">&para;</a></h2>
+<p>凭据字段表单由后端 schema（<code>schemars::JsonSchema</code> + <code>x-*</code> 扩展）驱动，前端 <code>SchemaForm</code> 为通用渲染引擎。默认标量字段半宽（<code>span 12</code>）两列一行；带 <code>x-full-width</code> 的字段独占整行；带 <code>x-multiline</code> 的字段渲染为 textarea 并独占整行；带 <code>x-end-row</code> 的半宽字段行尾补空占位列换行；<code>x-field-order</code> 钉字段渲染顺序，对抗 <code>serde_json::Map</code> 按字母序重排 <code>properties</code>；<code>proxy_url</code> 统一带 <code>x-visible-when: Equals(field=proxy_mode, values=["custom"])</code> 仅在 <code>proxy_mode=custom</code> 时显隐；<code>proxy_mode</code> 统一注入 <code>enum ["direct","inherit","custom"]</code> 与 <code>x-enum-labels {直连,继承全局,自定义}</code>。代理行（<code>proxy_mode</code> 左下拉｜<code>proxy_url</code> 右输入框）是否需前驱 <code>x-end-row</code> 由 <code>acmecast_core::inject_proxy_field_annotations</code> 按 24 栅格流式模拟自动判定：仅当前驱处于左列（<code>col==12</code>）时补空列把代理推到新行，处于行尾或整行后自然换行则不补。</p>
+<h3 id="_40">表单页排序和布局（凭据页新建/编辑）<a class="headerlink" href="#_40" title="Permanent link">&para;</a></h3>
+<p>以下 12 类凭据的字段顺序、分组与宽度标注为唯一真实来源，前端按此渲染，不在渲染器内写类型分支。<code>仅一行</code>均指独占一行（<code>x-full-width</code> 整行或半宽 <code>x-end-row</code> 右侧空占位，见宽度标注）。</p>
+<h4 id="acmeaccount-acme"><code>acme.account</code> — ACME 账号<a class="headerlink" href="#acmeaccount-acme" title="Permanent link">&para;</a></h4>
+<p><code>x-field-order: ["ca","directory_url","eab_kid","eab_hmac_key","credentials","proxy_mode","proxy_url"]</code></p>
+<table>
+<thead>
+<tr>
+<th>行</th>
+<th>字段</th>
+<th>宽度标注</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>ca</code></td>
+<td>仅一行：半宽 + <code>x-end-row</code>（下拉半列独占一行，右侧空占位承载 <code>x-help-links</code>）</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>directory_url</code></td>
+<td>仅一行：<code>x-full-width</code> 整行（长 URL） + <code>x-required-when: ca=custom</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>eab_kid</code> ｜ <code>eab_hmac_key</code></td>
+<td>半宽同行</td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>credentials</code></td>
+<td>一行 <code>x-multiline</code> textarea 整行</td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>proxy_mode</code> ｜ <code>proxy_url</code></td>
+<td>半宽同行，<code>proxy_url</code> 联动显隐；<code>credentials</code> 为整行，前驱无需 <code>x-end-row</code></td>
+</tr>
+</tbody>
+</table>
+<h4 id="deploywebdav-webdav"><code>deploy.webdav</code> — WebDAV<a class="headerlink" href="#deploywebdav-webdav" title="Permanent link">&para;</a></h4>
+<p><code>x-field-order: ["url","base_path","username","password","proxy_mode","proxy_url"]</code></p>
+<table>
+<thead>
+<tr>
+<th>行</th>
+<th>字段</th>
+<th>宽度标注</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>url</code> ｜ <code>base_path</code></td>
+<td>半宽同行</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>username</code> ｜ <code>password</code></td>
+<td>半宽同行</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>proxy_mode</code> ｜ <code>proxy_url</code></td>
+<td>半宽同行；<code>password</code> 已在行尾自然换行，无需 <code>x-end-row</code></td>
+</tr>
+</tbody>
+</table>
+<h4 id="deploys3-s3"><code>deploy.s3</code> — S3 兼容存储<a class="headerlink" href="#deploys3-s3" title="Permanent link">&para;</a></h4>
+<p><code>x-field-order: ["access_key","secret_key","endpoint","bucket","region","prefix","session_token","proxy_mode","proxy_url"]</code></p>
+<table>
+<thead>
+<tr>
+<th>行</th>
+<th>字段</th>
+<th>宽度标注</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>access_key</code> ｜ <code>secret_key</code></td>
+<td>半宽同行（密钥对）</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>endpoint</code> ｜ <code>bucket</code></td>
+<td>半宽同行（接入与桶）</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>region</code> ｜ <code>prefix</code></td>
+<td>半宽同行（区域与前缀）</td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>session_token</code></td>
+<td>仅一行：半宽 + <code>x-end-row</code>（由代理注入自动补列，独占一行左侧，右侧空占位）</td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>proxy_mode</code> ｜ <code>proxy_url</code></td>
+<td>半宽同行</td>
+</tr>
+</tbody>
+</table>
+<h4 id="deployssh-ssh"><code>deploy.ssh</code> — SSH 主机<a class="headerlink" href="#deployssh-ssh" title="Permanent link">&para;</a></h4>
+<p><code>x-field-order: ["cert_mode","key_mode","host","port","user","password","private_key","proxy_mode","proxy_url"]</code></p>
+<table>
+<thead>
+<tr>
+<th>行</th>
+<th>字段</th>
+<th>宽度标注</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>cert_mode</code> ｜ <code>key_mode</code></td>
+<td>半宽同行（文件权限缺省 <code>0644</code>/<code>0600</code>）</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>host</code> ｜ <code>port</code></td>
+<td>半宽同行</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>user</code> ｜ <code>password</code></td>
+<td>半宽同行</td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>private_key</code></td>
+<td>一行 <code>x-multiline</code> textarea 整行</td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>proxy_mode</code> ｜ <code>proxy_url</code></td>
+<td>半宽同行；<code>private_key</code> 为整行，前驱无需 <code>x-end-row</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>deploy.ssh</code> 档案创建与更新时校验：主机与用户非空白、端口在 1–65535 范围内、认证材料（<code>private_key</code> 或 <code>password</code>）恰好提供其一。认证材料的判定口径在校验、连通性测试、部署前合并三处保持一致：<code>private_key</code> 或 <code>password</code> 为空串（含纯空白，保存前由系统统一 <code>trim_credential_strings</code> 去首尾空白）SHALL 视为未提供，与读取认证材料时（<code>auth_material</code>）把空串过滤为缺席同口径。一方为非空、另一方为空串或纯空白时按"恰好其一"通过；两方均为空串/纯空白/缺失时按"两者皆缺"拒绝并指向 <code>private_key</code>；两方均非空时按"两者皆有"拒绝并指向 <code>private_key</code>。编辑既有档案清空 <code>private_key</code>、改填 <code>password</code> 的场景 MUST 可正常保存，不因 <code>Some("")</code> 被误判为"已提供"而报"两者皆有"。</p>
+<h4 id="cloudtencent"><code>cloud.tencent</code> — 腾讯云<a class="headerlink" href="#cloudtencent" title="Permanent link">&para;</a></h4>
+<p><code>x-field-order: ["account_site","secret_id","secret_key","proxy_mode","proxy_url"]</code>（与 <code>dns.tencent-eo</code> 共用 <code>tencent_credentials_schema</code>）</p>
+<table>
+<thead>
+<tr>
+<th>行</th>
+<th>字段</th>
+<th>宽度标注</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>account_site</code></td>
+<td>仅一行：半宽 + <code>x-end-row</code>（站点选择独占一行左侧，右侧空占位）</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>secret_id</code> ｜ <code>secret_key</code></td>
+<td>半宽同行</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>proxy_mode</code> ｜ <code>proxy_url</code></td>
+<td>半宽同行；<code>secret_id</code>｜<code>secret_key</code> 已占满一行，自然换行无需 <code>secret_key</code> 补 <code>x-end-row</code></td>
+</tr>
+</tbody>
+</table>
+<h4 id="cloudcloudflare-cloudflare"><code>cloud.cloudflare</code> — Cloudflare<a class="headerlink" href="#cloudcloudflare-cloudflare" title="Permanent link">&para;</a></h4>
+<p><code>x-field-order: ["api_token","proxy_mode","proxy_url"]</code></p>
+<table>
+<thead>
+<tr>
+<th>行</th>
+<th>字段</th>
+<th>宽度标注</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>api_token</code></td>
+<td>仅一行：半宽 + <code>x-end-row</code>（Token 独占一行左侧，右侧空占位）</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>proxy_mode</code> ｜ <code>proxy_url</code></td>
+<td>半宽同行</td>
+</tr>
+</tbody>
+</table>
+<h4 id="cloudaliyun"><code>cloud.aliyun</code> — 阿里云<a class="headerlink" href="#cloudaliyun" title="Permanent link">&para;</a></h4>
+<p><code>x-field-order: ["access_key_id","access_key_secret","proxy_mode","proxy_url"]</code></p>
+<table>
+<thead>
+<tr>
+<th>行</th>
+<th>字段</th>
+<th>宽度标注</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>access_key_id</code> ｜ <code>access_key_secret</code></td>
+<td>半宽同行</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>proxy_mode</code> ｜ <code>proxy_url</code></td>
+<td>半宽同行；密钥对已占满一行，自然换行无需 <code>access_key_secret</code> 补 <code>x-end-row</code></td>
+</tr>
+</tbody>
+</table>
+<h4 id="dnstencent-eo-edgeone"><code>dns.tencent-eo</code> — 腾讯云 EdgeOne<a class="headerlink" href="#dnstencent-eo-edgeone" title="Permanent link">&para;</a></h4>
+<p>与 <code>cloud.tencent</code> 完全一致，共用 <code>tencent_credentials_schema</code>：<code>account_site</code> 仅一行（半宽 + <code>x-end-row</code> 独占一行）｜ <code>secret_id</code>｜<code>secret_key</code> ｜ <code>proxy_mode</code>｜<code>proxy_url</code>。</p>
+<h4 id="notifygeneric-webhook"><code>notify.generic</code> — 通用 Webhook<a class="headerlink" href="#notifygeneric-webhook" title="Permanent link">&para;</a></h4>
+<p><code>x-field-order: ["url","method","headers","body_template","proxy_mode","proxy_url"]</code></p>
+<table>
+<thead>
+<tr>
+<th>行</th>
+<th>字段</th>
+<th>宽度标注</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>url</code></td>
+<td>仅一行：<code>x-full-width</code> 整行</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>method</code></td>
+<td>仅一行：半宽 + <code>x-end-row</code>（枚举下拉半列独占一行，右侧空占位）</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>headers</code></td>
+<td>仅一行：<code>x-multiline</code> textarea 整行</td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>body_template</code></td>
+<td>仅一行：<code>x-multiline</code> textarea 整行</td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>proxy_mode</code> ｜ <code>proxy_url</code></td>
+<td>半宽同行，<code>proxy_url</code> 联动显隐；<code>body_template</code> 为整行，前驱无需 <code>x-end-row</code></td>
+</tr>
+</tbody>
+</table>
+<h4 id="notifyemail"><code>notify.email</code> — 邮件<a class="headerlink" href="#notifyemail" title="Permanent link">&para;</a></h4>
+<p><code>x-field-order: ["host","port","from","tls","to","username","password","proxy_mode","proxy_url"]</code></p>
+<table>
+<thead>
+<tr>
+<th>行</th>
+<th>字段</th>
+<th>宽度标注</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>host</code> ｜ <code>port</code></td>
+<td>半宽同行</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>from</code> ｜ <code>tls</code></td>
+<td>半宽同行，<code>tls</code> 为枚举下拉（<code>implicit</code>/<code>starttls</code>/<code>none</code>）</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>to</code></td>
+<td>仅一行：<code>x-multiline</code> + <code>x-full-width</code> textarea 整行（每行一个收件人）</td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>username</code> ｜ <code>password</code></td>
+<td>半宽同行</td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>proxy_mode</code> ｜ <code>proxy_url</code></td>
+<td>半宽同行，<code>proxy_url</code> 联动显隐；<code>password</code> 已在行尾自然换行，无需 <code>x-end-row</code></td>
+</tr>
+</tbody>
+</table>
+<h4 id="notifyfeishu"><code>notify.feishu</code> — 飞书机器人<a class="headerlink" href="#notifyfeishu" title="Permanent link">&para;</a></h4>
+<p><code>x-field-order: ["url","secret","proxy_mode","proxy_url"]</code></p>
+<table>
+<thead>
+<tr>
+<th>行</th>
+<th>字段</th>
+<th>宽度标注</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>url</code></td>
+<td>仅一行：<code>x-full-width</code> 整行</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>secret</code></td>
+<td>仅一行：半宽 + <code>x-end-row</code>（可选签名密钥，独占一行左侧，右侧空占位）</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>proxy_mode</code> ｜ <code>proxy_url</code></td>
+<td>半宽同行，<code>proxy_url</code> 联动显隐</td>
+</tr>
+</tbody>
+</table>
+<h4 id="notifydingtalk"><code>notify.dingtalk</code> — 钉钉机器人<a class="headerlink" href="#notifydingtalk" title="Permanent link">&para;</a></h4>
+<p>与 <code>notify.feishu</code> 完全一致：<code>x-field-order: ["url","secret","proxy_mode","proxy_url"]</code>，<code>url</code> 整行 ｜ <code>secret</code> 半宽独占一行 ｜ <code>proxy_mode</code>｜<code>proxy_url</code>。</p>
+<h3 id="_41">实现索引<a class="headerlink" href="#_41" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>crates/acmecast-access/src/credential/acme_account.rs: AcmeAccountType::fields_schema</code> — <code>x-field-order</code> + <code>ca.x-end-row</code> + <code>directory_url.x-full-width</code> + <code>credentials.x-multiline</code></li>
+<li><code>crates/acmecast-access/src/credential/webdav.rs: webdav_fields_schema</code> — <code>x-field-order: ["url","base_path","username","password","proxy_mode","proxy_url"]</code></li>
+<li><code>crates/acmecast-access/src/credential/s3.rs: s3_fields_schema</code> — <code>x-field-order</code> 8 字段 + <code>session_token</code> 由代理注入补 <code>x-end-row</code></li>
+<li><code>crates/acmecast-deploy/src/ssh_host.rs: ssh_host_fields_schema</code> — <code>x-field-order</code> 9 字段 + <code>private_key.x-multiline</code></li>
+<li><code>crates/acmecast-deploy/src/ssh_host.rs: SshHostFields::validate</code> — 认证材料空串判定口径（<code>as_deref().map(str::trim).filter(!is_empty)</code> 归一化后走恰好其一，与 <code>auth_material</code> 同口径）</li>
+<li><code>crates/acmecast-deploy/src/ssh_host.rs: auth_material</code> — 读取认证材料时把空串过滤为缺席的既有口径</li>
+<li><code>crates/acmecast-server/src/handlers.rs: save_credential</code> — 保存前 <code>trim_credential_strings</code> 统一去首尾空白</li>
+<li><code>crates/acmecast-notify/src/notify_credential.rs: {feishu,dingtalk,generic,email}_fields_schema</code> — <code>notify.*</code> 四类版式（见上）+ <code>proxy_mode/proxy_url</code> 注入</li>
+<li><code>crates/acmecast-dns/src/providers/tencent.rs: tencent_credentials_schema</code> — <code>account_site.x-end-row</code> 先于代理注入，<code>secret_id</code>｜<code>secret_key</code> 同行</li>
+<li><code>crates/acmecast-dns/src/providers/cloudflare.rs: cloudflare_credentials_schema</code> — <code>api_token.x-end-row</code></li>
+<li><code>crates/acmecast-dns/src/providers/aliyun.rs: aliyun_credentials_schema</code> — 密钥对同行，代理自然换行</li>
+<li><code>crates/acmecast-dns/src/providers/tencent_eo.rs</code> — 复用 <code>tencent_credentials_schema</code></li>
+<li><code>crates/acmecast-core/src/proxy.rs: inject_proxy_field_annotations</code> — 代理下拉/联动/中文标签与 <code>x-end-row</code> 栅格判定单一来源</li>
+<li><code>frontend/src/components/SchemaForm.tsx: orderedEntries / SchemaForm / ObjectFieldGroup</code> — <code>x-field-order</code> 定序与 <code>x-*</code> 渲染</li>
+</ul>
+<h2 id="_42">凭据出网代理与全局代理配置<a class="headerlink" href="#_42" title="Permanent link">&para;</a></h2>
+<p><strong>全部凭据类型</strong>（<code>cloud.tencent</code> / <code>dns.tencent-eo</code> / <code>cloud.cloudflare</code> / <code>cloud.aliyun</code> / <code>deploy.ssh</code> / <code>deploy.s3</code> / <code>deploy.webdav</code> / <code>acme.account</code> / <code>notify.feishu</code> / <code>notify.dingtalk</code> / <code>notify.generic</code> / <code>notify.email</code>）支持凭据级代理模式（<code>proxy_mode</code> 下拉 + <code>proxy_url</code> 条件输入），全局代理经 <code>config.toml</code> 的 <code>[proxy]</code> 段或环境变量 <code>ACMECAST_PROXY_URL</code> 设一次，供凭据 <code>inherit</code> 继承（DNS、部署与通知链路同口径）与 DoH 代理回退共用。存量凭据缺字段视为 <code>direct</code>（直连），无需数据库迁移。</p>
+<h3 id="acmecast_proxy_url-proxy">全局代理（<code>ACMECAST_PROXY_URL</code> / <code>[proxy]</code> 段）<a class="headerlink" href="#acmecast_proxy_url-proxy" title="Permanent link">&para;</a></h3>
+<ul>
+<li>全局代理 URL 支持三种配置方式，合并优先级与项目一致为 <strong><code>builtin &lt; config.toml &lt; env</code></strong>：</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>优先级</th>
+<th>来源</th>
+<th>键</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1（内置）</td>
+<td>—</td>
+<td>—</td>
+<td>未配置时直连</td>
+</tr>
+<tr>
+<td>2（文件）</td>
+<td><code>config.toml</code></td>
+<td><code>[proxy]</code> 段 <code>url</code></td>
+<td>可选 <code>String</code>，留空 / 缺段即直连</td>
+</tr>
+<tr>
+<td>3（env）</td>
+<td>环境变量</td>
+<td><code>ACMECAST_PROXY_URL</code></td>
+<td>覆盖文件值</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><code>config.toml</code> 新增 <code>[proxy]</code> 段（<code>deny_unknown_fields</code>）：</li>
+</ul>
+<p>+<code>toml
++[proxy]
++# 全局出网代理：凭据 proxy_mode=inherit 继承此值，DoH 解析器代理回退也读此值。
++# 支持 socks5://、http://、https://；留空或省略此段即直连。
++# 环境变量 ACMECAST_PROXY_URL 可覆盖此值。
++url = "socks5://127.0.0.1:7890"
++</code></p>
+<ul>
+<li><code>ServerConfig</code> 新增 <code>proxy_url: Option&lt;String&gt;</code> 字段，<code>apply_file</code> 从 <code>[proxy]</code> 段读取、<code>apply_env</code> 从 <code>ACMECAST_PROXY_URL</code> 覆盖，传递给 <code>doh_transport()</code> 与 <code>transport_for_credentials</code> 的 <code>inherit</code> 分支。</li>
+<li>取值 MUST 经 <code>validate_proxy_url</code> 校验（仅 <code>socks5://</code> / <code>http://</code> / <code>https://</code> + 可解析）；env 非法值在启动时被拒绝并提示支持的 scheme，文件非法值在 <code>apply_file</code> 校验时拒绝启动；未配置 / 空串 / 仅空白 MUST 维持直连（现状行为）。</li>
+<li>合并废弃 <code>ACMECAST_DOH_PROXY_URL</code>：原 DoH 专用代理环境变量不再独立存在，DoH 与凭据共用同一全局代理（<code>[proxy] url</code> / <code>ACMECAST_PROXY_URL</code>）。</li>
+<li>标准 <code>HTTPS_PROXY</code> 等环境变量 MUST NOT 被隐式读取而波及未配代理的凭据（凭据级 <code>proxy_mode=direct</code> 保持显式直连）。</li>
+</ul>
+<h3 id="network-acmecast_network_timeout_secs">网络操作超时（<code>[network]</code> 段 / <code>ACMECAST_NETWORK_TIMEOUT_SECS</code>）<a class="headerlink" href="#network-acmecast_network_timeout_secs" title="Permanent link">&para;</a></h3>
+<p>流水线各步骤的网络操作（SSH 连接/传输、S3 PUT、WebDAV PUT/MKCOL、腾讯云 API 调用、DNS 提供商 API 调用）MUST 受可配置超时约束，默认 30 秒，超时以可读错误返回而非永久挂起。已有独立超时的路径不受影响：ACME 轮询（120 秒）、DNS 传播等待（默认 300 秒）、通知投递（10 秒）、凭据连通性测试（10 秒）。</p>
+<table>
+<thead>
+<tr>
+<th>优先级</th>
+<th>来源</th>
+<th>键</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1（内置）</td>
+<td>—</td>
+<td>—</td>
+<td>30 秒</td>
+</tr>
+<tr>
+<td>2（文件）</td>
+<td><code>config.toml</code></td>
+<td><code>[network]</code> 段 <code>timeout_secs</code></td>
+<td>正整数秒</td>
+</tr>
+<tr>
+<td>3（env）</td>
+<td>环境变量</td>
+<td><code>ACMECAST_NETWORK_TIMEOUT_SECS</code></td>
+<td>覆盖文件值</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><code>config.toml</code> 新增 <code>[network]</code> 段（<code>deny_unknown_fields</code>）：</li>
+</ul>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">[network]</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="c1"># 流水线网络操作超时（秒）：SSH 连接/传输、S3/WebDAV 上传、腾讯云 API、DNS API。</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="c1"># 默认 30；环境变量 ACMECAST_NETWORK_TIMEOUT_SECS 可覆盖此值。</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="n">timeout_secs</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">30</span>
+</span></code></pre></div>
+<ul>
+<li><code>ServerConfig</code> 新增 <code>network_timeout: Duration</code> 字段，<code>apply_file</code> 从 <code>[network]</code> 段读取、<code>apply_env</code> 从 <code>ACMECAST_NETWORK_TIMEOUT_SECS</code> 覆盖，传递给 <code>default_dns_registry</code> 与 <code>default_deploy_registry</code>，再透传到各 DNS 提供商（<code>with_global_proxy_and_timeout</code>）与部署目标（<code>SshTarget::live</code> / <code>S3Target::new</code> / <code>WebdavTarget::new</code> / <code>TencentSslTarget::new</code>）。<code>acmecast_core::NETWORK_TIMEOUT</code>（30 秒）保留为编译期兜底默认值，运行时被配置值覆盖。</li>
+<li>值为 0、负数或非数字时 MUST 在启动时拒绝并提示期望正整数（比 <code>[propagation]</code> 段的静默忽略更严）。</li>
+<li><code>ReqwestTransport::new(timeout)</code> / <code>with_proxy(url, timeout)</code> 在 reqwest 客户端构建链上加 <code>.timeout(timeout)</code>，覆盖 DNS 提供商 API 调用与腾讯云 SSL API 调用。WebDAV <code>webdav_put</code> 的 reqwest 客户端同样加 <code>.timeout()</code>。S3 <code>s3_put</code> 用 <code>tokio::time::timeout</code> 包裹 AWS SDK 的 <code>put_object().send()</code>。SSH 的 <code>connect_ssh</code>/<code>open_proxy_stream</code>/<code>run_channel</code> 各用 <code>tokio::time::timeout</code> 包裹。</li>
+<li>超时从代理隧道建立后开始计算：当凭据生效代理 URL 非空时（<code>custom</code> 自带或 <code>inherit</code> 全局非空），超时计时从代理隧道 TCP 流建立完成后开始（代理 TCP 连接阶段有操作系统级 TCP 超时兜底，不计入）。直连时从连接发起后开始计时。</li>
+</ul>
+<h3 id="proxy_mode-proxy_url">凭据级代理模式（<code>proxy_mode</code> + <code>proxy_url</code>）<a class="headerlink" href="#proxy_mode-proxy_url" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>全部凭据类型</strong>（<code>cloud.cloudflare</code> / <code>cloud.aliyun</code> / <code>cloud.tencent</code> / <code>dns.tencent-eo</code> / <code>deploy.ssh</code> / <code>deploy.s3</code> / <code>deploy.webdav</code> / <code>acme.account</code>）暴露 <code>proxy_mode</code> 与 <code>proxy_url</code> 字段。</li>
+<li><code>proxy_mode</code> 三态语义：</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th><code>proxy_mode</code></th>
+<th><code>proxy_url</code></th>
+<th>行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>direct</code>（默认）</td>
+<td>隐藏</td>
+<td>直连，不继承全局代理</td>
+</tr>
+<tr>
+<td><code>inherit</code></td>
+<td>隐藏</td>
+<td>继承全局 <code>ACMECAST_PROXY_URL</code>（未配则直连）</td>
+</tr>
+<tr>
+<td><code>custom</code></td>
+<td>显示输入框</td>
+<td>走该 URL，覆盖全局代理</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li><code>custom</code> 时 MUST 校验 scheme ∈ <code>{socks5, http, https}</code> 且整体可解析；其他 scheme（如 <code>ftp://</code>）或无法解析的值（如 <code>not-a-url</code>）MUST 在凭据保存时被拒绝，错误定位到 <code>proxy_url</code> 字段并提示支持的三种 scheme。</li>
+<li>校验口径单一来源：<code>validate_proxy_url</code>（凭据保存校验与带代理客户端构建共用）。</li>
+<li>前端渲染标注统一由 <code>inject_proxy_field_annotations(&amp;mut RootSchema)</code> 注入（全部凭据类型共用，不会出现"实现改了、标注丢了"漂移）：</li>
+<li><code>proxy_mode</code>：<code>enum_values: ["direct","inherit","custom"]</code> + <code>x-enum-labels: {direct:"直连", inherit:"继承全局", custom:"自定义"}</code>。schemars 对 <code>Option&lt;String&gt;</code> 不产 <code>enum</code> 数组，MUST 手动注入 <code>enum_values</code>，否则前端 <code>SchemaForm</code> 的 <code>node.enum.length &gt; 0</code> 分支不命中、退化为普通文本输入框。</li>
+<li><code>proxy_url</code>：<code>x-visible-when: Equals(field=proxy_mode, value=custom)</code> 联动显隐。</li>
+<li><code>proxy_mode</code> 前一个字段（由顶层 <code>x-field-order</code> 确定）：<code>x-end-row: true</code>——使其半宽行尾补空占位列，<code>proxy_mode</code> 从新行首列开始，与 <code>proxy_url</code> 自然成对同行（左下拉、右输入框；<code>custom</code> 时右侧显示输入框，其他模式右侧空位）。</li>
+<li>凭据 schema 的展示字段顺序 MUST 经顶层 <code>x-field-order</code> 钉住，代理模式与 URL 置于既有凭据字段之后，前端由 schema 驱动自动渲染，不新增渲染器分支：</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>凭据类型</th>
+<th><code>x-field-order</code> 末尾追加</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cloud.tencent</code> / <code>dns.tencent-eo</code></td>
+<td><code>["account_site","secret_id","secret_key","proxy_mode","proxy_url"]</code></td>
+</tr>
+<tr>
+<td><code>cloud.cloudflare</code></td>
+<td><code>["api_token","proxy_mode","proxy_url"]</code></td>
+</tr>
+<tr>
+<td><code>cloud.aliyun</code></td>
+<td><code>["access_key_id","access_key_secret","proxy_mode","proxy_url"]</code></td>
+</tr>
+<tr>
+<td><code>deploy.ssh</code></td>
+<td><code>[…既有字段…,"proxy_mode","proxy_url"]</code></td>
+</tr>
+<tr>
+<td><code>deploy.s3</code></td>
+<td><code>["access_key","secret_key","endpoint","bucket","region","prefix","session_token","proxy_mode","proxy_url"]</code></td>
+</tr>
+<tr>
+<td><code>deploy.webdav</code></td>
+<td><code>[…既有字段…,"proxy_mode","proxy_url"]</code></td>
+</tr>
+<tr>
+<td><code>acme.account</code></td>
+<td><code>[…既有字段…,"proxy_mode","proxy_url"]</code></td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li>存量凭据兼容：旧 <code>proxy_url</code> 有值 → 视为 <code>proxy_mode=custom</code> + 该值；无值 / 缺字段 → <code>proxy_mode=direct</code>（直连）。无数据库迁移。</li>
+</ul>
+<h3 id="_43">出网路径与连通性测试<a class="headerlink" href="#_43" title="Permanent link">&para;</a></h3>
+<ul>
+<li>各凭据类型的出网按 <code>proxy_mode</code> 选传输层（<code>direct</code> 直连 / <code>inherit</code> 读 <code>ServerConfig.proxy_url</code> / <code>custom</code> 读凭据 <code>proxy_url</code>）。<code>inherit</code> 对 DNS 与部署链路均继承全局代理，此前部署链路 <code>inherit</code> 等同直连的限制已移除：</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>凭据类型</th>
+<th>出网路径</th>
+<th>代理接入方式</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>DNS 4 类</td>
+<td>DNS-01 挑战查询/创建/删除 + 连通性测试</td>
+<td><code>ReqwestTransport::with_proxy</code>（<code>reqwest::Proxy::all</code>，socks5/http/https）</td>
+</tr>
+<tr>
+<td><code>deploy.webdav</code></td>
+<td>MKCOL/PUT 探测与部署上传</td>
+<td>reqwest <code>Proxy::all</code></td>
+</tr>
+<tr>
+<td><code>deploy.s3</code></td>
+<td><code>PutObject</code>/<code>DeleteObject</code> 探测与部署上传</td>
+<td><code>aws_smithy_http_client::proxy::ProxyConfig</code>（http/https；socks5 用 reqwest 包装自定义 <code>HttpClient</code>）</td>
+</tr>
+<tr>
+<td><code>acme.account</code></td>
+<td>ACME 目录/下单/校验</td>
+<td><code>acmecast_acme::ProxyConfig</code>（socks5/http/https）</td>
+</tr>
+<tr>
+<td><code>deploy.ssh</code></td>
+<td>SSH 连接与主机探测</td>
+<td>SOCKS5/HTTP-CONNECT 隧道 + <code>russh::client::connect_stream</code></td>
+</tr>
+<tr>
+<td><code>deploy.tencent-ssl</code></td>
+<td>腾讯云 SSL API 调用</td>
+<td><code>ReqwestTransport</code>（经 <code>transport_for_credentials</code> 按 <code>proxy_mode</code> 选层）</td>
+</tr>
+<tr>
+<td><code>notify.feishu</code> / <code>notify.dingtalk</code> / <code>notify.generic</code></td>
+<td>运行结束简讯投递 + 连通性测试</td>
+<td><code>reqwest::Proxy::all</code>（socks5/http/https，<code>acmecast_notify::delivery::http_client_with_proxy</code>）</td>
+</tr>
+<tr>
+<td><code>notify.email</code></td>
+<td>运行结束简讯投递 + 连通性测试</td>
+<td>SOCKS5/HTTP-CONNECT 隧道 + <code>lettre::AsyncSmtpConnection::connect_with_transport</code>（隐式 TLS 经 <code>tokio-rustls</code>）</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li>配置了代理（<code>inherit</code> 全局非空 或 <code>custom</code>）的凭据，其对应出网 MUST 经该代理发送；代理连接失败 MUST 以可读错误呈现（HTTP 类为 <code>provider_api_error</code>，SSH 类为连接错误）且含代理主机以便排障，含凭据的代理 URL 在日志与错误呈现前经 <code>redact</code> 脱敏（<code>socks5://user:pass@host:port</code> 不明文外泄）。</li>
+<li>各类型的连通性测试（<code>CredentialType::test_connectivity</code>）MUST 走与正式调用相同的（按 <code>proxy_mode</code> 构建的）代理；错误同样经 <code>redact</code> 脱敏后呈现。</li>
+<li>代理仅作用于<strong>持有该凭据的调用</strong>，MUST NOT 改变其他凭据或未走代理的通知渠道的出网路径；测试替身 <code>with_transport</code> 不受影响。</li>
+<li><code>ReqwestTransport::with_proxy(proxy_url)</code> 内部以 <code>reqwest::Proxy::all(url)</code> 构建（<code>socks</code> feature 已启用），<code>new()</code>/<code>default()</code> 保持直连语义不变。</li>
+</ul>
+<h3 id="_44">实现索引<a class="headerlink" href="#_44" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>crates/acmecast-core/src/proxy.rs: validate_proxy_url / ProxyMode / proxy_url_from_credentials / effective_proxy_url / inject_proxy_field_annotations</code> — 代理工具下沉共享（<code>acmecast-access</code> 不依赖 <code>acmecast-dns</code>）；<code>acmecast-dns</code> 保留 re-export；<code>effective_proxy_url</code> 为 DNS 与部署链路共用的 <code>inherit</code> 判定单一来源</li>
+<li><code>crates/acmecast-dns/src/http.rs: ReqwestTransport::with_proxy / new / default</code> — 直连与带代理 Client 构建；<code>new(timeout)</code> / <code>with_proxy(url, timeout)</code> 接收网络超时参数</li>
+<li><code>crates/acmecast-dns/src/http.rs: transport_for_credentials</code> — 按 <code>proxy_mode</code> 选传输层（DNS 与部署链路共用）</li>
+<li><code>crates/acmecast-server/src/config.rs: ServerConfig.proxy_url / ProxySection / NetworkSection / apply_file / apply_env / template_content</code> — 全局代理字段、<code>[proxy]</code> 段、<code>[network]</code> 段反序列化与模板</li>
+<li><code>crates/acmecast-dns/src/providers/{cloudflare,tencent,aliyun,tencent_eo}.rs: http_for</code> — DNS 提供商凭据代理接线（<code>global_proxy_url</code> 成员 + <code>with_global_proxy_and_timeout</code>）</li>
+<li><code>crates/acmecast-access/src/credential/{s3,webdav,acme_account}.rs: {s3,webdav}_fields_schema / fields_schema</code> — 非 DNS 凭据 schema 注入代理字段</li>
+<li><code>crates/acmecast-deploy/src/ssh_host.rs: ssh_host_fields_schema</code> — SSH 主机档案 schema 注入代理字段</li>
+<li><code>crates/acmecast-deploy/src/targets/ssh.rs: SshTarget::live(proxy_url, timeout)</code> — SSH 部署持有 <code>global_proxy_url</code>，<code>resolve_input</code> 与 <code>probe_host</code> 按 <code>effective_proxy_url(profile, global_proxy_url)</code> 选代理</li>
+<li><code>crates/acmecast-deploy/src/targets/s3.rs: S3Target::new(proxy_url, timeout)</code> — S3 部署持有 <code>global_proxy_url</code>，<code>s3_put</code> 按 <code>effective_proxy_url(fields, global_proxy_url)</code> 选 <code>s3_http_client</code></li>
+<li><code>crates/acmecast-deploy/src/targets/webdav.rs: WebdavTarget::new(proxy_url, timeout)</code> — WebDAV 部署持有 <code>global_proxy_url</code>，<code>credential_proxy</code> 改为 <code>effective_proxy_url(fields, global_proxy_url)</code></li>
+<li><code>crates/acmecast-deploy/src/targets/tencent.rs: TencentSslTarget::new(proxy_url, timeout)</code> — 腾讯云 SSL 部署持有 <code>global_proxy_url</code> 与 <code>fallback_http</code>，<code>call</code> 经 <code>transport_for_credentials</code> 按凭据选层</li>
+<li><code>crates/acmecast-server/src/steps/mod.rs: default_dns_registry(proxy_url, timeout) / default_deploy_registry(proxy_url, timeout)</code> — DNS 与部署注册表均接收全局代理与超时，透传到各提供商/目标</li>
+<li><code>crates/acmecast-server/src/credentials.rs: validate_proxy_url_field</code> — 凭据保存校验（<code>proxy_mode=custom</code> 时校验 <code>proxy_url</code>，全类型）</li>
+<li><code>crates/acmecast-server/src/handlers.rs</code> — 各凭据类型注册处 <code>with_global_proxy</code></li>
+<li><code>crates/acmecast-server/src/steps/apply.rs: complete_challenge</code> — <code>doh_transport_from(proxy_url)</code> 注入传播等待的解析器传输层；写 <code>proxy: via</code> 日志行</li>
+<li><code>crates/acmecast-server/src/steps/deploy.rs: format_deploy_targets</code> — <code>deploy targets:</code> 日志行（<code>id</code>/<code>type</code>/<code>name</code>/<code>remark</code>，缺省 <code>—</code>）</li>
+<li><code>crates/acmecast-server/src/run.rs: compact_proxy_logs</code> — <code>proxy:</code> 行落库前仅保留最后一条</li>
+<li><code>docs/04-credentials.md: 凭据的出网代理</code> / <code>docs/03-configuration.md: 全局代理</code> — 用户文档</li>
+</ul>
+<h2 id="_45">运行历史代理与部署目标日志<a class="headerlink" href="#_45" title="Permanent link">&para;</a></h2>
+<p>运行历史需明示"本步骤是否走了代理"与"部署到哪些目标"，各以<strong>独立一行</strong> <code>info</code> 日志呈现，便于视觉判断；均经 <code>redact</code> 脱敏，不落凭据明文。</p>
+<h3 id="proxy">代理使用日志（<code>proxy:</code> 行）<a class="headerlink" href="#proxy" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>cert.apply</code>（DNS 挑战）或 <code>cert.deploy</code>（部署目标出网）所用凭据的代理分支真实触发出网时（<code>proxy_mode=inherit</code> 且全局代理非空、或 <code>proxy_mode=custom</code> 且 <code>proxy_url</code> 合法），以及 DoH 解析器代理回退成功时，运行历史对应步骤 MUST 新增一行 <code>info</code> <code>proxy: via &lt;host&gt;</code> 日志，紧随命中 DNS / 平台信息行之后。</li>
+<li>直连（<code>proxy_mode=direct</code>，或 <code>inherit</code> 但全局代理为空）时 MUST NOT 新增该行。</li>
+<li>该行 MUST 与实际出网一致：<code>cert.deploy</code> 中未接入代理的目标类型（如 <code>local</code>）MUST NOT 打该行；接入代理的目标类型在代理真实触发时打行、直连时不打。</li>
+<li>该行沿用"传播等待双轨"精简策略：SSE 实时流保持全量，落库前按 <code>message</code> 前缀 <code>proxy:</code> 仅保留最后一条（<code>rposition</code> + <code>retain</code>）；空 / 单条 / 无代理时 no-op。</li>
+</ul>
+<h3 id="deploy-targets">部署目标信息日志（<code>deploy targets:</code> 行）<a class="headerlink" href="#deploy-targets" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>cert.deploy</code> 步骤进入执行时 MUST 另起一行 <code>info</code> <code>deploy targets:</code> 日志，展示本次部署的目标信息：按目标罗列 <code>id</code> / <code>type</code> / <code>name</code> / <code>remark</code>（取自 <code>CredentialResponse</code> 的 <code>name</code> / <code>remark</code> 与部署目标注册表项，经 <code>redact</code> 脱敏）。</li>
+<li>该行仅记录本次步骤实际入库并即将执行的目标（非预览页全量清单）；多目标以 <code>；</code> 分隔，名称 / 备注缺省时记 <code>—</code>；写在"已部署到目标"平台行之前，不参与精简。</li>
+</ul>
+<h3 id="_46">实现索引<a class="headerlink" href="#_46" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>crates/acmecast-server/src/steps/apply.rs</code> / <code>crates/acmecast-server/src/steps/deploy.rs</code> — <code>proxy: via &lt;host&gt;</code> 行（经 <code>acmecast_core::proxy_log_target</code> 脱敏）</li>
+<li><code>crates/acmecast-server/src/steps/deploy.rs: format_deploy_targets</code> — <code>deploy targets:</code> 行（<code>id</code>/<code>type</code>/<code>name</code>/<code>remark</code>，缺省 <code>—</code>）</li>
+<li><code>crates/acmecast-server/src/run.rs: compact_proxy_logs</code> — <code>proxy:</code> 行落库前仅保留最后一条</li>
+</ul>
+<h2 id="certdeploy">部署平台化日志（<code>cert.deploy</code>）<a class="headerlink" href="#certdeploy" title="Permanent link">&para;</a></h2>
+<p><code>cert.deploy</code> 在部署成功或指纹一致跳过时，"已部署到目标" 的同一 <code>info</code> 行<strong>前后追加</strong>平台信息（同一行内，不另起一条日志），平台取自 <code>input.config</code> 的脱敏摘要，空值时记 <code>unknown</code>，始终经 <code>redact</code> 脱敏后输出。</p>
+<table>
+<thead>
+<tr>
+<th>目标 <code>target</code></th>
+<th>平台字段</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>tencent-ssl</code></td>
+<td><code>credential_id</code> / <code>region</code></td>
+</tr>
+<tr>
+<td><code>s3</code></td>
+<td><code>bucket</code> / <code>region</code> / <code>endpoint host</code></td>
+</tr>
+<tr>
+<td><code>ssh</code></td>
+<td><code>host:port</code> 或主机档案标识</td>
+</tr>
+<tr>
+<td><code>local</code></td>
+<td>部署路径</td>
+</tr>
+<tr>
+<td><code>webdav</code></td>
+<td><code>url host</code></td>
+</tr>
+<tr>
+<td>其他 / 缺字段</td>
+<td><code>unknown</code> 兜底</td>
+</tr>
+</tbody>
+</table>
+<p>格式示例：<code>已部署到目标 &lt;target&gt; (platform=&lt;...&gt;)，写入 &lt;N&gt; 个路径</code> 或 <code>... fingerprint=&lt;...&gt; platform=&lt;...&gt;</code>。<code>tencent-ssl</code> 的跳过写入分支（<code>skipped_write</code>）与写入分支均在同一行追加 <code>platform</code>，<code>output</code> 结构化字段中亦补 <code>platform</code>。失败分支已含 <code>target</code>，可追加 <code>platform</code>。</p>
+<h3 id="_47">实现索引<a class="headerlink" href="#_47" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>crates/acmecast-server/src/steps/deploy.rs: platform_summary</code> — 按 <code>target</code> 从 <code>config</code> 取字段拼接 <code>platform=&lt;...&gt;</code>，经 <code>redact</code> 脱敏</li>
+<li><code>crates/acmecast-server/src/steps/deploy.rs:138-186</code> — "已部署到目标" 成功/跳过分支同一行前后追加 <code>platform</code></li>
+</ul>
+<h2 id="_48">证书存储查询与续期归档<a class="headerlink" href="#_48" title="Permanent link">&para;</a></h2>
+<p><code>cert.store</code> 在写入新证书前按域名集合（<code>domains</code> 归一化后精确匹配）查询既有记录，用于归档旧证书与判断是否新建记录。当同域名集合已存在多条记录（如首次重签后一条已归档 + 一条活跃）时，查询 MUST 确定性返回<strong>活跃记录</strong>（<code>archived_at</code> 为空且 <code>revoked_at</code> 为空），而非任意记录。此优先级 MUST 在所有依赖域名集合查询的路径一致生效：续期归档、到期检测、跳过注入。</p>
+<h3 id="_49">查询排序<a class="headerlink" href="#_49" title="Permanent link">&para;</a></h3>
+<p><code>CertRepository::find_by_key</code>（被 <code>find_by_domains</code> 调用）的查询排序为：</p>
+<div class="language-sql highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">ORDER</span><span class="w"> </span><span class="k">BY</span><span class="w"> </span><span class="p">(</span><span class="n">archived_at</span><span class="w"> </span><span class="k">IS</span><span class="w"> </span><span class="k">NULL</span><span class="p">)</span><span class="w"> </span><span class="k">DESC</span><span class="p">,</span><span class="w">  </span><span class="c1">-- 活跃 (1) 排前，已归档 (0) 排后</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">         </span><span class="p">(</span><span class="n">revoked_at</span><span class="w"> </span><span class="k">IS</span><span class="w"> </span><span class="k">NULL</span><span class="p">)</span><span class="w"> </span><span class="k">DESC</span><span class="p">,</span><span class="w">   </span><span class="c1">-- 未吊销 (1) 排前，已吊销 (0) 排后</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">         </span><span class="n">id</span><span class="w"> </span><span class="k">DESC</span><span class="w">                       </span><span class="c1">-- 同为活跃时取最新（id 最大）</span>
+</span></code></pre></div>
+<p>用 <code>IS NULL</code> 布尔表达式排序，不依赖数据库默认 NULL 排序行为，确保跨数据库一致。无活跃记录时回退到任意记录。</p>
+<h3 id="_50">归档守卫<a class="headerlink" href="#_50" title="Permanent link">&para;</a></h3>
+<p><code>cert.store</code> 在归档旧证书前增加防御性检查：若查询到的 <code>existing</code> 记录的 <code>cert_pem_path</code> 或 <code>key_pem_path</code> 已位于 <code>certs/archived/</code> 或 <code>certs/revoked/</code> 前缀下，跳过归档并记 warn（该记录已是归档/吊销态，非当前活跃证书）。正常流程不应触发，但防止极端并发或数据异常下的错误归档。</p>
+<h3 id="_51">归档语义<a class="headerlink" href="#_51" title="Permanent link">&para;</a></h3>
+<ul>
+<li>同域名集合旧记录且新旧指纹不同时，MUST 将旧证书 4 文件按旧指纹移动到 <code>certs/archived/&lt;旧指纹&gt;/</code>，文件名不变，旧记录路径列同步更新为归档后路径，新证书以全新记录入库（不覆盖旧记录）。</li>
+<li>指纹相同时不新建重复记录；未到期跳过且注入库中证书同样不新建。</li>
+<li>归档目标已存在时覆盖，不报错。</li>
+<li>归档失败（源文件缺失或 IO 错误）MUST NOT 阻断新证书写入与新建记录，仅记 warn。</li>
+<li>连续多次重签时，每次归档的是上一张活跃证书（而非重复归档第一张）。</li>
+</ul>
+<h3 id="_52">实现索引<a class="headerlink" href="#_52" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>crates/acmecast-store/src/repository/cert.rs: find_by_key</code> — 活跃优先排序（<code>IS NULL</code> 布尔表达式 + <code>id DESC</code>）</li>
+<li><code>crates/acmecast-store/src/repository/cert.rs: find_by_domains</code> — 调用 <code>find_by_key</code>，直接受益</li>
+<li><code>crates/acmecast-server/src/steps/store.rs: archive_replaced_certificate</code> — 归档守卫（<code>certs/archived/</code> / <code>certs/revoked/</code> 前缀检查）</li>
+<li><code>crates/acmecast-server/src/steps/apply.rs</code> — 到期检测与跳过注入受益于查询修正；跳过分支的兼容回退读取与领域级失败见下节</li>
+</ul>
+<h3 id="_53">材料缺失降级为标记吊销终态<a class="headerlink" href="#_53" title="Permanent link">&para;</a></h3>
+<p>当证书材料缺失（库中记录指向的文件在磁盘上不存在）时，归档与吊销操作 MUST NOT 静默返回成功或使记录停留在活跃态形成孤儿记录。系统统一降级为<strong>本地标记吊销终态</strong>：调用 <code>CertRepository::mark_revoked</code>（设置 <code>revoked_at</code> 为当前时间、清空 <code>archived_at</code>），跳过 CA 吊销与文件移动，响应返回 <code>archived_now=false</code>（归档入口）或 <code>revoked_now=true</code>（吊销入口）并携带 <code>material_missing=true</code> 降级标记。降级后记录进入终态，删除按钮按既有规则可用。</p>
+<ul>
+<li>归档入口（用户点"归档"）：材料缺失 → <code>mark_revoked</code> → 响应 <code>archived_now=false</code> + <code>material_missing=true</code>。</li>
+<li>吊销入口（用户点"吊销"）：材料缺失 → 跳过读 fullchain 与 CA 调用 → <code>mark_revoked</code> → 响应 <code>revoked_now=true</code> + <code>material_missing=true</code>。</li>
+<li>已吊销记录重复点归档/吊销仍走既有幂等返回（<code>archived_now/revoked_now=false</code>），不重复降级。</li>
+<li>告警日志 MUST 包含 <code>cert_id</code>、<code>fingerprint</code>、缺失路径，便于事后排查。</li>
+</ul>
+<h3 id="_54">吊销搬迁完整性<a class="headerlink" href="#_54" title="Permanent link">&para;</a></h3>
+<p>吊销把证书材料移入 <code>certs/revoked/&lt;指纹&gt;/</code> 时，MUST 把库中记录的 <strong>6 个路径列</strong>所指向的文件（<code>cert_path</code>/<code>ca_path</code>/<code>fullchain_path</code>/<code>key_path</code>/<code>cert_pem_path</code>/<code>key_pem_path</code>）全部搬入吊销目录，MUST NOT 在源目录（<code>certs/ssl/</code> 或 <code>certs/archived/&lt;指纹&gt;/</code>）遗留任何属于该证书的文件。搬迁完成后库中 6 个路径列一致指向吊销目录下的新位置。</p>
+<ul>
+<li><code>FileStore::move_certificate</code> 优先整目录 rename，不可行时退回逐文件搬迁；逐文件清单从原 <code>cert_pem</code>/<code>key_pem</code> + <code>certs/ssl/</code> 活跃候选扩展为包含库中记录的全部 6 路径源文件。</li>
+<li>吊销同时清空 <code>archived_at</code>（设为 <code>NULL</code>），使吊销成为唯一终态——不残留"已归档"状态。MUST NOT 在吊销时删除证书文件。</li>
+<li><code>revoked_at</code> 与 <code>archived_at</code> 同时非空时 MUST 显示"已吊销"（吊销为终态，优先于归档）。</li>
+</ul>
+<h3 id="_55">前端提示区分<a class="headerlink" href="#_55" title="Permanent link">&para;</a></h3>
+<p>归档与吊销的完成提示 MUST 区分两种结果：</p>
+<ul>
+<li>文件搬迁成功时提示归档/吊销成功。</li>
+<li>响应 <code>material_missing=true</code> 时 MUST 提示"材料缺失，已标记为吊销状态，可直接删除"（warning 级），MUST NOT 展示与真实搬迁成功相同的成功提示。</li>
+</ul>
+<h3 id="_56">实现索引（续）<a class="headerlink" href="#_56" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>crates/acmecast-store/src/filestore.rs: move_certificate</code> — 逐文件搬迁清单扩展为 6 路径（<code>cert</code>/<code>ca</code>/<code>fullchain</code>/<code>key</code>/<code>cert_pem</code>/<code>key_pem</code>），整目录 rename 不变</li>
+<li><code>crates/acmecast-server/src/handlers.rs</code> — 归档接口材料缺失降级（<code>mark_revoked</code> + <code>material_missing</code>）、吊销接口材料缺失降级（跳过 CA + <code>mark_revoked</code>）</li>
+<li><code>crates/acmecast-store/src/repository/cert.rs: mark_revoked</code> — 设置 <code>revoked_at</code>、清空 <code>archived_at</code>（降级复用）</li>
+<li><code>frontend/src/pages/certificates/CertificateDetailPage.tsx</code> — 按 <code>material_missing</code> 区分提示文案</li>
+<li><code>frontend/src/pages/certificates/CertificateListPage.tsx</code> — 列表行归档/吊销降级提示、状态列显示与删除按钮可用性</li>
+</ul>
+<h2 id="_57">跳过注入兼容回退读取与可诊断失败<a class="headerlink" href="#_57" title="Permanent link">&para;</a></h2>
+<p><code>cert.apply</code> 在 <code>renew_before_days</code> 判定为"不在续期窗口"时走跳过分支（以 <code>skipped</code> 结束、不触达 CA），需从证书库加载匹配记录并读取其 <code>cert_pem</code>/<code>key_pem</code> 注入产物，供后续 <code>cert.store</code>/<code>cert.deploy</code> 使用。该分支的文件读取 MUST 具备兼容回退能力与领域级可诊断失败语义，不再透传裸 OS 错误。</p>
+<h3 id="_58">兼容回退候选路径<a class="headerlink" href="#_58" title="Permanent link">&para;</a></h3>
+<p>跳过分支读取证书文件 MUST 按固定顺序依次尝试，命中任一可读副本即成功注入：</p>
+<ol>
+<li><strong>记录路径</strong>：库中记录的 <code>cert_pem_path</code> / <code>key_pem_path</code>（新布局 <code>*.ca.cer</code>/<code>*.fullchain.cer</code>/<code>key</code>）。</li>
+<li><strong>旧布局回退</strong>：若记录路径缺失，按主域名与通配前缀映射推导旧布局候选（<code>certs/ssl/&lt;old&gt;.cert.pem</code> / <code>&lt;old&gt;.key.pem</code>，其中 <code>*.</code> → <code>_</code> / <code>_wildcard</code> 前缀），复用 <code>certificate-file-layout</code> 的兼容读取路径。</li>
+<li><strong>归档副本回退</strong>：若旧布局仍缺失，在 <code>certs/archived/&lt;指纹&gt;/</code> 下查找对应文件（仅对当前 <code>cert_id</code>/指纹的归档目录，匹配记录指纹即最新活跃指纹时视为同一材料）。</li>
+</ol>
+<p>所有候选路径 MUST 经 <code>FileStore</code> 路径防逃逸校验（拒绝含 <code>..</code> 或绝对路径的越界候选），不直接拼接用户可控输入。</p>
+<h3 id="_59">回退命中<a class="headerlink" href="#_59" title="Permanent link">&para;</a></h3>
+<ul>
+<li>命中任一可读副本即以相同产物键（<code>cert_pem</code>/<code>key_pem</code>/<code>domains</code>/<code>fingerprint</code>/<code>cert_id</code>）注入 <code>Artifacts</code>，不覆盖前序同名产物，不中止流水线。</li>
+<li>回退命中记一条 <code>INFO</code> 日志，含指纹与所用的回退路径，便于排障。</li>
+<li>流水线继续后续步骤，终态为 <code>succeeded</code>，不视为失败。</li>
+</ul>
+<h3 id="_60">回退全部失败的领域错误<a class="headerlink" href="#_60" title="Permanent link">&para;</a></h3>
+<p>当所有候选路径均不可读或缺失时，MUST 以领域错误明确失败，不透传裸 OS 错误（如 <code>No such file or directory (os error 2)</code>）：</p>
+<ul>
+<li>错误信息 MUST 归因到 <code>cert.apply</code> 跳过注入阶段，包含证书标识（<code>cert_id</code>/指纹/归一化 <code>domains</code>）、已尝试的路径列表与数据目录状态（存在性/可读性摘要）。</li>
+<li>错误信息 MUST 给出可操作指引：检查数据目录挂载与权限、核对归档/迁移是否完成、或将 <code>renew_before_days</code> 设为 <code>0</code> 强制重签。</li>
+<li>步骤日志（<code>ctx.log_error</code>）MUST 记录完整尝试列表与各路径失败原因。</li>
+<li>运行历史终态为 <code>failed</code>，步骤状态为 <code>failed</code>（非 <code>skipped</code>），避免"跳过成功"误导。</li>
+<li>不静默使用错误材料或跳过部署，后续 <code>cert.store</code>/<code>cert.deploy</code> 不因缺少产物产生二次迷惑错误。</li>
+</ul>
+<h3 id="_61">日志收敛<a class="headerlink" href="#_61" title="Permanent link">&para;</a></h3>
+<ul>
+<li>回退命中仅一条 <code>INFO</code>（指纹+回退路径），全部失败一条 <code>ERROR</code>（尝试列表+指引），不为每个候选单独打日志。</li>
+<li>可观测性与 <code>pipeline-renewal-lifecycle</code> 的"跳过可观测"要求对齐：运行历史终态命中回退则 <code>succeeded</code>，全部失败则 <code>failed</code>。</li>
+<li>跳过分支以运行成功收尾（运行结束简讯照常投递、该步骤在简讯中标注跳过）；失败分支按既有失败通知规则处理。</li>
+</ul>
+<h3 id="_62">作用域与不变量<a class="headerlink" href="#_62" title="Permanent link">&para;</a></h3>
+<ul>
+<li>本变更不改变阈值判定、域名归一、产物键与幂等/归档规则。</li>
+<li>兼容回退仅在跳过分支且主路径缺失时触发，正常签发路径无额外 IO（串行 2–4 次文件读取，仅限回退场景）。</li>
+<li>回退读取复用证书详情/下载/吊销/部署路径中已有的兼容读取能力（<code>certificate-file-layout</code> 的旧布局回退 + <code>certificate-storage</code> 的归档查找），不在 <code>apply.rs</code> 内联重写路径推导，避免与规格漂移。</li>
+</ul>
+<h3 id="_63">实现索引<a class="headerlink" href="#_63" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>crates/acmecast-server/src/steps/apply.rs</code> — 跳过分支兼容回退读取（新布局→旧布局→归档副本）与领域级失败（<code>cert_id</code>/指纹/<code>domains</code>/尝试路径/指引）</li>
+<li><code>crates/acmecast-store/src/filestore.rs</code> / 证书兼容读取助手 — 回退候选路径推导与 <code>FileStore</code> 防逃逸校验</li>
+<li><code>crates/acmecast-pipeline</code> — 错误分类与步骤终态（<code>failed</code> 而非 <code>skipped</code>）</li>
+<li><code>crates/acmecast-server/src/steps/apply.rs: zone_of</code> / <code>complete_challenge</code> — 跳过注入与正常签发共用产物键</li>
+</ul>
+<h2 id="3-2">文件类部署目标 3 文件布局与腾讯云 2 文件区分<a class="headerlink" href="#3-2" title="Permanent link">&para;</a></h2>
+<p>文件类部署目标（<code>local</code> / <code>ssh</code> / <code>s3</code> / <code>webdav</code>）的部署产物从 2 文件改为 <strong>3 文件</strong>，对齐主存储 <code>certificate-file-layout</code> 的 3 文件布局；腾讯云 <code>tencent-ssl</code> 为云 API 语义，保持 <strong>2 文件</strong>（fullchain + key），二者显式区分。</p>
+<h3 id="3">3 文件集合（文件类目标）<a class="headerlink" href="#3" title="Permanent link">&para;</a></h3>
+<p>文件类目标默认写入/上传 3 文件，不再单独产出叶子 <code>cer</code>：</p>
+<ul>
+<li><code>&lt;prefix&gt;.fullchain.cer</code> ← <code>chain_pem</code> 原样</li>
+<li><code>&lt;prefix&gt;.ca.cer</code> ← <code>chain_pem</code> 按 PEM 拆链规则（<code>split_chain</code> / <code>ca_pem_of</code>）生成的剩余链（多张时为首块之后剩余，单张时为<strong>空文件</strong>，与主存储一致）</li>
+<li><code>&lt;prefix&gt;.key</code> ← <code>key_pem</code></li>
+</ul>
+<p>其中 <code>&lt;prefix&gt;</code> = <code>domain_file_prefix(primary_domain)</code>（通配 <code>*.example.com</code> → <code>_wildcard.example.com</code>），与主存储共用同一函数（<code>acmecast_cert::domain_file_prefix</code>），拆链共用 <code>acmecast_cert::ca_pem_of</code>。</p>
+<p><strong>本次补充（部署侧对齐）：</strong> 文件类部署目标（<code>local</code> / <code>ssh</code> / <code>s3</code> / <code>webdav</code>，<code>tencent-ssl</code> 除外）的默认产出 MUST 同样对齐上述 3 文件布局（<code>fullchain.cer</code> + <code>ca.cer</code> + <code>key</code>，不单独产出叶子 <code>cer</code>），<code>fullchain.cer</code> 为 <code>chain_pem</code> 原样，<code>ca.cer</code> 按 PEM 拆链规则生成。部署目标的 <code>ca.cer</code>/<code>fullchain.cer</code> 命名与主存储一致，且 <code>domain_file_prefix</code> 规则同步（<code>*.example.com</code> → <code>_wildcard.example.com</code>）。部署侧路径以 <code>/</code> 结尾视为目录文件夹时，补全后的默认文件名 MUST 同为 <code>&lt;prefix&gt;.fullchain.cer / &lt;prefix&gt;.ca.cer / &lt;prefix&gt;.key</code>（保存时 <code>cert.apply</code> 主域可解析则直接拼 <code>domain_file_prefix</code> 前缀，否则 <code>local/ssh</code> 回落固定名与 <code>S3/WebDAV</code> 回落 <code>{domain}</code> 占位——部署时展开），<code>tencent-ssl</code> 保持 2 文件（云 API 无路径）不变，不改变证书原有命名。</p>
+<h3 id="_64">部署目录补全文件名同源（含文件夹模式带前缀）<a class="headerlink" href="#_64" title="Permanent link">&para;</a></h3>
+<p>文件类部署目标（<code>local/ssh/s3/webdav</code>，<code>tencent-ssl</code> 除外）以 <code>/</code> 结尾的目录输入补全时，默认文件名 MUST 与 <code>certs/ssl/</code> 落盘命名同源：<code>&lt;prefix&gt;.fullchain.cer</code>、<code>&lt;prefix&gt;.ca.cer</code>、<code>&lt;prefix&gt;.key</code>（<code>&lt;prefix&gt;</code> = <code>domain_file_prefix(primary_domain)</code>，保存时同流水线 <code>cert.apply</code> 主域可解析则直接拼前缀，否则回落与部署时按主域展开），确保用户 <code>fullchain/key/ca</code> 三字段均填 <code>"data/certs/ssl/"</code> 或 <code>"/tmp/t1/"</code> 这类目录时按当前证书主域补全为带前缀的 3 文件。通配 <code>*.example.com</code> 时前缀为 <code>_wildcard.example.com</code>。</p>
+<h3 id="2">腾讯云 2 文件语义（对比声明）<a class="headerlink" href="#2" title="Permanent link">&para;</a></h3>
+<p><code>tencent-ssl</code> 部署目标保持 2 文件语义：上传参数 <code>CertificatePublicKey=chain_pem</code>（fullchain）与 <code>CertificatePrivateKey=key_pem</code>，不涉及文件化与 <code>ca.cer</code> 拆分。文档与校验口径 MUST 显式声明该差异，避免与文件类目标的 3 文件混淆——实现上 MUST NOT 引入 <code>ca.cer</code> 拆分逻辑。</p>
+<h3 id="_65">字段与别名兼容<a class="headerlink" href="#_65" title="Permanent link">&para;</a></h3>
+<p>各目标新增 <code>fullchain</code>/<code>ca</code> 路径或模板字段，存量 <code>cert_path</code>/<code>cert_filename</code> 视为 <code>fullchain</code> 的别名（<code>fullchain_path</code>/<code>fullchain_filename</code> 未配置时生效）；<code>ca</code> 路径未显式配置时按 fullchain 同目录同前缀派生 <code>*.ca.cer</code>，<strong>显式留空</strong>可跳过 <code>ca.cer</code> 产出。打开存量流水线步骤时 <code>fullchain_path</code>/<code>fullchain_filename</code> 自动回显 <code>cert_path</code>/<code>cert_filename</code> 值。</p>
+<p><strong><code>local</code> 目标为 BREAKING 替换而非并存</strong>：<code>LocalInput</code> 的 <code>cert_path</code> 字段已移除，<code>fullchain_path</code> 直接替换之（<code>#[serde(alias = "cert_path")]</code> 兜底旧输入反序列化）；schema 中不再出现 <code>cert_path</code>。前端 <code>migrateLegacyDeployInput</code> 已把存量 <code>cert_path</code> 回显为 <code>fullchain_path</code>、<code>ca_path</code> 回显派生的 <code>ca.cer</code> 路径，保存后落新字段。由于 serde <code>alias</code> 把新旧键视为同一字段，存量步骤回显后保存会同时带上两个键，后端在解析前经 <code>without_legacy_alias</code> 去重（<code>fullchain_path</code> 非空时丢弃 <code>cert_path</code>，新键优先），避免 <code>duplicate field</code> 报错。</p>
+<p>| <code>local</code> | <code>fullchain_path</code> / <code>ca_path</code> | <code>cert_path</code> | <code>ca_path</code> ← fullchain 同目录 <code>*.ca.cer</code> |
+| <code>ssh</code> | <code>fullchain_path</code> / <code>ca_path</code> | <code>cert_path</code> | 无派生——<code>ca_path</code> 缺省/留空即跳过 ca 文件（不按 <code>fullchain_path</code> 派生） |
+| <code>s3</code> | <code>fullchain_filename</code> / <code>ca_filename</code> | <code>cert_filename</code> | <code>ca_filename</code> ← <code>&lt;prefix&gt;.ca.cer</code> |
+| <code>webdav</code> | <code>fullchain_path</code> / <code>ca_path</code> | <code>cert_path</code> | <code>ca_path</code> ← <code>&lt;prefix&gt;.ca.cer</code> |</p>
+<h3 id="_66">流水线保存时目录补全与持久化（含文件夹模式带前缀）<a class="headerlink" href="#_66" title="Permanent link">&para;</a></h3>
+<p>文件类目标（<code>local / ssh / s3 / webdav</code>，<code>tencent-ssl</code> 除外）的路径/文件名字段以 <code>/</code> 结尾视为目录文件夹，文件夹模式下 <code>fullchain / ca / key</code> 三字段分别独立补全。<code>PipelineRepository::save</code> MUST 在校验与入库前对 <code>cert.deploy</code> 步骤的 <code>config</code> 做补全，并以补全后的值持久化（前端回显即为部署实际使用的路径），<code>tencent-ssl</code> 分支 MUST 跳过（无路径字段）。</p>
+<h4 id="_67">目录判据<a class="headerlink" href="#_67" title="Permanent link">&para;</a></h4>
+<p>系统 MUST 以 <code>value.trim().ends_with('/')</code> 为唯一目录判据；仅当值以 <code>/</code> 结尾时视为目录并触发补全，非 <code>/</code> 结尾、空白、缺省的值 MUST 保持原样不补全，不做 <code>is_dir()</code> 探测。</p>
+<h4 id="_68">补全规则（保存时按主域前缀）<a class="headerlink" href="#_68" title="Permanent link">&para;</a></h4>
+<p>补全时优先取同流水线 <code>cert.apply</code> 步骤的 <code>domains[0]</code> 或关联证书主域，经 <code>domain_file_prefix</code> 派生 <code>&lt;prefix&gt;</code>（通配 <code>*.example.com</code> → <code>_wildcard.example.com</code>）：</p>
+<table>
+<thead>
+<tr>
+<th>目标</th>
+<th>目录字段</th>
+<th>主域可解析</th>
+<th>主域缺失</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>local</code> / <code>ssh</code></td>
+<td><code>fullchain_path</code>（含旧别名 <code>cert_path</code>）→ <code>&lt;目录&gt;&lt;prefix&gt;.fullchain.cer</code>，<code>ca_path</code> → <code>&lt;目录&gt;&lt;prefix&gt;.ca.cer</code>，<code>key_path</code> → <code>&lt;目录&gt;&lt;prefix&gt;.key</code></td>
+<td>直接拼带前缀文件名并入库，如 <code>*.example.com</code> + <code>/tmp/t1/</code> → <code>/tmp/t1/_wildcard.example.com.fullchain.cer</code> 等</td>
+<td>回落固定名 <code>fullchain.cer / ca.cer / key</code>，如 <code>/tmp/t1/</code> → <code>/tmp/t1/fullchain.cer</code></td>
+</tr>
+<tr>
+<td><code>s3</code></td>
+<td><code>prefix</code> 归一化为 <code>&lt;prefix&gt;/</code>；<code>fullchain_filename</code>/<code>cert_filename</code> → <code>&lt;目录&gt;&lt;prefix&gt;.fullchain.cer</code>，<code>ca_filename</code> → <code>&lt;目录&gt;&lt;prefix&gt;.ca.cer</code>，<code>key_filename</code> → <code>&lt;目录&gt;&lt;prefix&gt;.key</code></td>
+<td>同上直接拼前缀，如 <code>example.com</code> + <code>certs/</code> → <code>certs/example.com.fullchain.cer</code></td>
+<td>回落 <code>{domain}</code> 占位模板 <code>"&lt;目录&gt;{domain}.fullchain.cer"</code> 等，部署时按 <code>domain_file_prefix(primary_domain)</code> 展开</td>
+</tr>
+<tr>
+<td><code>webdav</code></td>
+<td><code>base_path</code> 归一化为 <code>&lt;base&gt;/</code>；<code>fullchain_path</code>/<code>cert_path</code> → <code>&lt;目录&gt;&lt;prefix&gt;.fullchain.cer</code>，<code>ca_path</code> → <code>&lt;目录&gt;&lt;prefix&gt;.ca.cer</code>，<code>key_path</code> → <code>&lt;目录&gt;&lt;prefix&gt;.key</code></td>
+<td>同上</td>
+<td>回落 <code>{domain}</code> 占位，部署时展开</td>
+</tr>
+</tbody>
+</table>
+<p>文件夹模式三字段均支持：通配 <code>*.example.com</code> 时 <code>fullchain_path="/tmp/t1/"</code>、<code>key_path="/tmp/t1/"</code>、<code>ca_path="/tmp/t1/"</code> 分别补为 <code>/tmp/t1/_wildcard.example.com.fullchain.cer</code> / <code>.ca.cer</code> / <code>.key</code>；相对路径 <code>certs/ssl/</code> 同样以 <code>/</code> 结尾触发补全。</p>
+<h4 id="_69">校验与持久化时序<a class="headerlink" href="#_69" title="Permanent link">&para;</a></h4>
+<p><code>PipelineRepository::save</code> MUST 先执行目录补全归一化，再执行后续校验与持久化；补全后的完整路径参与必填等校验并写入 <code>pipeline_step.input</code>。<code>tencent-ssl</code> 目标的 <code>config</code> 含路径键时不触发补全，原样入库。</p>
+<h4 id="_70">执行期兜底与文件名前缀不变<a class="headerlink" href="#_70" title="Permanent link">&para;</a></h4>
+<p>部署执行期若路径仍以 <code>/</code> 结尾（历史存量未重保存），MUST 按 <code>domain_file_prefix(primary_domain)</code> 动态补全为 <code>&lt;prefix&gt;.fullchain.cer / &lt;prefix&gt;.ca.cer / &lt;prefix&gt;.key</code>，文件名 MUST 与 <code>certs/ssl/</code> 落盘命名同源。<code>S3</code>/<code>WebDAV</code> 的 <code>ca</code> 内容为空（单张链）时跳过对应 PUT，但 <code>DeployOutcome.paths</code> 仍列出 3 个预期键。</p>
+<h4 id="_71">前端说明<a class="headerlink" href="#_71" title="Permanent link">&para;</a></h4>
+<p><code>GET /api/tasks/cert.deploy/schema</code> 的 <code>x-target-schemas</code> 与前端表单提示 MUST 说明：<code>fullchain/ca/key</code> 路径以 <code>/</code> 结尾视为目录文件夹模式，保存时按当前证书主域自动补全为 <code>&lt;prefix&gt;.fullchain.cer</code> 等带前缀文件名（通配 <code>*.example.com</code> → <code>_wildcard.example.com.*</code>，<code>tencent-ssl</code> 不参与）。</p>
+<h3 id="local">local 三文件路径、权限与目录/留空语义<a class="headerlink" href="#local" title="Permanent link">&para;</a></h3>
+<p><code>local</code> 目标的部署输入形成 fullchain/ca/key 三组「路径 + 权限」对：<code>fullchain_path</code> + <code>cert_mode</code>（fullchain 权限，保留 <code>cert_mode</code> 原名以对齐前端 <code>LOCAL_FIELD_ORDER</code>）、<code>ca_path</code> + <code>ca_mode</code>（默认 <code>0644</code>）、<code>key_path</code> + <code>key_mode</code>（默认 <code>0600</code>）；<code>uid</code>/<code>gid</code>/<code>reload_command</code> 不变。</p>
+<p><strong>表单渲染</strong>：<code>cert.deploy</code> 选择 <code>local</code> 目标时，<code>config</code> 子表单 MUST 渲染 <code>fullchain_path</code>/<code>ca_path</code>/<code>key_path</code> 三路径与 <code>cert_mode</code>/<code>ca_mode</code>/<code>key_mode</code> 三权限，<strong>三行两列</strong>排列——每行左列为文件路径、右列为文件权限（<code>key_path</code>+<code>key_mode</code>、<code>fullchain_path</code>+<code>cert_mode</code>、<code>ca_path</code>+<code>ca_mode</code> 各占一行），顺序由前端 <code>LOCAL_FIELD_ORDER = ["key_path","key_mode","fullchain_path","cert_mode","ca_path","ca_mode","uid","gid","reload_command"]</code> 钉住（key 行在最上）。表单提示 MUST 明确该目标将部署 <code>fullchain.cer</code>/<code>ca.cer</code>/<code>key</code> 三文件，未自定义 <code>ca_path</code> 时按 <code>fullchain_path</code> 派生。</p>
+<p><strong>部署写入</strong>：配置 <code>fullchain_path</code>/<code>ca_path</code>/<code>key_path</code> 均为文件路径并触发部署时，MUST 写入三个文件——<code>fullchain_path</code> 写入完整证书链（<code>chain_pem</code> 原样）、<code>ca_path</code> 写入中间链（<code>ca_pem_of(chain_pem)</code>）、<code>key_path</code> 写入私钥（<code>key_pem</code>），成功返回的路径集合即三者（ca 跳过时除外）。</p>
+<ul>
+<li><strong>目录路径按默认文件名写入</strong>：任一路径以 <code>/</code> 结尾或 <code>is_dir()</code> 为 true 时视为目录，拼接默认文件名写入该目录——fullchain → <code>fullchain.cer</code>、ca → <code>ca.cer</code>、key → <code>key</code>；为文件路径时原样写入（<code>LocalInput::files</code> 中 <code>resolve_target_path</code> 实现）。</li>
+<li><strong>ca 跳过规则</strong>：<code>ca_path</code> 显式留空（空串）时 MUST 跳过 <code>ca.cer</code> 文件写入，仅写入 fullchain 与 key 两个文件；<code>ca_pem_of(chain_pem)</code> 拆链为空（链仅含叶子证书）时同样跳过，不产生空文件（与显式留空一致）。<code>ca_path</code> 未配置（<code>None</code>）时按 <code>fullchain_path</code> 同目录派生 <code>&lt;stem&gt;.ca.cer</code>（<code>derive_ca_path</code>，如 <code>example.com.fullchain.cer</code> → <code>example.com.ca.cer</code>、<code>fullchain.cer</code> → <code>ca.cer</code>）。</li>
+<li><strong>存量兼容</strong>：仅含 <code>cert_path</code>/<code>key_path</code> 的旧步骤打开时，<code>fullchain_path</code> MUST 回显 <code>cert_path</code> 的值，<code>ca_path</code> 回显按 <code>fullchain_path</code> 派生的 <code>ca.cer</code> 路径（前端 <code>migrateLegacyDeployInput</code> + 后端 <code>#[serde(alias = "cert_path")]</code> 与 <code>without_legacy_alias</code> 去重，<code>fullchain_path</code> 非空时丢弃 <code>cert_path</code>）。</li>
+<li>文件清单由 <code>LocalInput::files</code> 返回 <code>Vec&lt;(FileSpec, String)&gt;</code>（ca 可选，数量可变），<code>deploy</code> 方法按可变清单分配容量与遍历；<code>example_input</code> 为三文件示例 <code>{"fullchain_path":"/etc/nginx/ssl/example.com.fullchain.cer","ca_path":"/etc/nginx/ssl/example.com.ca.cer","key_path":"/etc/nginx/ssl/example.com.key","reload_command":"nginx -s reload"}</code>，<code>input_schema</code> 由 <code>schemars::JsonSchema</code> 从 <code>LocalInput</code> 自动派生，不再含 <code>cert_path</code>。</li>
+</ul>
+<h3 id="ssh-allowclear">SSH 三文件路径、目录/留空语义、表单两行两列与 allowClear<a class="headerlink" href="#ssh-allowclear" title="Permanent link">&para;</a></h3>
+<p><code>cert.deploy(ssh)</code> 的远端写入从 2 文件改为最多 3 文件，<strong>BREAKING</strong> 替换 <code>SshInput.cert_path: Option&lt;String&gt;</code> 为 <code>fullchain_path: Option&lt;String&gt;</code>（<code>#[serde(alias = "cert_path")]</code> 兼容存量，<code>#[serde(default)]</code> 的 <code>ca_path: Option&lt;String&gt;</code> 新增），<code>ResolvedSshConfig</code> 同步由 <code>cert_path: String</code> 改为 <code>fullchain_path: String</code> 并新增 <code>ca_path: Option&lt;String&gt;</code>；其余 <code>key_path</code>/<code>cert_mode</code>/<code>key_mode</code>/<code>credential_id</code>/<code>bastion_credential_id</code>/<code>host</code>/<code>port</code>/<code>user</code>/<code>auth</code>/<code>reload_command</code> 不变。<code>ca</code> 权限复用档案的 <code>cert_mode</code>（缺省 <code>0644</code>），不新增 <code>ca_mode</code>——SSH 变体不渲染权限字段，权限由档案提供。</p>
+<p><strong>输入与档案合并校验</strong>：<code>resolve_input</code> 中 <code>fullchain_path</code> 与 <code>key_path</code> 为必填——值为 <code>None</code> 或空白（<code>trim().is_empty()</code>）时 MUST 在执行前失败并定位到对应字段名；<code>ca_path</code> 为可选——<code>None</code> 或空白均视为跳过 ca 文件，不报错。远端文件路径与 <code>reload_command</code> 仅来自部署输入，不参与档案合并；输入显式值覆盖档案默认值（端口 22、<code>cert_mode 0644</code>/<code>key_mode 0600</code>），未给出时回退档案值。不引用档案的直填输入保持兼容，仅路径字段由 <code>cert_path</code> 经 alias 映射到 <code>fullchain_path</code>。</p>
+<p><strong>部署写入</strong>：<code>SshTarget::deploy</code> 构建 <code>Vec&lt;(String,String,String)&gt;</code>（<code>path, content, mode</code>）写入远端——<code>fullchain_path</code> 经 <code>resolve_remote_path(&amp;fullchain_path,"fullchain.cer")</code> 写入 <code>chain_pem</code>（<code>mode=cert_mode</code>），<code>ca_path</code> 非空时经 <code>resolve_remote_path(ca_path,"ca.cer")</code> 写入 <code>ca_pem_of(&amp;chain_pem)</code>（空串跳过，<code>mode=cert_mode</code>），<code>key_path</code> 经 <code>resolve_remote_path(&amp;key_path,"key")</code> 写入 <code>key_pem</code>（<code>mode=key_mode</code>）；<code>ca_path</code> 留空/缺失或 <code>ca_pem_of</code> 为空（单证书链）时 MUST 仅写入 fullchain 与 key。<code>DeployOutcome.paths</code> MUST 列出实际写入的路径（2 或 3 个），<code>DeployMode::SkipWrite</code> 时不发起写入但仍列出预期路径。任一文件失败则整体失败，已写临时文件清理（原子写 <code>write_file</code>）。</p>
+<ul>
+<li><strong>远端目录按默认文件名写入</strong>：SSH 无法本地 <code>is_dir()</code>，仅以 <code>/</code> 结尾判定为目录——<code>resolve_remote_path(path, default_name)</code> 若 <code>path.ends_with('/')</code> 则 <code>format!("{path}{default_name}")</code>，否则原样返回；fullchain → <code>fullchain.cer</code>、ca → <code>ca.cer</code>、key → <code>key</code>。与 <code>local</code> 的 <code>is_dir() || ends_with('/')</code> 区分，不执行远端 <code>test -d</code>。</li>
+<li><strong>存量兼容与去重</strong>：存量仅含 <code>cert_path</code> 的步骤经 <code>#[serde(alias="cert_path")]</code> 映射到 <code>fullchain_path</code>；<code>deploy</code> 在 <code>parse_input</code> 前调用 <code>without_legacy_alias</code>（与 <code>local</code> 同逻辑，<code>fullchain_path</code> 非空时移除旧 <code>cert_path</code> 键，新键优先），避免双键 <code>duplicate field</code>。前端别名回显已覆盖 <code>fullchain_path</code> 回显 <code>cert_path</code>。</li>
+<li><strong><code>example_input</code> 与 schema</strong>：<code>example_input</code> 更新为三文件示例 <code>{"credential_id":1,"fullchain_path":"/etc/ssl/example.com.fullchain.cer","ca_path":"/etc/ssl/example.com.ca.cer","key_path":"/etc/ssl/example.com.key","reload_command":"systemctl reload nginx"}</code>，<code>input_schema</code> 由 <code>schemars::JsonSchema</code> 从 <code>SshInput</code> 自动派生，不再含 <code>cert_path</code>。</li>
+</ul>
+<p><strong>表单两行两列</strong>：<code>cert.deploy</code> 选择 SSH 远程主机时，<code>config</code> 子表单 MUST 仅渲染档案引用与部署输入——<code>fullchain_path</code>/<code>ca_path</code>/<code>key_path</code> 三远端路径与 <code>reload_command</code>，不渲染 <code>host</code>/<code>port</code>/<code>user</code>/<code>auth</code>/<code>cert_mode</code>/<code>key_mode</code>/<code>cert_path</code>（由档案提供）。字段顺序由 <code>SSH_FIELDS = ["credential_id","bastion_credential_id","key_path","fullchain_path","ca_path","reload_command"]</code> 钉住，<code>tightenSshSchema</code> 中仅 <code>credential_id</code> 与 <code>bastion_credential_id</code> 设 <code>x-end-row</code>（各独占一行右侧空列），<code>reload_command</code> 不再独占——<code>key_path</code>+<code>fullchain_path</code> 同行（key 左、fullchain 右）、<code>ca_path</code>+<code>reload_command</code> 同行（ca 左、reload 右），两行两列；<code>credential_id</code>/<code>bastion_credential_id</code> 各独占一行。</p>
+<p><strong>跳板与 allowClear</strong>：<code>bastion_credential_id</code> 的 <code>x-visible-when: Not{Empty:"credential_id"}</code>、<code>x-options</code> 动态排除已选目标、<code>x-label="跳板机"</code> 保持不变；所有以 <code>x-options</code> 渲染的单选 <code>Select</code>（含 <code>credential_id</code>/<code>bastion_credential_id</code> 等）SHALL 启用 <code>allowClear</code>，用户可清空已选值回退到 <code>null</code>/缺省，清空后提交的 <code>config</code> 对应字段为 <code>null</code> 或缺失、<code>bastion_credential_id</code> 清空即不走跳板。多选与 <code>enum</code> 下拉不加。<code>bastion</code> 清空后部署直连目标主机。</p>
+<ul>
+<li><code>local</code>/<code>ssh</code>：3 文件走原子写（临时文件 + <code>rename</code>）、<code>parse_mode</code>/<code>set_mode</code>/<code>set_owner</code> 校验；任一文件失败则整体失败，已写临时文件清理。</li>
+<li><code>s3</code>/<code>webdav</code>：任一 PUT 失败即失败，不污染主存储；<code>DeployMode::SkipWrite</code>（指纹一致且非 <code>force</code>）时 3 文件路径均列入 <code>DeployOutcome.paths</code>，不发起写入。</li>
+<li>运行历史与部署日志中引用的路径 MUST 仅包含实际部署的 3 文件（<code>*.ca.cer</code> / <code>*.fullchain.cer</code> / <code>*.key</code>），MUST NOT 引用不存在的叶子 <code>*.cer</code>。</li>
+</ul>
+<h3 id="_72">实现索引<a class="headerlink" href="#_72" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>crates/acmecast-cert/src/pem.rs: split_chain / ca_pem_of</code> — 拆链纯函数（主存储与部署侧共用）</li>
+<li><code>crates/acmecast-cert/src/lib.rs: domain_file_prefix</code> — 公共前缀派生（<code>*.example.com</code> → <code>_wildcard.example.com</code>）</li>
+<li><code>crates/acmecast-store/src/repository/pipeline.rs: normalize_deploy_inputs / normalize_deploy_config</code> — 保存时按 target 补全目录写法并持久化</li>
+<li><code>crates/acmecast-deploy/src/targets/local.rs: LocalInput / files / resolve_target_path / normalize_local_config / derive_ca_path / without_legacy_alias</code> — <code>fullchain_path</code>/<code>ca_path</code>/<code>key_path</code> 三组路径+权限、目录路径按默认文件名写入、<code>ca_path</code> 派生与留空/拆链空跳过、<code>cert_path</code> 别名去重</li>
+<li><code>crates/acmecast-deploy/src/targets/ssh.rs: SshInput / ResolvedSshConfig / resolve_input</code> — 同 local 的别名回填与派生逻辑</li>
+<li><code>crates/acmecast-deploy/src/targets/s3.rs: S3Input</code> — <code>fullchain_filename</code>/<code>ca_filename</code>/<code>key_filename</code> 与 <code>cert_filename</code> 别名</li>
+<li><code>crates/acmecast-deploy/src/targets/webdav.rs: WebdavInput</code> — <code>fullchain_path</code>/<code>ca_path</code>/<code>key_path</code> 与 <code>cert_path</code> 别名</li>
+<li><code>crates/acmecast-deploy/src/targets/tencent.rs</code> — 2 文件上传（<code>CertificatePublicKey=chain_pem</code> + <code>CertificatePrivateKey=key_pem</code>），不拆 <code>ca.cer</code></li>
+<li><code>docs/07-deploy-targets.md</code> — 各目标字段表与共享 3 文件语义</li>
+</ul>
+<h2 id="s3-webdav">S3 与 WebDAV 部署目标（存储类目标）<a class="headerlink" href="#s3-webdav" title="Permanent link">&para;</a></h2>
+<p><code>s3</code> 与 <code>webdav</code> 为存储类文件部署目标，默认产出同为 3 文件（<code>fullchain.cer / ca.cer / key</code>），字段与 <code>local/ssh</code> 的目录补全规则同源，差异仅为对象键/URL 语义与前缀归一化。</p>
+<h3 id="s3">S3 部署目标<a class="headerlink" href="#s3" title="Permanent link">&para;</a></h3>
+<p><code>s3</code> 将证书材料以对象形式写入 S3 兼容存储。写入对象由 3 文件派生：默认对象键为 <code>&lt;prefix&gt;.fullchain.cer / &lt;prefix&gt;.ca.cer / &lt;prefix&gt;.key</code>（<code>&lt;prefix&gt;</code> = <code>domain_file_prefix(primary_domain)</code>，通配 <code>_wildcard</code>），不单独产生叶子 <code>cer</code>。输入字段：<code>credential_id</code>（必填，<code>deploy.s3</code> 凭据）、<code>prefix</code>（可选，对象键前缀）、<code>cert_filename</code>/<code>fullchain_filename</code>/<code>ca_filename</code>/<code>key_filename</code> 模板（可选，<code>cert_filename</code> 视为 <code>fullchain_filename</code> 别名）、<code>force_path_style</code>/<code>insecure_skip_verify</code>/<code>force</code> 均可选。凭据中取 <code>access_key</code>/<code>secret_key</code>（可选 <code>session_token</code>），流水线 input 不存明文。</p>
+<ul>
+<li>未自定义模板时对象键按主域派生 <code>fullchain.cer / ca.cer / key</code>，后缀对齐主存储，不产生旧 <code>cert.pem / key.pem</code>，亦不单独产生叶子 <code>cer</code>；自定义模板的 <code>{domain}</code> 占位替换为新 <code>prefix</code>。</li>
+<li><code>prefix</code> 归一化：去空白与首尾 <code>/</code> 后为空则 <code>""</code>，否则补 <code>/</code> 后缀（如 <code>acme</code> → <code>acme/</code>）；对象键为 <code>&lt;prefix&gt;{domain}.fullchain.cer</code> 等拼接结果。</li>
+<li>目录输入保存时按主域前缀补全：<code>cert_filename / fullchain_filename / ca_filename / key_filename</code> 以 <code>/</code> 结尾视为目录，保存时按同流水线 <code>cert.apply</code> 主域经 <code>domain_file_prefix</code> 补全为 <code>"&lt;目录&gt;&lt;prefix&gt;.fullchain.cer"</code> 等并持久化，主域缺失时回落 <code>"&lt;目录&gt;{domain}.fullchain.cer"</code> 占位、部署时展开；<code>ca.cer</code> 为空（单张链）时跳过 PUT 但 <code>paths</code> 仍列出。</li>
+<li>存量仅含 <code>cert_filename</code> 的配置视为 <code>fullchain_filename</code> 别名，<code>ca.cer</code> 按默认派生。</li>
+</ul>
+<h3 id="webdav">WebDAV 部署目标<a class="headerlink" href="#webdav" title="Permanent link">&para;</a></h3>
+<p><code>webdav</code> 将证书材料写入 WebDAV，默认路径为 <code>&lt;prefix&gt;.fullchain.cer / &lt;prefix&gt;.ca.cer / &lt;prefix&gt;.key</code> 3 文件（通配 <code>_wildcard</code>）。输入字段：<code>credential_id</code>（必填，<code>deploy.webdav</code> 凭据）、<code>base_path</code>（可选）、<code>cert_path</code>/<code>fullchain_path</code>/<code>ca_path</code>/<code>key_path</code> 模板（可选，<code>cert_path</code> 视为 <code>fullchain_path</code> 别名）、<code>insecure_skip_verify</code>/<code>force</code> 均可选。<code>ca.cer</code> 按拆链规则生成。</p>
+<ul>
+<li><code>base_path</code> 归一化同 <code>prefix</code>（空则 <code>""</code>，否则 <code>&lt;base&gt;/</code>）。</li>
+<li>路径/模板字段以 <code>/</code> 结尾视为目录：保存时 MUST 按同流水线 <code>cert.apply</code> 主域补全为目录 + <code>&lt;prefix&gt;.fullchain.cer / &lt;prefix&gt;.ca.cer / &lt;prefix&gt;.key</code> 并持久化，主域缺失时回落 <code>{domain}</code> 占位、部署时展开；<code>ca_path</code> 目录同样触发补全。</li>
+</ul>
+<h3 id="_73">路径拼接单斜杠归一化<a class="headerlink" href="#_73" title="Permanent link">&para;</a></h3>
+<p><code>s3</code> 与 <code>webdav</code> 拼接 <code>prefix</code> / <code>base_path</code> 与文件路径（含以 <code>/</code> 开头的绝对路径）时，衔接处 MUST 只有且仅有一个 <code>/</code>，路径内部的连续 <code>/</code> MUST 一并折叠；协议部分（<code>s3://</code> / <code>https://</code>）单独组装，不受归一化影响。实现由 <code>crates/acmecast-deploy/src/targets/mod.rs::join_path(base, path)</code> 统一：剥 <code>base</code> 尾部 <code>/</code> 与 <code>path</code> 头部 <code>/</code> 后单 <code>/</code> 衔接，<code>webdav_paths</code> 的 URL 与 S3 的 3 个展示键 + 实际 <code>PUT</code> 键共 4 个拼接点全部接入。</p>
+<h3 id="_74">目录补全持久化与执行期兜底<a class="headerlink" href="#_74" title="Permanent link">&para;</a></h3>
+<p>文件类目标的路径字段以 <code>/</code> 结尾视为目录时，系统 MUST 在 <code>PipelineRepository::save</code> 阶段即补全并写回 DB，前端回显即为补全后的完整路径；部署执行期 MUST 保留以 <code>/</code> 结尾的兜底补全，确保未重保存的历史配置仍可部署成功。保存后回显与部署时动态补全的文件名同为 <code>&lt;prefix&gt;.fullchain.cer / &lt;prefix&gt;.ca.cer / &lt;prefix&gt;.key</code>，与 <code>certs/ssl/</code> 落盘命名同源。</p>
+<h3 id="s3webdav">S3/WebDAV 上传超时与代理继承<a class="headerlink" href="#s3webdav" title="Permanent link">&para;</a></h3>
+<p>S3 与 WebDAV 的部署上传（S3 <code>PutObject</code>、WebDAV <code>MKCOL</code>/<code>PUT</code>）MUST 受 <code>[network] timeout_secs</code> / <code>ACMECAST_NETWORK_TIMEOUT_SECS</code> 超时约束（默认 30 秒），超时以可读错误失败（S3 含 bucket 与对象键、WebDAV 含 URL），绝不永久挂起。跳过写入（<code>skipped_write</code>）时不发起网络调用，不受超时约束；目录补全不改变超时语义，超时仍以最终补全后的对象键/URL 计时与报错。凭据 <code>proxy_mode=inherit</code> 时 MUST 继承全局代理（<code>[proxy] url</code> / <code>ACMECAST_PROXY_URL</code>），与 DNS 提供商同口径。</p>
+<h2 id="_75">部署目录补全的执行可靠性与日志增强<a class="headerlink" href="#_75" title="Permanent link">&para;</a></h2>
+<p>承接上节目录补全，<code>cert.deploy</code> 在执行期的可靠性与可观测性按本节增强，覆盖 SSH 写入可见性、逐行路径日志、指纹收敛，与目录补全的持久化/兜底同源（<code>domain_file_prefix</code>，通配 <code>*.example.com</code> → <code>_wildcard.example.com</code>）。</p>
+<h3 id="ssh">SSH 远端写入失败必须可见<a class="headerlink" href="#ssh" title="Permanent link">&para;</a></h3>
+<p><code>ssh</code> 目标的远端命令通道 MUST 只以 <code>ExitStatus</code> 为终态判定结果——<code>Eof</code> 先于退出码到达时 MUST NOT 提前结束等待并把退出码默认为 0；命令不发退出码时由既有超时兜底。远端写入脚本 MUST 在写入前 <code>mkdir -p '&lt;父目录&gt;'</code>（与 <code>local</code> 的 <code>create_dir_all</code> 同口径），任何一步失败 MUST 以 <code>远端写入失败（退出码 N）: …</code> 的可读错误失败，MUST NOT 误报部署成功。实现上远端写入脚本提取为 <code>remote_write_script</code>，顺序为 <code>mkdir -p</code> → 临时写入 → 替换，确保 <code>/tmp/t1/</code> 这类目录补全后的父目录不存在时自动创建。</p>
+<h3 id="_76">步骤日志逐行列出传输目标路径<a class="headerlink" href="#_76" title="Permanent link">&para;</a></h3>
+<p><code>cert.deploy</code> 步骤日志对非 <code>tencent-ssl</code> 目标（<code>local / ssh / s3 / webdav</code>）MUST 在 <code>已部署到目标 &lt;target&gt;</code> 摘要行之后逐行列出本次传输的目标路径（每个文件一行，形如 <code>→ &lt;路径&gt;</code>，与 <code>DeployOutcome.paths</code> 一致，含跳过写入时）；<code>tencent-ssl</code> 为云 API 语义（无文件路径）MUST NOT 输出逐行路径，仅保留结构化证书 ID 输出。该逐行日志便于按路径到目标上逐一核对。</p>
+<h3 id="ssh_1">SSH 证书写入先于重载且失败不掩盖<a class="headerlink" href="#ssh_1" title="Permanent link">&para;</a></h3>
+<p><code>SshTarget::deploy</code> 在 <code>DeployMode::Write</code> 时 MUST 先完成全部远端文件写入（<code>fullchain.cer</code>/<code>ca.cer</code>/<code>key</code>，<code>ca</code> 可选）再执行 <code>reload_command</code>，任一 <code>write_file</code> 失败 MUST 以可读错误整体失败且不再执行重载，避免“重载成功掩盖写入失败”；跳板与直连路径的写入清单同为 <code>ssh_files()</code> 展开结果，目录补全（<code>/tmp/t1/</code> → <code>_wildcard.*</code>）在跳板链路同样生效。</p>
+<h3 id="ssh_2">SSH 跳板机使用写入运行日志<a class="headerlink" href="#ssh_2" title="Permanent link">&para;</a></h3>
+<p>当 <code>cert.deploy</code> 的 <code>target</code> 为 <code>ssh</code> 且 <code>config.bastion_credential_id</code> 非空时，系统 MUST 在 <code>deploy targets:</code> 与可选的 <code>proxy: via ...</code> 日志之后写入一条 <code>bastion: via &lt;host[:port]&gt; (id=...)</code> 的信息日志以表明经跳板连接，失败分支亦保留；直连（<code>bastion_credential_id</code> 为空/缺失）时 MUST NOT 输出该行，日志不含口令或密钥（与上节跳板机章节的引用与连接流程一致，此处为日志可观测性约束）。</p>
+<h3 id="cloudtencent_1">非 cloud.tencent 目标每次上传不检测指纹<a class="headerlink" href="#cloudtencent_1" title="Permanent link">&para;</a></h3>
+<p>除 <code>target</code> 为 <code>cloud.tencent</code> / <code>tencent-ssl</code> 外，所有 <code>cert.deploy</code> 目标（<code>ssh</code>/<code>local</code>/<code>s3</code>/<code>webdav</code> 等）MUST 每次均以 <code>DeployMode::Write</code> 执行，不检测指纹是否一致，不触发 <code>skipped_write</code>；仅 <code>cloud.tencent</code> / <code>tencent-ssl</code> 在指纹与上次一致且未强制时可跳过写入但仍执行重载。存量 <code>DeploymentEntry</code> 的旧指纹保留但不再参与非腾讯云目标的判定。</p>
+<h3 id="_77">实现索引（本节）<a class="headerlink" href="#_77" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>crates/acmecast-deploy/src/targets/ssh.rs: run_channel / remote_write_script</code> — 仅认 <code>ExitStatus</code>，<code>mkdir -p</code> 父目录</li>
+<li><code>crates/acmecast-server/src/steps/deploy.rs: CertDeployStep::execute</code> — 逐行 <code>→ &lt;路径&gt;</code> 日志（非 <code>tencent-ssl</code>）与 <code>bastion: via</code> 日志</li>
+<li><code>crates/acmecast-deploy/src/targets/ssh.rs: SshTarget::deploy</code> — 写入先于重载、失败短路</li>
+<li><code>crates/acmecast-deploy/src/deployer.rs: decide_mode</code> — 仅 <code>tencent-ssl</code> / <code>cloud.tencent</code> 走指纹一致判定，其余强制 <code>Write</code></li>
+<li><code>crates/acmecast-deploy/src/targets/mod.rs: join_path</code> — 单斜杠归一化（与上节 S3/WebDAV 拼接共用）</li>
+</ul>
+<p>当目标主机不在公网或被防火墙隔离、仅可通过一台跳板机访问时，<code>cert.deploy(ssh)</code> 支持引用另一份 <code>deploy.ssh</code> 凭据作为跳板机，经跳板机的 SSH <code>direct-tcpip</code> channel 转发到目标主机。跳板是流水线步骤层面的组合，<code>deploy.ssh</code> 凭据类型与 <code>SshHostFields</code> 字段不变。</p>
+<h3 id="bastion_credential_id">跳板凭据引用（<code>bastion_credential_id</code>）<a class="headerlink" href="#bastion_credential_id" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>SshInput</code> 新增可选字段 <code>bastion_credential_id: Option&lt;i64&gt;</code>（<code>#[serde(default)]</code>），引用另一份 <code>deploy.ssh</code> 凭据作为跳板机。留空或缺失表示不使用跳板，部署直连目标主机。</li>
+<li><code>bastion_credential_id</code> 与顶层 <code>credential_id</code>（目标主机档案）SHALL NOT 引用同一份凭据；相同时部署 MUST 在执行前失败，错误指出「目标与跳板不可引用同一份凭据」并定位到 <code>bastion_credential_id</code> 字段。</li>
+<li>跳板凭据提供跳板机的连接信息（host/port/user）与认证材料；目标凭据提供目标主机的连接信息与认证材料，二者独立解析、独立认证。</li>
+<li>跳板凭据不存在时部署执行前 MUST 失败，报错包含被引用的凭据标识并定位到 <code>bastion_credential_id</code> 字段。</li>
+</ul>
+<h3 id="_78">独立解析与认证<a class="headerlink" href="#_78" title="Permanent link">&para;</a></h3>
+<ul>
+<li>执行时系统分别解析跳板凭据与目标凭据，各自取出 <code>SshHostFields</code>（host/port/user/auth/proxy_url），互不影响。跳板凭据的认证材料在执行时从凭据系统解出，MUST NOT 出现在流水线配置或运行历史中。</li>
+<li>跳板路径与目标路径各自使用对应凭据的出网代理配置（<code>proxy_mode</code> / <code>proxy_url</code>）。跳板凭据配了代理时先经代理隧道连跳板机，再从跳板机转发到目标主机；跳板到目标的 <code>direct-tcpip</code> 转发段不走代理。</li>
+<li>跳板凭据字段校验复用 <code>SshHostFields::validate</code>，校验报错口径独立指向 <code>bastion_credential_id.*</code>，与目标档案的问题分开报。</li>
+<li><code>resolve_input</code> 签名新增 <code>bastion_profile: Option&lt;&amp;SshHostFields&gt;</code> 参数，非空时构建 <code>BastionConfig</code>（host/port/user/auth/proxy_url）。</li>
+</ul>
+<h3 id="_79">连接流程<a class="headerlink" href="#_79" title="Permanent link">&para;</a></h3>
+<p>配置了跳板机时 SSH 连接分两步：</p>
+<ol>
+<li>先 SSH 连接跳板机并用跳板凭据的材料认证（如有代理则先建代理隧道）。</li>
+<li>在跳板机会话上开 <code>direct-tcpip</code> channel（RFC 4254）转发到目标主机，channel 转为双向流后在其上建立目标 SSH 会话并用目标凭据的材料认证。</li>
+<li>目标会话完成文件写入与重载命令执行。</li>
+</ol>
+<p>跳板 Handle 随 transport 一起存活（<code>_bastion_session: Option&lt;Handle&gt;</code>），防止跳板会话被提前 drop 导致转发流断开。直连路径 <code>_bastion_session</code> 为 <code>None</code>，行为不变。</p>
+<h3 id="_80">超时口径<a class="headerlink" href="#_80" title="Permanent link">&para;</a></h3>
+<ul>
+<li>跳板连接 + 跳板认证：单个 timeout（与既有 <code>connect_ssh</code> + 认证口径一致）。</li>
+<li><code>direct-tcpip</code> channel 开 + <code>connect_stream</code> + 目标认证：单个 timeout。</li>
+<li>文件写入 / 命令执行：各自 timeout（既有逻辑不变）。</li>
+<li>叠加代理时，代理 TCP 连接阶段不计时（既有行为），计时从代理隧道 TCP 流建立完成后开始。</li>
+<li>超时错误 MUST 包含跳板机与目标主机信息（地址 + 端口）以助排障，跳板失败含「跳板机」前缀，目标失败含「目标主机」前缀。</li>
+</ul>
+<h3 id="_81">前端步骤表单联动<a class="headerlink" href="#_81" title="Permanent link">&para;</a></h3>
+<ul>
+<li>SSH 变体子表单新增 <code>bastion_credential_id</code> 字段（标签「跳板机」），排在 <code>credential_id</code>（SSH 主机档案）之后、路径字段之前，设 <code>x-end-row</code>（独占一行右侧空列）。</li>
+<li>该字段仅在 <code>credential_id</code> 已选择后显示（<code>x-visible-when: { Not: { Empty: "credential_id" } }</code>，<code>Condition</code> 新增 <code>Not</code> 变体取反）；未选目标时不渲染。</li>
+<li>跳板下拉选项列出所有 <code>deploy.ssh</code> 凭据，SHALL 排除当前已选为目标（<code>credential_id</code>）的那一项；目标切换时选项刷新（<code>Form.useWatch</code> 监听 <code>credential_id</code> 变化重算 <code>x-options</code>）。</li>
+<li><code>bastion_credential_id</code> 默认留空（不使用跳板），SHALL NOT 为必填。保存时留空则写入 null。</li>
+<li>连通性测试（<code>probe_host</code>）不涉及跳板——测的是单台主机档案。</li>
+</ul>
+<h3 id="_82">作用域与不变量<a class="headerlink" href="#_82" title="Permanent link">&para;</a></h3>
+<ul>
+<li>不支持多级跳板（ProxyJump 链），仅单级。</li>
+<li>不在凭据中新增跳板字段——跳板是部署时的组合。</li>
+<li>不引入 known_hosts / 主机指纹校验。</li>
+<li>跳板功能不改变 3 文件布局、别名回填、原子写入与权限校验等既有逻辑。</li>
+</ul>
+<h3 id="_83">实现索引<a class="headerlink" href="#_83" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>crates/acmecast-deploy/src/targets/ssh.rs: SshInput</code> — <code>bastion_credential_id: Option&lt;i64&gt;</code> 字段</li>
+<li><code>crates/acmecast-deploy/src/targets/ssh.rs: BastionConfig</code> — 跳板执行配置（host/port/user/auth/proxy_url）</li>
+<li><code>crates/acmecast-deploy/src/targets/ssh.rs: ResolvedSshConfig</code> — 新增 <code>bastion: Option&lt;BastionConfig&gt;</code></li>
+<li><code>crates/acmecast-deploy/src/targets/ssh.rs: resolve_input</code> — 新增 <code>bastion_profile</code> 参数，构建 <code>BastionConfig</code>，校验报错指向 <code>bastion_credential_id.*</code></li>
+<li><code>crates/acmecast-deploy/src/targets/ssh.rs: SshTarget::deploy</code> — 解析跳板凭据、校验不可与目标相同、传给 <code>resolve_input</code></li>
+<li><code>crates/acmecast-deploy/src/targets/ssh.rs: RusshTransport</code> — <code>_bastion_session: Option&lt;Handle&gt;</code> 持有跳板会话</li>
+<li><code>crates/acmecast-deploy/src/targets/ssh.rs: RusshConnector::connect_via_bastion</code> — 两跳连接与认证，错误区分跳板/目标前缀</li>
+<li><code>frontend/src/pages/pipelines/PipelineEditorPage.tsx: SSH_FIELDS / SSH_LABELS / tightenSshSchema / withFieldOptions</code> — 跳板字段渲染、<code>x-visible-when</code>、<code>x-end-row</code>、<code>x-options</code> 动态排除目标</li>
+<li><code>frontend/src/components/SchemaForm.tsx: Condition</code> — <code>Not</code> 变体与 <code>conditionSatisfied</code> 取反</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-circle-arrow-up" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m16 12-4-4-4 4M12 16V8"/></svg>
+  回到页面顶部
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      Copyright &copy;  Jetsung Chan · Apache-2.0
+    </div>
+  
+  
+    Made with
+    <a href="https://zensical.org/" target="_blank" rel="noopener">
+      Zensical
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog" role="status" aria-atomic="true">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      
+      
+        
+        
+      <script id="__config" type="application/json">{"annotate":null,"base":"..","features":["announce.dismiss","content.code.annotate","content.code.copy","content.code.select","content.footnote.tooltips","content.tabs.link","content.tooltips","navigation.footer","navigation.indexes","navigation.instant","navigation.instant.prefetch","navigation.path","navigation.sections","navigation.top","navigation.tracking","search.highlight"],"redirect":null,"search":"../assets/javascripts/workers/search.c47bb847.min.js","tags":null,"translations":{"clipboard.copied":"已复制","clipboard.copy":"复制","clipboard.error":"Could not copy to clipboard","search.result.more.one":"在该页上还有 1 个符合条件的结果","search.result.more.other":"在该页上还有 # 个符合条件的结果","search.result.none":"没有找到符合条件的结果","search.result.one":"找到 1 个符合条件的结果","search.result.other":"# 个符合条件的结果","search.result.placeholder":"键入以开始搜索","search.result.term.missing":"缺少","select.version":"选择当前版本"},"version":null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.a2388154.min.js"></script>
+      
+    
+  </body>
+</html>

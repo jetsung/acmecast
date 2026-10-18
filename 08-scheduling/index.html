@@ -11,6 +11,7 @@
       
       
       
+      
         <link rel="prev" href="../07-deploy-targets/">
       
       
@@ -21,23 +22,23 @@
       
       
       <link rel="icon" href="../assets/images/favicon.png">
-      <meta name="generator" content="zensical-0.0.68">
+      <meta name="generator" content="zensical-0.0.71">
     
     
       
-        <title>定时调度与自动续期 - acmecast</title>
+        <title>定时调度与自动续期 - AcmeCast</title>
       
     
     
       
         
       
-      <link rel="stylesheet" href="../assets/stylesheets/modern/main.595f2bf5.min.css">
+      <link rel="stylesheet" href="../assets/stylesheets/modern/main.e442bf79.min.css">
       
         
           
         
-        <link rel="stylesheet" href="../assets/stylesheets/modern/palette.b27955a4.min.css">
+        <link rel="stylesheet" href="../assets/stylesheets/modern/palette.b60ce83d.min.css">
       
       
 
@@ -96,7 +97,7 @@
 
 <header class="md-header md-header--shadow" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="页眉">
-    <a href="./.." title="acmecast" class="md-header__button md-logo" aria-label="acmecast" data-md-component="logo">
+    <a href="./.." title="AcmeCast" class="md-header__button md-logo" aria-label="AcmeCast" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 5v16M20.001 19A2 2 0 0 0 22 17V5a2 2 0 0 0-1.999-2L16 3.002A5 5 0 0 0 12 5a5 5 0 0 0-4-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 1.999 2H8a5 5 0 0 1 4 2 5 5 0 0 1 4-2z"/></svg>
@@ -110,7 +111,7 @@
       <div class="md-header__ellipsis">
         <div class="md-header__topic">
           <span class="md-ellipsis">
-            acmecast
+            AcmeCast
           </span>
         </div>
         <div class="md-header__topic" data-md-component="header-topic">
@@ -215,13 +216,13 @@
 
 <nav class="md-nav md-nav--primary" aria-label="导航栏" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href="./.." title="acmecast" class="md-nav__button md-logo" aria-label="acmecast" data-md-component="logo">
+    <a href="./.." title="AcmeCast" class="md-nav__button md-logo" aria-label="AcmeCast" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 5v16M20.001 19A2 2 0 0 0 22 17V5a2 2 0 0 0-1.999-2L16 3.002A5 5 0 0 0 12 5a5 5 0 0 0-4-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 1.999 2H8a5 5 0 0 1 4 2 5 5 0 0 1 4-2z"/></svg>
 
     </a>
-    acmecast
+    AcmeCast
   </label>
   
     <div class="md-nav__source">
@@ -767,6 +768,32 @@
   
 
     
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../16-favicon-logo/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Favicon LOGO 生成提示词
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
   </ul>
 </nav>
                   </div>
@@ -927,7 +954,7 @@
 <tr>
 <td>续期阈值</td>
 <td>30 天</td>
-<td>证书剩余有效期 ≤ 该值进入续期窗口</td>
+<td>证书剩余有效期 ≤ 该值进入续期窗口；调度级 <code>renewal_threshold_days</code>（1-90）可按流水线覆盖该全局值</td>
 </tr>
 <tr>
 <td>去重窗口</td>
@@ -936,6 +963,7 @@
 </tr>
 </tbody>
 </table>
+<p>已设置 <code>renew_before_days</code> 的流水线自动与调度关联：保存时将流水线 <code>domains</code> 同步到调度的 <code>renewal_domains</code> 并将阈值落 <code>renewal_threshold_days</code>（无调度时带 <code>auto_schedule_cron</code> 一并创建，否则返回警告待补 cron；清空后同步清除阈值/域名）。</p>
 <h2 id="cron">cron 触发<a class="headerlink" href="#cron" title="Permanent link">&para;</a></h2>
 <ul>
 <li>支持 <strong>5 段 Unix cron</strong>（<code>分 时 日 月 周</code>，如 <code>0 3 * * *</code>，自动补零按
@@ -975,9 +1003,9 @@
 <h2 id="api">API 速查<a class="headerlink" href="#api" title="Permanent link">&para;</a></h2>
 <ul>
 <li><code>GET /api/schedules</code>：列出全部调度（含 <code>last_triggered_at</code>、
-  <code>next_trigger_at</code>）</li>
+  <code>next_trigger_at</code>、<code>renewal_threshold_days</code>）</li>
 <li><code>POST /api/schedules</code>：创建/更新，字段：
-  <code>{pipeline_id, cron?, enabled=true, catch_up?, renewal_domains?}</code></li>
+  <code>{pipeline_id, cron?, enabled=true, catch_up?, renewal_domains?, renewal_threshold_days?}</code>（阈值 1-90，空跟随全局）</li>
 <li><code>GET /api/schedules/trigger-logs?pipeline_id=&amp;page=&amp;page_size=</code>：触发审计</li>
 </ul>
 <p>续期域名集合保存时规范化为小写、去重、排序（与证书域名同一套规则）。</p>
@@ -1091,10 +1119,10 @@
       
         
         
-      <script id="__config" type="application/json">{"annotate":null,"base":"..","features":["announce.dismiss","content.code.annotate","content.code.copy","content.code.select","content.footnote.tooltips","content.tabs.link","content.tooltips","navigation.footer","navigation.indexes","navigation.instant","navigation.instant.prefetch","navigation.path","navigation.sections","navigation.top","navigation.tracking","search.highlight"],"redirect":null,"search":"../assets/javascripts/workers/search.7d14d953.min.js","tags":null,"translations":{"clipboard.copied":"已复制","clipboard.copy":"复制","clipboard.error":"Could not copy to clipboard","search.result.more.one":"在该页上还有 1 个符合条件的结果","search.result.more.other":"在该页上还有 # 个符合条件的结果","search.result.none":"没有找到符合条件的结果","search.result.one":"找到 1 个符合条件的结果","search.result.other":"# 个符合条件的结果","search.result.placeholder":"键入以开始搜索","search.result.term.missing":"缺少","select.version":"选择当前版本"},"version":null}</script>
+      <script id="__config" type="application/json">{"annotate":null,"base":"..","features":["announce.dismiss","content.code.annotate","content.code.copy","content.code.select","content.footnote.tooltips","content.tabs.link","content.tooltips","navigation.footer","navigation.indexes","navigation.instant","navigation.instant.prefetch","navigation.path","navigation.sections","navigation.top","navigation.tracking","search.highlight"],"redirect":null,"search":"../assets/javascripts/workers/search.c47bb847.min.js","tags":null,"translations":{"clipboard.copied":"已复制","clipboard.copy":"复制","clipboard.error":"Could not copy to clipboard","search.result.more.one":"在该页上还有 1 个符合条件的结果","search.result.more.other":"在该页上还有 # 个符合条件的结果","search.result.none":"没有找到符合条件的结果","search.result.one":"找到 1 个符合条件的结果","search.result.other":"# 个符合条件的结果","search.result.placeholder":"键入以开始搜索","search.result.term.missing":"缺少","select.version":"选择当前版本"},"version":null}</script>
     
     
-      <script src="../assets/javascripts/bundle.3c842f4c.min.js"></script>
+      <script src="../assets/javascripts/bundle.a2388154.min.js"></script>
       
     
   </body>

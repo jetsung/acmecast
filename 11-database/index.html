@@ -11,6 +11,7 @@
       
       
       
+      
         <link rel="prev" href="../10-certificates/">
       
       
@@ -21,23 +22,23 @@
       
       
       <link rel="icon" href="../assets/images/favicon.png">
-      <meta name="generator" content="zensical-0.0.68">
+      <meta name="generator" content="zensical-0.0.71">
     
     
       
-        <title>数据库与数据目录 - acmecast</title>
+        <title>数据库与数据目录 - AcmeCast</title>
       
     
     
       
         
       
-      <link rel="stylesheet" href="../assets/stylesheets/modern/main.595f2bf5.min.css">
+      <link rel="stylesheet" href="../assets/stylesheets/modern/main.e442bf79.min.css">
       
         
           
         
-        <link rel="stylesheet" href="../assets/stylesheets/modern/palette.b27955a4.min.css">
+        <link rel="stylesheet" href="../assets/stylesheets/modern/palette.b60ce83d.min.css">
       
       
 
@@ -96,7 +97,7 @@
 
 <header class="md-header md-header--shadow" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="页眉">
-    <a href="./.." title="acmecast" class="md-header__button md-logo" aria-label="acmecast" data-md-component="logo">
+    <a href="./.." title="AcmeCast" class="md-header__button md-logo" aria-label="AcmeCast" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 5v16M20.001 19A2 2 0 0 0 22 17V5a2 2 0 0 0-1.999-2L16 3.002A5 5 0 0 0 12 5a5 5 0 0 0-4-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 1.999 2H8a5 5 0 0 1 4 2 5 5 0 0 1 4-2z"/></svg>
@@ -110,7 +111,7 @@
       <div class="md-header__ellipsis">
         <div class="md-header__topic">
           <span class="md-ellipsis">
-            acmecast
+            AcmeCast
           </span>
         </div>
         <div class="md-header__topic" data-md-component="header-topic">
@@ -215,13 +216,13 @@
 
 <nav class="md-nav md-nav--primary" aria-label="导航栏" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href="./.." title="acmecast" class="md-nav__button md-logo" aria-label="acmecast" data-md-component="logo">
+    <a href="./.." title="AcmeCast" class="md-nav__button md-logo" aria-label="AcmeCast" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 5v16M20.001 19A2 2 0 0 0 22 17V5a2 2 0 0 0-1.999-2L16 3.002A5 5 0 0 0 12 5a5 5 0 0 0-4-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 1.999 2H8a5 5 0 0 1 4 2 5 5 0 0 1 4-2z"/></svg>
 
     </a>
-    acmecast
+    AcmeCast
   </label>
   
     <div class="md-nav__source">
@@ -779,6 +780,32 @@
   
 
     
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../16-favicon-logo/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Favicon LOGO 生成提示词
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
   </ul>
 </nav>
                   </div>
@@ -1023,13 +1050,14 @@
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>├── acmecast.db                 # SQLite 默认库（用 MySQL/PG 时无此文件）
 </span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>├── config.toml                 # 自动生成的配置模板
 </span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>└── certs/
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    ├── &lt;指纹&gt;/
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    │   ├── &lt;主域名&gt;.cert.pem   # 证书链
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    │   └── &lt;主域名&gt;.key.pem    # 私钥（0600）
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    └── revoked/&lt;指纹&gt;/         # 已吊销证书的归档（只换目录不改名）
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    ├── ssl/                    # 扁平活跃目录（仅保留最新，同域名覆盖）
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    │   ├── &lt;主域名&gt;.cer / &lt;主域名&gt;.ca.cer / &lt;主域名&gt;.fullchain.cer   # 证书链（0600）
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    │   └── &lt;主域名&gt;.key    # 私钥（0600）
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    ├── archived/&lt;指纹&gt;/        # 被续期/重签替换的旧证书归档（按旧指纹隔离，只换目录不改名）
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    └── revoked/&lt;指纹&gt;/         # 已吊销证书的归档（按指纹隔离，只换目录不改名）
 </span></code></pre></div>
 <p>文件名规则：主域名作前缀，通配符 <code>*</code> 换成 <code>_</code>
-（<code>*.example.com</code> → <code>_.example.com.cert.pem</code>）；多域名取第一个。</p>
+（<code>*.example.com</code> → <code>_wildcard.example.com.cer</code>）；多域名取第一个。</p>
 <h3 id="_6">权限<a class="headerlink" href="#_6" title="Permanent link">&para;</a></h3>
 <ul>
 <li>数据目录打开时若权限过宽（对属主之外有任何放行）会被<strong>收紧为 0700</strong> 并记
@@ -1148,10 +1176,10 @@ Docker 部署时目录挂载到宿主机，注意容器以 uid 65532 运行，�
       
         
         
-      <script id="__config" type="application/json">{"annotate":null,"base":"..","features":["announce.dismiss","content.code.annotate","content.code.copy","content.code.select","content.footnote.tooltips","content.tabs.link","content.tooltips","navigation.footer","navigation.indexes","navigation.instant","navigation.instant.prefetch","navigation.path","navigation.sections","navigation.top","navigation.tracking","search.highlight"],"redirect":null,"search":"../assets/javascripts/workers/search.7d14d953.min.js","tags":null,"translations":{"clipboard.copied":"已复制","clipboard.copy":"复制","clipboard.error":"Could not copy to clipboard","search.result.more.one":"在该页上还有 1 个符合条件的结果","search.result.more.other":"在该页上还有 # 个符合条件的结果","search.result.none":"没有找到符合条件的结果","search.result.one":"找到 1 个符合条件的结果","search.result.other":"# 个符合条件的结果","search.result.placeholder":"键入以开始搜索","search.result.term.missing":"缺少","select.version":"选择当前版本"},"version":null}</script>
+      <script id="__config" type="application/json">{"annotate":null,"base":"..","features":["announce.dismiss","content.code.annotate","content.code.copy","content.code.select","content.footnote.tooltips","content.tabs.link","content.tooltips","navigation.footer","navigation.indexes","navigation.instant","navigation.instant.prefetch","navigation.path","navigation.sections","navigation.top","navigation.tracking","search.highlight"],"redirect":null,"search":"../assets/javascripts/workers/search.c47bb847.min.js","tags":null,"translations":{"clipboard.copied":"已复制","clipboard.copy":"复制","clipboard.error":"Could not copy to clipboard","search.result.more.one":"在该页上还有 1 个符合条件的结果","search.result.more.other":"在该页上还有 # 个符合条件的结果","search.result.none":"没有找到符合条件的结果","search.result.one":"找到 1 个符合条件的结果","search.result.other":"# 个符合条件的结果","search.result.placeholder":"键入以开始搜索","search.result.term.missing":"缺少","select.version":"选择当前版本"},"version":null}</script>
     
     
-      <script src="../assets/javascripts/bundle.3c842f4c.min.js"></script>
+      <script src="../assets/javascripts/bundle.a2388154.min.js"></script>
       
     
   </body>

@@ -11,6 +11,7 @@
       
       
       
+      
         <link rel="prev" href="../05-pipelines/">
       
       
@@ -21,23 +22,23 @@
       
       
       <link rel="icon" href="../assets/images/favicon.png">
-      <meta name="generator" content="zensical-0.0.68">
+      <meta name="generator" content="zensical-0.0.71">
     
     
       
-        <title>DNS 提供商与传播检查 - acmecast</title>
+        <title>DNS 提供商与传播检查 - AcmeCast</title>
       
     
     
       
         
       
-      <link rel="stylesheet" href="../assets/stylesheets/modern/main.595f2bf5.min.css">
+      <link rel="stylesheet" href="../assets/stylesheets/modern/main.e442bf79.min.css">
       
         
           
         
-        <link rel="stylesheet" href="../assets/stylesheets/modern/palette.b27955a4.min.css">
+        <link rel="stylesheet" href="../assets/stylesheets/modern/palette.b60ce83d.min.css">
       
       
 
@@ -96,7 +97,7 @@
 
 <header class="md-header md-header--shadow" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="页眉">
-    <a href="./.." title="acmecast" class="md-header__button md-logo" aria-label="acmecast" data-md-component="logo">
+    <a href="./.." title="AcmeCast" class="md-header__button md-logo" aria-label="AcmeCast" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 5v16M20.001 19A2 2 0 0 0 22 17V5a2 2 0 0 0-1.999-2L16 3.002A5 5 0 0 0 12 5a5 5 0 0 0-4-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 1.999 2H8a5 5 0 0 1 4 2 5 5 0 0 1 4-2z"/></svg>
@@ -110,7 +111,7 @@
       <div class="md-header__ellipsis">
         <div class="md-header__topic">
           <span class="md-ellipsis">
-            acmecast
+            AcmeCast
           </span>
         </div>
         <div class="md-header__topic" data-md-component="header-topic">
@@ -215,13 +216,13 @@
 
 <nav class="md-nav md-nav--primary" aria-label="导航栏" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href="./.." title="acmecast" class="md-nav__button md-logo" aria-label="acmecast" data-md-component="logo">
+    <a href="./.." title="AcmeCast" class="md-nav__button md-logo" aria-label="AcmeCast" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 5v16M20.001 19A2 2 0 0 0 22 17V5a2 2 0 0 0-1.999-2L16 3.002A5 5 0 0 0 12 5a5 5 0 0 0-4-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 1.999 2H8a5 5 0 0 1 4 2 5 5 0 0 1 4-2z"/></svg>
 
     </a>
-    acmecast
+    AcmeCast
   </label>
   
     <div class="md-nav__source">
@@ -505,10 +506,32 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#doh" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        提供商感知的 DoH 排序
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#doh_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        DoH 代理自动回退
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#_4" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        自定义解析器
+        自定义解析器（腾讯云手动配置）
       </span>
     </span>
   </a>
@@ -539,6 +562,56 @@
       </span>
     </span>
   </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cname" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        通配符与 CNAME 的排障
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="通配符与 CNAME 的排障">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#zone-_acme-challenge" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        泛解析（<code>*.&lt;zone&gt;</code>）不要把 <code>_acme-challenge</code> 也套进去
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cname-txt" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>CNAME</code> 与 <code>TXT</code> 同名互斥
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#domain-alias-cname" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        domain-alias 模式（CNAME 目标不带挑战前缀）
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -784,6 +857,32 @@
   
 
     
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../16-favicon-logo/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Favicon LOGO 生成提示词
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
   </ul>
 </nav>
                   </div>
@@ -870,10 +969,32 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#doh" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        提供商感知的 DoH 排序
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#doh_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        DoH 代理自动回退
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#_4" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        自定义解析器
+        自定义解析器（腾讯云手动配置）
       </span>
     </span>
   </a>
@@ -904,6 +1025,56 @@
       </span>
     </span>
   </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cname" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        通配符与 CNAME 的排障
+      </span>
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="通配符与 CNAME 的排障">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#zone-_acme-challenge" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        泛解析（<code>*.&lt;zone&gt;</code>）不要把 <code>_acme-challenge</code> 也套进去
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cname-txt" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>CNAME</code> 与 <code>TXT</code> 同名互斥
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#domain-alias-cname" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        domain-alias 模式（CNAME 目标不带挑战前缀）
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -962,6 +1133,18 @@
 <td><code>access_key_id</code>、<code>access_key_secret</code></td>
 <td>RPC 风格 API（HMAC-SHA1 签名）；TTL 被 clamp 到 600–86400（低于 600 阿里云直接 400）</td>
 </tr>
+<tr>
+<td><code>tencent</code></td>
+<td>腾讯云 DNSPod</td>
+<td><code>secret_id</code>、<code>secret_key</code>、<code>account_site</code></td>
+<td>API 3.0（TC3-HMAC-SHA256 签名）；<code>account_site</code> 选 <code>cn</code>/<code>intl</code>（国内/国际站）；TTL 下限 600（免费/标准版报 <code>LimitExceeded.RecordTtlLimit</code>）</td>
+</tr>
+<tr>
+<td><code>tencent-eo</code></td>
+<td>腾讯云 EdgeOne</td>
+<td><code>secret_id</code>、<code>secret_key</code>、<code>account_site</code></td>
+<td>共用腾讯云 API 3.0 签名基础，换 EdgeOne 服务名与 Action；<code>DescribeZones</code> 查 zone 是否已接入 EdgeOne</td>
+</tr>
 </tbody>
 </table>
 <p>通用行为：</p>
@@ -1001,8 +1184,77 @@
 </ul>
 <p>不走公共 DoH 的原因：公共解析器的 NXDOMAIN 负缓存（SOA minimum 通常
 600–1800 秒）会让「写入 → 删除 → 重试」的第二次尝试稳定查不到新值。</p>
-<h3 id="_4">自定义解析器<a class="headerlink" href="#_4" title="Permanent link">&para;</a></h3>
-<p>显式设置后改用配置而非权威直查：</p>
+<h3 id="doh">提供商感知的 DoH 排序<a class="headerlink" href="#doh" title="Permanent link">&para;</a></h3>
+<p>传播等待的分阶段回退（阶段 &#8532;）使用全量 DNS + DoH 集合，按提供商标识感知排序：首选提供商对应的同厂商 DoH 端点排第一，其余按固定序兜底。排序规则：</p>
+<table>
+<thead>
+<tr>
+<th>提供商</th>
+<th>首选 DoH</th>
+<th>兜底序</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cloudflare</code></td>
+<td>Cloudflare</td>
+<td>Cloudflare → 阿里 → 腾讯 → Google</td>
+</tr>
+<tr>
+<td><code>aliyun</code></td>
+<td>阿里</td>
+<td>阿里 → Cloudflare → 腾讯 → Google</td>
+</tr>
+<tr>
+<td><code>tencent</code> / <code>tencent-eo</code></td>
+<td>腾讯</td>
+<td>腾讯 → Cloudflare → 阿里 → Google</td>
+</tr>
+<tr>
+<td>其他 / 未传参</td>
+<td>—</td>
+<td>Cloudflare → 阿里 → 腾讯 → Google</td>
+</tr>
+</tbody>
+</table>
+<p>"任意一家可见即就绪"的判定语义不变——<code>probe_resolvers</code> 逐个查，命中即返回。<code>ACMECAST_DOH_RESOLVERS</code> 显式设置时提供商感知分支不生效，按环境变量语义构造集合（<code>none</code> 即跳过解析器阶段）。</p>
+<h3 id="doh_1">DoH 代理自动回退<a class="headerlink" href="#doh_1" title="Permanent link">&para;</a></h3>
+<p>DoH 解析器没有凭据关联，无法像凭据那样逐条配代理。配置了全局代理（<code>config.toml</code> 的 <code>[proxy] url</code> 或环境变量 <code>ACMECAST_PROXY_URL</code>，见<a href="../03-configuration/">配置</a>的「全局代理」）时，DoH 传输层的行为：</p>
+<ul>
+<li><strong>初始直连</strong>：留空即直连的语义不变，不会默认走代理；</li>
+<li><strong>直连失败经代理重试一次</strong>：DoH 端点直连查询发生网络不可用（超时/连接拒绝/TLS 失败等）后，自动经全局代理重试该端点一次；重试成功（命中或未命中）则清零该端点的连续失败计数，并缓存「需经代理」偏好；</li>
+<li><strong>偏好跨段保留</strong>：缓存偏好后，后续轮次与后续阶段（命中单家段 → 末段整组）直接用代理传输层查询，不再每轮重复直连探测；偏好仅本轮传播会话内有效，下次运行重新学习；</li>
+<li><strong>重试仍失败照常计熔断</strong>：直连失败 + 代理回退失败 = 2 次连续失败，下一轮再失败即第 3 次触发熔断剔除，不会无限重试；</li>
+<li><strong>仅影响 DoH 解析器</strong>：权威 NS 直查与 <code>all_dns</code> 阶段的传输层不受影响，仍直连；未配置全局代理时完全不做回退，行为与本机制引入前一致。</li>
+</ul>
+<h3 id="_4">自定义解析器（腾讯云手动配置）<a class="headerlink" href="#_4" title="Permanent link">&para;</a></h3>
+<p>显式设置后改用配置而非权威直查。腾讯云用户在国内环境建议追加腾讯 DoH
+以提升可达性，<code>data/config.toml</code> 与 <code>acmecast-server config init</code> 模板已附
+可直接取消注释的片段：</p>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="k">[[resolvers]]</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"doh"</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">endpoint</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"https://doh.pub/dns-query"</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"腾讯 DNSPod"</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="k">[[resolvers]]</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"doh"</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="n">endpoint</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"https://1.12.12.12/dns-query"</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="n">name</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">"腾讯 DNSPod（IP 直连）"</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="c1"># 传统 UDP 53（目前仅校验，传输层未实现；配置后告警跳过，留作清单备用）</span>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="c1"># [[resolvers]]</span>
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="c1"># type = "dns"</span>
+</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="c1"># endpoint = "119.29.29.29"</span>
+</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="c1"># name = "腾讯 DNSPod"</span>
+</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="c1"># [[resolvers]]</span>
+</span><span id="__span-0-17"><a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a><span class="c1"># type = "dns"</span>
+</span><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a><span class="c1"># endpoint = "119.28.28.28"</span>
+</span><span id="__span-0-19"><a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a><span class="c1"># name = "腾讯 DNSPod"</span>
+</span></code></pre></div>
+<p>环境变量等价写法：</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nb">export</span><span class="w"> </span><span class="nv">ACMECAST_DOH_RESOLVERS</span><span class="o">=</span><span class="s2">"腾讯 DoH=https://doh.pub/dns-query,https://1.12.12.12/dns-query"</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="c1"># 跳过传播等待（不推荐）：export ACMECAST_DOH_RESOLVERS=none</span>
+</span></code></pre></div>
 <ul>
 <li>环境变量 <code>ACMECAST_DOH_RESOLVERS</code>：逗号分隔的 <code>名称=端点</code>（或仅端点）；
   <strong><code>none</code> = 跳过传播等待</strong>（provider 确认写入后立即让 CA 验证，不推荐）。</li>
@@ -1016,13 +1268,67 @@
 <h2 id="dns_1">内置公共 DNS 清单<a class="headerlink" href="#dns_1" title="Permanent link">&para;</a></h2>
 <ul>
 <li><strong>UDP 53</strong>：223.5.5.5、223.6.6.6、119.29.29.29、114.114.114.114、
-  114.114.115.115、180.76.76.76、1.1.1.1、8.8.8.8、9.9.9.9、149.112.112.112</li>
+  114.114.115.115、180.76.76.76、1.1.1.1、8.8.8.8、9.9.9.9、149.112.112.112
+  （含 <code>dnsdata/dns_servers.txt</code> 中收录的腾讯 <code>119.28.28.28</code> / <code>119.29.29.29</code> 体系）</li>
 <li><strong>DoH</strong>：dns.alidns.com、doh.pub、1.12.12.12、120.53.53.53、223.5.5.5、
-  dns.google、cloudflare-dns.com、1.1.1.1（均 <code>/dns-query</code>）</li>
+  dns.google、cloudflare-dns.com、1.1.1.1（均 <code>/dns-query</code>）
+  （其中 <code>doh.pub</code> / <code>1.12.12.12</code> / <code>120.53.53.53</code> 为腾讯 DNSPod 公共 DoH）</li>
 </ul>
+<blockquote>
+<p>腾讯 DoH 端点说明：<code>https://doh.pub/dns-query</code> 与 <code>https://1.12.12.12/dns-query</code>
+/ <code>https://120.53.53.53/dns-query</code> 同源（DNSPod），前者走域名便于证书校验，
+后者走 IP 直连在 DNS 劫持环境更稳；按网络环境二选一或并存均可。</p>
+</blockquote>
 <h2 id="http-01">HTTP-01 的现状<a class="headerlink" href="#http-01" title="Permanent link">&para;</a></h2>
 <p>HTTP-01 目前只有<strong>材料计算</strong>能力（token、<code>/.well-known/acme-challenge/&lt;token&gt;</code>
 路径、key authorization 响应体），没有投放通道。申请证书请使用 DNS-01。</p>
+<h2 id="cname">通配符与 CNAME 的排障<a class="headerlink" href="#cname" title="Permanent link">&para;</a></h2>
+<h3 id="zone-_acme-challenge">泛解析（<code>*.&lt;zone&gt;</code>）不要把 <code>_acme-challenge</code> 也套进去<a class="headerlink" href="#zone-_acme-challenge" title="Permanent link">&para;</a></h3>
+<p>最常见的误用：为了把 <code>*.example.com</code> 全指向一台服务器，配了</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>*.example.com.  CNAME  oversea.example.net.
+</span></code></pre></div>
+<p><code>_acme-challenge.example.com</code> 上<strong>没有显式节点</strong>时，按 <code>RFC 4592</code> 它会被上面的通配 <code>CNAME</code> <strong>合成</strong>出来：</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>_acme-challenge.example.com.  CNAME  oversea.example.net.
+</span></code></pre></div>
+<p>此后对 <code>_acme-challenge.example.com</code> 查 <code>TXT</code>，权威 NS 回的是 <code>CNAME</code>，<code>DNS-01</code> 永远拿不到 <code>TXT</code>，日志可能是 <code>已在权威/公共解析器可见</code>（本机 DoH 命中 CNAME 的 <code>NOERROR</code>）但 CA <code>secondary validation: No TXT record found</code>。</p>
+<p><strong>修复：</strong></p>
+<ol>
+<li>不要给 <code>_acme-challenge</code> 建显式的 <code>CNAME</code>，只保留 <code>*.example.com</code> 的那条。</li>
+<li><code>acmecast</code> 往原区写入 <code>_acme-challenge.example.com TXT</code> 成功后，该名字上就有了<strong>显式节点</strong>，按 <code>RFC 4592</code> 它会<strong>压掉通配</strong>，再查 <code>TXT</code> 就只回 <code>TXT</code>、不回 <code>CNAME</code> 了。验证时请直查权威 NS：</li>
+</ol>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>dig @权威NS TXT _acme-challenge.example.com
+</span></code></pre></div>
+<p>确认只回 <code>TXT</code> 不回 <code>CNAME</code> 后再触发流水线。
+3. 若想彻底不纠结，把泛解析从 <code>CNAME</code> 改成 <code>A</code> 到目标 IP，业务效果等同，且 <code>_acme-challenge</code> 天然不受影响。</p>
+<h3 id="cname-txt"><code>CNAME</code> 与 <code>TXT</code> 同名互斥<a class="headerlink" href="#cname-txt" title="Permanent link">&para;</a></h3>
+<p><code>CNAME</code> 的语义是“此名别处定”（RFC 1034），同名处<strong>不允许</strong>再有 <code>TXT</code>。已有 <code>CNAME</code> 时，往同名写 <code>TXT</code> 要么被 <code>DNS</code> 服务商拒绝，要么写入成功但递归查询时 <code>CNAME</code> 会<strong>遮蔽</strong> <code>TXT</code> —— <code>acmecast</code> 的权威直查会同时取 <code>TXT + CNAME</code>，<code>CNAME</code> 存在时按 <code>CA</code> 的跟随语义跟到目标区（<a href="../../crates/acmecast-dns/src/authoritative.rs#L104">authoritative.rs:104</a>），原区 <code>TXT</code> 对验证者不可见。</p>
+<p><strong>规则：</strong> 挑战委托（<code>_acme-challenge.x CNAME _acme-challenge.y.</code>）是允许的，但它要求<strong>目标区</strong>上能查到 <code>TXT</code>；<strong>业务泛 <code>CNAME</code> 与挑战 <code>TXT</code> 混在同名上是不允许的</strong>。<a href="../15-troubleshooting/">故障排查</a>有 <code>CNAME</code> 遮蔽的最小复现与 <code>dig</code> 排查步骤。</p>
+<h3 id="domain-alias-cname">domain-alias 模式（CNAME 目标不带挑战前缀）<a class="headerlink" href="#domain-alias-cname" title="Permanent link">&para;</a></h3>
+<p>CNAME 目标<strong>可以不带</strong> <code>_acme-challenge.</code> 前缀——即 challenge 委托形如
+<code>_acme-challenge.a.com CNAME myalias.b.com.</code>（目标 <code>myalias.b.com</code> 是任意
+自由命名的名字）。这是 domain-alias 模式，此时不要用
+<code>dns_zone</code> 表达（那会把写入名固定为 <code>_acme-challenge.&lt;dns_zone&gt;</code>，与
+CNAME 目标对不上），而应填 <code>dns_alias: myalias.b.com</code>：写入名直接取该值，
+<code>dns_zone</code> 仍填目标所属 zone（<code>b.com</code>）且<strong>必须显式给出</strong>。两种模式的
+CNAME 形态与字段对照：</p>
+<table>
+<thead>
+<tr>
+<th>CNAME 形态</th>
+<th>acmecast 字段</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>_acme-challenge.a.com → _acme-challenge.b.com</code>（challenge-alias 模式）</td>
+<td><code>dns_zone: b.com</code></td>
+</tr>
+<tr>
+<td><code>_acme-challenge.a.com → myalias.b.com</code>（domain-alias 模式）</td>
+<td><code>dns_alias: myalias.b.com</code> + <code>dns_zone: b.com</code></td>
+</tr>
+</tbody>
+</table>
 
 
 
@@ -1130,10 +1436,10 @@
       
         
         
-      <script id="__config" type="application/json">{"annotate":null,"base":"..","features":["announce.dismiss","content.code.annotate","content.code.copy","content.code.select","content.footnote.tooltips","content.tabs.link","content.tooltips","navigation.footer","navigation.indexes","navigation.instant","navigation.instant.prefetch","navigation.path","navigation.sections","navigation.top","navigation.tracking","search.highlight"],"redirect":null,"search":"../assets/javascripts/workers/search.7d14d953.min.js","tags":null,"translations":{"clipboard.copied":"已复制","clipboard.copy":"复制","clipboard.error":"Could not copy to clipboard","search.result.more.one":"在该页上还有 1 个符合条件的结果","search.result.more.other":"在该页上还有 # 个符合条件的结果","search.result.none":"没有找到符合条件的结果","search.result.one":"找到 1 个符合条件的结果","search.result.other":"# 个符合条件的结果","search.result.placeholder":"键入以开始搜索","search.result.term.missing":"缺少","select.version":"选择当前版本"},"version":null}</script>
+      <script id="__config" type="application/json">{"annotate":null,"base":"..","features":["announce.dismiss","content.code.annotate","content.code.copy","content.code.select","content.footnote.tooltips","content.tabs.link","content.tooltips","navigation.footer","navigation.indexes","navigation.instant","navigation.instant.prefetch","navigation.path","navigation.sections","navigation.top","navigation.tracking","search.highlight"],"redirect":null,"search":"../assets/javascripts/workers/search.c47bb847.min.js","tags":null,"translations":{"clipboard.copied":"已复制","clipboard.copy":"复制","clipboard.error":"Could not copy to clipboard","search.result.more.one":"在该页上还有 1 个符合条件的结果","search.result.more.other":"在该页上还有 # 个符合条件的结果","search.result.none":"没有找到符合条件的结果","search.result.one":"找到 1 个符合条件的结果","search.result.other":"# 个符合条件的结果","search.result.placeholder":"键入以开始搜索","search.result.term.missing":"缺少","select.version":"选择当前版本"},"version":null}</script>
     
     
-      <script src="../assets/javascripts/bundle.3c842f4c.min.js"></script>
+      <script src="../assets/javascripts/bundle.a2388154.min.js"></script>
       
     
   </body>
