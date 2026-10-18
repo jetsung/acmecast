@@ -1,4 +1,4 @@
-# acmecast 的 Docker Compose 定义。在仓库根目录执行：
+# AcmeCast 的 Docker Compose 定义。在仓库根目录执行：
 #
 #   docker compose -f docker/compose.yaml up -d      # 首次会按需构建 acmecast:dev
 #   docker compose -f docker/compose.yaml logs -f

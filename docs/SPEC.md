@@ -1,6 +1,175 @@
 # AcmeCast 项目规范（SPEC）
 
-本文件为全局规范，涵盖 ACME 账号、DNS 校验与证书生命周期、凭据出网代理与全局代理配置、运行历史可观测性等产品行为，`docs/SPEC.md` 为唯一真实来源。下文首节为 DNS Zone 推导，其余为内建 CA、凭据代理、日志规范等全局约定。
+本文件为全局规范，涵盖品牌与命名、控制台站点图标与 PWA Manifest、ACME 账号、DNS 校验与证书生命周期、凭据出网代理与全局代理配置、运行历史可观测性等产品行为，`docs/SPEC.md` 为唯一真实来源。下文首节为品牌与命名规范，次节为控制台站点图标与 PWA Manifest（`console-favicon`），再次为 DNS Zone 推导，其余为内建 CA、凭据代理、日志规范等全局约定。
+## 品牌与命名规范
+
+用户可见品牌名统一为 `AcmeCast`（首字母 `A` 与 `C` 大写，其余小写），技术标识符保持 `acmecast` / `ACMECAST` 小写形态，二者以白名单式豁免边界划分，不做全局正则批量替换，也不引入技术标识符的破坏性变更。若未来需更名技术标识符，另起变更。
+
+### 展示层品牌名为 AcmeCast
+
+用户可见的品牌字样 MUST 显示为 `AcmeCast`，不出现全小写 `acmecast` 作为展示用品牌名。适用范围：
+
+| 触点 | 期望文案 | 备注 |
+|---|---|---|
+| 前端浏览器标题 `frontend/index.html` `<title>` | `AcmeCast 控制台` | 构建产物 `dist/index.html` 同步 |
+| 侧边栏品牌区 `frontend/src/layout/AppLayout.tsx` Brand 组件 | `AcmeCast` | 副文案 `证书自动化控制台` 保持不变，样式（渐变图标、字号、色值）不变 |
+| 登录页品牌标题 `frontend/src/pages/Login.tsx` | `AcmeCast 控制台` | 副标题 `证书自动签发与部署` 保持不变 |
+| README 首屏 `README.md` | 一级标题 `# AcmeCast`，正文首提 `AcmeCast` | 技术标识符 `ACMECAST_*` / `ghcr.io/jetsung/acmecast` / 路径保持原文 |
+| 文档站 `docs/index.md` 与 `site/` 搜索/页面文案 | 站点标题与首段为 `AcmeCast` | `site/search.json` 为构建产物，改源后需重建 |
+| OpenAPI `crates/acmecast-server/src/openapi.rs` `info.title` | `AcmeCast API` | Swagger UI 与 `openapi-typescript` 生成的客户端直接可见 |
+| 面向用户的日志与错误提示中的品牌称呼 | `AcmeCast` | 技术标识符上下文除外 |
+
+前端断言同步：`frontend/src/router.test.tsx` 中对品牌文案的断言 MUST 与上述展示保持一致（`AcmeCast 控制台`）。
+
+### 技术标识符保持小写形态
+
+以下技术标识符 MUST 保持现有小写/全大写下划线形态，不随展示层更名而变更，不新增大小写变体：
+
+| 类别 | 保持形态 | 示例 |
+|---|---|---|
+| Rust crate 名（11 个） | `acmecast-*` 小写 | `acmecast-core`、`acmecast-server`、`acmecast-dns` 等 11 个内部 crate |
+| 环境变量前缀 | `ACMECAST__` / `ACMECAST_*` 全大写下划线 | `ACMECAST__JWT_SECRET`、`ACMECAST_CONFIG`、`ACMECAST_NETWORK_TIMEOUT_SECS`、`ACMECAST_DOH_RESOLVERS` |
+| 二进制名 | `acmecast-server` 小写 | — |
+| Docker 镜像 | `ghcr.io/jetsung/acmecast` 小写 | 含容器名 |
+| 仓库路径 | `github.com/jetsung/acmecast` 小写 | — |
+| npm 包名 | `acmecast-frontend` 小写 | — |
+| User-Agent | `acmecast/<version>` 小写 | 出站请求头 |
+| CLI 可执行名前缀 | `acmecast-*` 小写 | — |
+
+### 配置与数据路径保持小写
+
+配置文件与数据文件路径、示例中的小写标识 MUST 保持不变，不因展示层更名而改为 `AcmeCast` 路径或大小写变体：
+
+| 路径/标识 | 保持形态 |
+|---|---|
+| 默认配置查找顺序 | `./config.yaml` → `./config.yml` → `/etc/acmecast/config.yaml` |
+| 示例数据 | `data/acmecast.db`、`data/config.toml` 模板路径 |
+| User-Agent | `acmecast/<version>` |
+
+### 文档与站点品牌提及统一
+
+`README.md`、`docs/index.md`、`site/` 搜索与页面文案、`docker/compose.yaml` 注释、`mise.toml` / `prek.toml` / `data/config.toml` 模板注释中面向读者的品牌提及 MUST 使用 `AcmeCast`，技术标识符（crate 名、环境变量、路径、镜像名）在注释中的原文保持小写豁免，不被批量替换。判定规则：注释中若品牌词后紧跟技术标识符示例（如 `ACMECAST_JWT_SECRET`），仅改品牌称呼部分，技术标识符原文豁免。
+
+### 本地存储与内部注释豁免
+
+以下 MUST 保持小写不变，不因展示层更名而迁移或重命名，避免引入存储迁移与无意义重命名：
+
+| 豁免项 | 保持形态 | 说明 |
+|---|---|---|
+| 前端本地存储 key | `acmecast-auth` (`frontend/src/auth/store.ts`) | 会话不因更名丢失，无需迁移脚本 |
+| 源码内部注释中对 crate/模块路径的引用 | `acmecast-core` 等 | 保持小写原文 |
+| 测试中临时文件名前缀 | `acmecast-*` | 保持小写 |
+
+### 实现索引
+
+- `frontend/index.html` — `<title>AcmeCast 控制台</title>`
+- `frontend/src/layout/AppLayout.tsx` — 侧边栏 Brand 组件文本 `AcmeCast`
+- `frontend/src/pages/Login.tsx` — 登录页品牌标题 `AcmeCast 控制台`
+- `frontend/src/router.test.tsx` — 品牌文案断言同步
+- `frontend/src/auth/store.ts` — `acmecast-auth` 本地存储 key 豁免（保持小写）
+- `crates/acmecast-server/src/openapi.rs` — `#[openapi(info(title = "AcmeCast API"))]`
+- `README.md` — 一级标题 `# AcmeCast` 与首段品牌提及
+- `docs/index.md` / `site/search.json` — 站点标题与搜索文案 `AcmeCast`（`site/` 需重建）
+- `docker/compose.yaml` / `mise.toml` / `prek.toml` / `data/config.toml` — 模板注释中面向读者的品牌称呼 `AcmeCast`，技术标识符原文豁免
+- 技术标识符保留清单：`Cargo.toml` 中 11 个 `acmecast-*` crate、`ACMECAST__*` / `ACMECAST_*` 环境变量、`acmecast-server` 二进制、`ghcr.io/jetsung/acmecast` 镜像、`acmecast/<version>` User-Agent
+
+
+## 控制台站点图标与 PWA Manifest（console-favicon）
+
+为 AcmeCast 控制台提供浏览器标签页、书签、移动端主屏的站点图标与 PWA 可安装能力，基于登录页品牌标识一次性生成多尺寸 favicon 与 Web App Manifest，并在前端入口与后端静态托管中建立可验证的引用契约。`frontend/public` 为运行时权威副本，Vite 将其 verbatim 拷贝至 `frontend/dist` 根目录，随 Docker `frontend-builder → /static` 由后端 `ServeDir` 托管。
+
+### Favicon 静态资源清单
+
+`frontend/public` MUST 包含 favicon 静态资源集合，并 verbatim 拷贝至 `frontend/dist` 根目录与运行期 `/static`。集合 MUST 包含：
+
+| 资源 | 规格 | 说明 |
+|---|---|---|
+| `favicon.ico` | 含 16×16、32×32、48×48 三档 | 多尺寸 ICO，兼容旧浏览器/书签自动探测 |
+| `favicon-32x32.png` | 32×32 PNG | 现代浏览器首选 |
+| `favicon-16x16.png` | 16×16 PNG | 现代浏览器首选 |
+| `apple-touch-icon.png` | 180×180 PNG | iOS 主屏/高分屏 |
+| `site.webmanifest` | 合法 JSON（见下节） | PWA 可安装元数据 |
+
+所有位图 MUST 由 LOGO 源派生并提交至仓库；派生 MUST 经仓库脚本 `scripts/generate-favicon.sh`（`just favicon <图片路径> [输出目录]`）完成，该脚本支持 `png`/`jpg`/`svg` 输入且同一输入多次运行输出字节一致（`-strip` 去元数据、ICO 目录项按 16/32/48 排序、SVG 光栅化统一 8-bit 色深）。构建链路（`pnpm -C frontend build` / Docker `frontend-builder`）不执行生成，仅拷贝已提交的成品。
+
+- 构建产物一致性：执行 `pnpm -C frontend build` 后 `frontend/dist` 下上述 5 文件 MUST 存在且与 `frontend/public` 对应文件字节一致。
+- ICO 多尺寸：以二进制解析 `favicon.ico`，目录项 MUST 至少包含 16、32、48 三档且每档可独立解码为有效位图。
+- Apple Touch Icon：`apple-touch-icon.png` 图像头 MUST 为 180×180、色深 ≥ 24 位，不得为 32×32 拉伸放大图；透明背景与圆角留白保留。
+
+### HTML 入口声明
+
+`frontend/index.html` 的 `<head>` MUST 声明 favicon 与 PWA manifest 引用，声明 MUST 包含且 `href` MUST 为站点根路径绝对路径（`/` 前缀），不得使用相对路径或带 hash 的构建产物路径，确保在任意前端路由（`/pipelines`、`/certificates/xxx`、`/login` 等）下均可解析：
+
+```html
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/site.webmanifest">
+<meta name="theme-color" content="#4f63f2">
+```
+
+- 声明与资源一一对应：`index.html` 中每个 `href` 去掉前导 `/` 后 MUST 对应 `frontend/public` 下真实文件存在；逐项请求 MUST 返回 `200` 且 `Content-Type` 正确（`favicon.ico` 为 `image/x-icon` 或 `image/vnd.microsoft.icon`，PNG 为 `image/png`，`site.webmanifest` 为 `application/manifest+json` 或 `application/json`）。
+- `sizes="any"` 使现代浏览器优先选 PNG、旧浏览器回落 ICO；`theme-color` 固定为品牌主色 `#4f63f2`。
+
+### PWA Web App Manifest
+
+`frontend/public/site.webmanifest` MUST 为合法 JSON，MUST 包含以下字段且满足浏览器可安装性校验（Lighthouse/DevTools 不报缺失 icon 或 start_url）：
+
+```json
+{
+  "name": "AcmeCast",
+  "short_name": "AcmeCast",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#4f63f2",
+  "icons": [
+    { "src": "/favicon-32x32.png", "sizes": "32x32", "type": "image/png" },
+    { "src": "/apple-touch-icon.png", "sizes": "180x180", "type": "image/png" }
+  ]
+}
+```
+
+- `name`/`short_name` MUST 均为 `AcmeCast`；`icons` MUST 至少包含 32×32 与 180×180 两档，`src` 指向 `/favicon-32x32.png` 与 `/apple-touch-icon.png` 且 `type` 为 `image/png`，`sizes` 与实际 PNG 资源一致。
+- `start_url` MUST 为 `/`；`display` MUST 为 `standalone` 或 `minimal-ui`。
+- `theme_color` MUST 为 `#4f63f2`，`background_color` MUST 为 `#ffffff`。
+- 不实现 Service Worker、离线缓存与推送；PWA 仅提供 Manifest 层可安装元数据。不引入 SVG favicon / `mask-icon`。
+
+### 后端静态托管可达性
+
+后端对 `ACMECAST_STATIC_DIR`（Docker 镜像中为 `/static`，由 `frontend/dist` 拷贝而来）的静态托管 MUST 使 favicon 资源通过与前端同源的 HTTP 路径可达，且不得被 SPA fallback 误判为前端路由。`ServeDir::new(static_dir).fallback(ServeFile::new(index))` 的行为 MUST 满足：当请求路径命中 `static_dir` 下的真实文件时返回该文件，仅当文件不存在时才回落到 `index.html`。
+
+- 直接请求：`GET /favicon.ico`、`GET /favicon-32x32.png`、`GET /apple-touch-icon.png`、`GET /site.webmanifest` MUST 返回 `200`，`Content-Type` 分别为图标/图像/manifest 类型，响应体与 `frontend/dist` 下对应文件一致，且不返回 `index.html` 的 HTML 内容。
+- SPA 回落不遮蔽：`GET /non-existent-route` 返回 `index.html`（SPA fallback），而 `GET /favicon.ico` 仍返回 ICO 文件，二者行为可区分。
+- 浏览器自动探测兜底：未解析 `index.html` 而直接探测 `GET /favicon.ico` 时仍返回 `200` 的 ICO 文件，不依赖 HTML 声明。
+- `Content-Type` 与可缓存响应头由 `ServeDir` 默认或显式配置提供，至少允许浏览器缓存；`site.webmanifest` 不被 `fallback` 吞没。
+
+### 视觉一致性与源同步
+
+所有 favicon 派生图 MUST 与源 LOGO 在视觉上一致：图形主体、品牌色、圆角/留白比例保持一致，不得引入额外文字或边框。源 LOGO 为登录页登录框上方的品牌标识（`frontend/src/pages/Login.tsx` 的 `Brand` 组件：渐变圆角方块 `#4f63f2 → #7b5bf5` 135° 对角渐变 + 白色盾形对勾），`frontend/public` 下的 favicon 为控制台运行时权威副本。
+
+- 后续 LOGO 变更时 MUST 先更新 `Brand` 视觉（或按 `openspec/changes/add-favicon-from-logo/logo-prompt.md` 的提示词生成新 SVG/PNG 源），再经 `just favicon <新图路径>` 一次性重新生成派生尺寸并提交，`frontend/dist` 构建产物同步更新。
+- 生成规范（见 `logo-prompt.md`）：圆角方形充满整张画布、尖角透明（alpha 非白底）、135° 渐变 `#4f63f2 → #7b5bf5`、白色描边盾牌 + 对勾、扁平极简无阴影/文字。
+
+### 可验证性与回归防护
+
+favicon 能力 MUST 可被自动化验证，避免后续重构或路由变更导致图标丢失：
+
+- 构建产物校验：`frontend/public` 下任一必需文件缺失后执行构建，`frontend/dist` 中对应文件亦缺失，可被 CI 中的产物存在性断言捕获。
+- 后端冒烟：对 `GET /favicon.ico` / `GET /favicon-32x32.png` / `GET /apple-touch-icon.png` / `GET /site.webmanifest` 的集成/冒烟测试 MUST 断言 `200` 与正确 `Content-Type`，`site.webmanifest` 额外断言 JSON 合法且 `name`/`icons`/`start_url` 完整；未正确挂载 `ACMECAST_STATIC_DIR` 或 `ServeDir` 配置错误时测试失败。
+- 前端断言：任意路由下 `document.querySelector('link[rel="icon"]')`、`link[rel="apple-touch-icon"]`、`link[rel="manifest"]` 与 `meta[name="theme-color"]` 存在且 `href` 以 `/` 开头。
+
+### 实现索引
+
+- `frontend/public/favicon.ico` / `favicon-32x32.png` / `favicon-16x16.png` / `apple-touch-icon.png` / `site.webmanifest` — favicon 静态资源权威副本（提交产物）
+- `frontend/index.html` — `<head>` 内 favicon/manifest/`theme-color` 声明（`/` 绝对路径）
+- `frontend/dist/*` — Vite verbatim 拷贝产物（构建后与 `public` 字节一致）
+- `scripts/generate-favicon.sh` + `justfile: favicon` — 派生重生成脚本（支持 png/jpg/svg、字节可复现，不进构建链路）
+- `openspec/changes/add-favicon-from-logo/logo-prompt.md` — LOGO 重生成提示词（圆角方形/透明尖角/渐变/盾牌对勾）
+- `crates/acmecast-server/src/lib.rs: ServeDir::new(static_dir).fallback(ServeFile::new(index))` — 静态托管（文件命中优先、缺失回落 `index.html`，无需代码改动）
+- `docker/Dockerfile: frontend-builder → /static` — 前端构建产物拷贝至运行镜像
+- `frontend/src/pages/Login.tsx: Brand` — LOGO 源（渐变圆角方块 `#4f63f2 → #7b5bf5` + 白色盾形对勾）
 
 ## DNS Zone 自动推导
 

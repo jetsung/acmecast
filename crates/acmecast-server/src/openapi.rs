@@ -19,7 +19,7 @@ use crate::response::ApiResponse;
 #[derive(Debug, OpenApi)]
 #[openapi(
     info(
-        title = "acmecast API",
+        title = "AcmeCast API",
         version = "0.1.0",
         description = "证书生命周期、流水线与凭据管理接口"
     ),

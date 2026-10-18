@@ -32,6 +32,12 @@ default:
 @gen-api:
     mise exec -- pnpm -C frontend gen:api
 
+# 从一张图片（png/jpg/svg）重生成全套 favicon 到 frontend/public
+# 用法：just favicon <图片路径> [输出目录，默认 frontend/public]
+# 依赖：ImageMagick（magick）；生成后执行 pnpm -C frontend build 刷新构建产物
+@favicon image out="frontend/public":
+    ./scripts/generate-favicon.sh {{image}} {{out}}
+
 # ---- 组合 ----
 
 # 同时启动后端与前端本地调试（Ctrl-C 一并退出；任一退出则整体结束）

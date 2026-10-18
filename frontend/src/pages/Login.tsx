@@ -58,7 +58,7 @@ export function LoginPage() {
       const body = await response.json();
       if (!response.ok) {
         const error = body?.error;
-        // 统一错误呈现：不区分「用户名不存在」与「口令错误」（后端已保证）。
+        // 统一错误呈现：不区分「用户名不存在」与「密码错误」（后端已保证）。
         message.error(error?.message ?? "登录失败");
         return;
       }
@@ -102,8 +102,8 @@ export function LoginPage() {
           </Form.Item>
           <Form.Item
             name="password"
-            label="口令"
-            rules={[{ required: true, message: "请输入口令" }]}
+            label="密码"
+            rules={[{ required: true, message: "请输入密码" }]}
           >
             <Input.Password size="large" />
           </Form.Item>

@@ -4,7 +4,7 @@
 # site/（已在 .gitignore 中忽略）。
 
 [project]
-site_name = "acmecast"
+site_name = "AcmeCast"
 site_description = "证书自动签发与部署系统：ACME 申请、流水线编排、自动续期与部署"
 # site_url 待文档站点有正式域名后再填，留空不会影响本地构建与预览。
 repo_url = "https://github.com/jetsung/acmecast"
@@ -34,6 +34,7 @@ nav = [
   { "Docker 部署" = "13-docker-deployment.md" },
   { "Docker 镜像" = "14-docker-image.md" },
   { "排障与已知限制" = "15-troubleshooting.md" },
+  { "Favicon LOGO 生成提示词" = "16-favicon-logo.md" },
 ]
 
 [project.theme]

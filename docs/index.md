@@ -1,6 +1,6 @@
-# acmecast
+# AcmeCast
 
-证书自动签发与部署系统：以 ACME 协议向 Let's Encrypt（或自建 CA）申请证书，
+AcmeCast 是证书自动签发与部署系统：以 ACME 协议向 Let's Encrypt（或自建 CA）申请证书，
 按流水线自动完成 DNS 挑战、证书入库与部署到本地/远程目标，并通过 cron 或到期
 扫描自动续期。提供带鉴权的 REST API 与 OpenAPI 文档，为前端 SPA 与第三方集成
 提供统一入口。

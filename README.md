@@ -1,6 +1,6 @@
-# acmecast
+# AcmeCast
 
-证书自动签发与部署系统：以 ACME 协议向 Let's Encrypt（或自建 CA）申请证书，
+AcmeCast 是证书自动签发与部署系统：以 ACME 协议向 Let's Encrypt（或自建 CA）申请证书，
 按流水线自动完成 DNS 挑战、证书入库与部署到本地/远程目标，并通过 cron 或到期
 扫描自动续期。提供带鉴权的 REST API 与 OpenAPI 文档，为前端 SPA 与第三方集成
 提供统一入口。
@@ -149,6 +149,21 @@ pnpm gen:api
 JSON Schema 驱动的动态表单）、运行历史（按步骤分组日志）、凭据管理、
 调度配置。API 类型从 `/api/openapi.json` 生成，后端接口变更后执行
 `pnpm gen:api` 保持同步。
+
+### Favicon 与 LOGO 源同步
+
+浏览器标签页图标与 PWA 资源位于 `frontend/public/`（`favicon.ico`、
+`favicon-16x16.png`、`favicon-32x32.png`、`apple-touch-icon.png`、
+`site.webmanifest`），源自登录页登录框上方的品牌标识（渐变圆角方块
+`#4f63f2 → #7b5bf5` + 白色盾形对勾，见 `frontend/src/pages/Login.tsx` 的
+`Brand` 组件），以 512×512 SVG 矢量源光栅化后提交仓库。LOGO 变更时需先
+更新登录页 `Brand` 视觉（或按 `docs/16-favicon-logo.md` 的提示词生成新
+SVG 源），再一键重生成派生尺寸：
+
+```bash
+just favicon <新图路径>   # 支持 png / jpg / svg，输出到 frontend/public
+pnpm -C frontend build    # 刷新构建产物
+```
 
 ## 已知限制
 

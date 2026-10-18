@@ -1,6 +1,6 @@
 # 架构设计
 
-acmecast 是一个 Cargo workspace：10 个内部 crate（均不发布到 crates.io）加一个
+AcmeCast 是一个 Cargo workspace：10 个内部 crate（均不发布到 crates.io）加一个
 React 前端 SPA。可执行二进制只有一个：`acmecast-server`。
 
 ## Crate 划分与依赖方向
