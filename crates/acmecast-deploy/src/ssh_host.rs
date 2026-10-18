@@ -168,7 +168,20 @@ impl SshHostFields {
         if self.port == 0 {
             return Err(acmecast_core::Error::validation("port", "端口不能为 0"));
         }
-        match (&self.private_key, &self.password) {
+        // 认证材料按「非空才视为已提供」归一化，与 auth_material 同口径：
+        // 编辑场景把 private_key 清空后提交上来的 Some("") 按未提供处理，
+        // 不再误报「两者皆有」。
+        let key = self
+            .private_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let password = self
+            .password
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        match (key, password) {
             (None, None) => Err(acmecast_core::Error::validation(
                 "private_key",
                 "私钥与口令必须恰好其一，当前两者皆缺",
@@ -177,13 +190,6 @@ impl SshHostFields {
                 "private_key",
                 "私钥与口令必须恰好其一，当前两者皆有",
             )),
-            (Some(key), None) if key.trim().is_empty() => Err(acmecast_core::Error::validation(
-                "private_key",
-                "不能为空白",
-            )),
-            (None, Some(password)) if password.trim().is_empty() => {
-                Err(acmecast_core::Error::validation("password", "不能为空白"))
-            }
             _ => Ok(()),
         }?;
         // custom 模式必须给出合法代理 URL（保存/部署前拦截）。
@@ -299,7 +305,7 @@ mod tests {
 
         let mut bad = fields();
         bad.private_key = Some("   ".to_owned());
-        let err = bad.validate().expect_err("空白私钥应被拒绝");
+        let err = bad.validate().expect_err("纯空白私钥按皆缺拒绝");
         match err {
             acmecast_core::Error::Validation { field, .. } => assert_eq!(field, "private_key"),
             other => panic!("期望 Validation，实际 {other:?}"),
@@ -308,11 +314,26 @@ mod tests {
         let mut bad = fields();
         bad.private_key = None;
         bad.password = Some("   ".to_owned());
-        let err = bad.validate().expect_err("空白口令应被拒绝");
+        let err = bad.validate().expect_err("纯空白口令按皆缺拒绝");
         match err {
-            acmecast_core::Error::Validation { field, .. } => assert_eq!(field, "password"),
+            // 「皆缺」统一指向 private_key（与既有口径一致），不再单独报 password 空白。
+            acmecast_core::Error::Validation { field, .. } => assert_eq!(field, "private_key"),
             other => panic!("期望 Validation，实际 {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_blank_string_material_counts_as_absent() {
+        // 编辑场景：private_key 清空后提交上来的是 Some("")，按未提供处理，
+        // 与 auth_material 的过滤口径一致——「恰好其一」通过，不误报「两者皆有」。
+        let mut ok = fields();
+        ok.private_key = Some(String::new());
+        ok.password = Some("s3cret".to_owned());
+        ok.validate().expect("空串私钥 + 非空口令应按恰好其一通过");
+
+        let mut ok = fields();
+        ok.password = Some(String::new());
+        ok.validate().expect("非空私钥 + 空串口令应按恰好其一通过");
     }
 
     #[test]

@@ -806,6 +806,15 @@ mod tests {
         SshHostCredentialType::default()
             .validate(&broken)
             .expect_err("两种认证材料同给应被拒绝");
+
+        // 编辑清空场景：private_key 清空后提交为空串（Some("")），
+        // 按未提供处理，与非空口令构成「恰好其一」可保存。
+        let mut edited = profile_fields();
+        edited["private_key"] = serde_json::json!("");
+        edited["password"] = serde_json::json!("pw");
+        SshHostCredentialType::default()
+            .validate(&edited)
+            .expect("清空私钥改填口令应按恰好其一通过");
     }
 
     #[test]
