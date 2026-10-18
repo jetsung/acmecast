@@ -331,6 +331,7 @@ async fn the_full_pipeline_applies_stores_and_deploys_a_certificate() {
         CredentialStore::new(&db, Arc::clone(&credential_registry), Arc::clone(&cipher));
 
     let account_id = an_acme_account_credential(&db, &cipher, &pebble.directory_url).await;
+    let dns_credential_id = a_memory_dns_credential(&db, &cipher).await;
 
     // 内存 DNS 提供商进注册表，挑战记录的写入与清理都能被断言。
     let memory_dns = MemoryDns::default();
@@ -379,7 +380,7 @@ async fn the_full_pipeline_applies_stores_and_deploys_a_certificate() {
                     "challenge": "dns-01",
                     "account_credential_id": account_id,
                     "dns_provider": "memory",
-                    "dns_credential_id": 1,
+                    "dns_credential_id": dns_credential_id,
                     "wait_propagation": false,
                     "insecure_skip_verify": true
                 }),
@@ -397,7 +398,7 @@ async fn the_full_pipeline_applies_stores_and_deploys_a_certificate() {
                 input: serde_json::json!({
                     "target": "local",
                     "config": {
-                        "cert_path": deploy_dir.path().join("cert.pem").display().to_string(),
+                        "fullchain_path": deploy_dir.path().join("cert.pem").display().to_string(),
                         "key_path": deploy_dir.path().join("key.pem").display().to_string(),
                         "cert_mode": "0644",
                         "key_mode": "0600"
@@ -408,21 +409,6 @@ async fn the_full_pipeline_applies_stores_and_deploys_a_certificate() {
             },
         ],
     };
-
-    // dns_credential_id=1 需要一份内存 DNS 凭据记录。
-    let dns_fields = serde_json::json!({});
-    let encrypted = cipher.encrypt_string(&dns_fields.to_string()).unwrap();
-    acmecast_store::entity::credential::ActiveModel {
-        name: Set("内存 DNS".to_owned()),
-        type_id: Set("memory".to_owned()),
-        encrypted_fields: Set(encrypted),
-        created_at: Set(chrono::Utc::now()),
-        updated_at: Set(chrono::Utc::now()),
-        ..Default::default()
-    }
-    .insert(&db)
-    .await
-    .expect("DNS 凭据应能写入");
 
     let leaked: &'static DatabaseConnection = Box::leak(Box::new(db.clone()));
     let state = acmecast_pipeline::DatabaseStateStore::new(leaked);
@@ -435,12 +421,16 @@ async fn the_full_pipeline_applies_stores_and_deploys_a_certificate() {
         outcome.failure
     );
 
-    // 1. 部署目录里有两份文件，内容是签发的证书与私钥。
+    // 1. 部署目录里有证书、派生出的中间链与私钥，内容是签发的证书与私钥。
     let cert_pem =
         std::fs::read_to_string(deploy_dir.path().join("cert.pem")).expect("证书应已部署");
     let key_pem = std::fs::read_to_string(deploy_dir.path().join("key.pem")).expect("私钥应已部署");
     assert!(cert_pem.contains("BEGIN CERTIFICATE"), "应是 PEM 证书");
     assert!(key_pem.contains("PRIVATE KEY"), "应是 PEM 私钥");
+    // 未配置 ca_path：按 fullchain 同目录派生 `<stem>.ca.cer` 并写入中间链。
+    let ca_pem = std::fs::read_to_string(deploy_dir.path().join("cert.ca.cer"))
+        .expect("应派生出 cert.ca.cer");
+    assert!(ca_pem.contains("BEGIN CERTIFICATE"), "应是 PEM 中间链");
 
     // 2. 证书已入库：域名可查、账号凭据已绑定、有效期来自 pebble 签发。
     let repository = CertRepository::new(&db);
@@ -884,7 +874,7 @@ async fn renewal_scan_triggers_a_single_reissue() {
                         input: serde_json::json!({
                             "target": "local",
                             "config": {
-                                "cert_path": deploy_dir.path().join("cert.pem").display().to_string(),
+                                "fullchain_path": deploy_dir.path().join("cert.pem").display().to_string(),
                                 "key_path": deploy_dir.path().join("key.pem").display().to_string()
                             },
                             "force": false
@@ -1711,7 +1701,7 @@ async fn auto_selected_dns_provider_completes_the_pipeline() {
                 input: serde_json::json!({
                     "target": "local",
                     "config": {
-                        "cert_path": deploy_dir.path().join("cert.pem").display().to_string(),
+                        "fullchain_path": deploy_dir.path().join("cert.pem").display().to_string(),
                         "key_path": deploy_dir.path().join("key.pem").display().to_string(),
                         "cert_mode": "0644",
                         "key_mode": "0600"
@@ -1873,4 +1863,94 @@ async fn saving_with_mismatched_credential_capability_is_rejected() {
     });
     let response = send(&app, json_request("POST", "/api/pipelines", &ok_body)).await;
     assert_eq!(response.status(), StatusCode::OK, "能力匹配应可保存");
+}
+
+// ---- 部署目录写法：保存即归一化，回显为真实生效路径 ----
+
+#[tokio::test(flavor = "multi_thread")]
+async fn deploy_directory_paths_round_trip_as_full_paths() {
+    let db = a_database().await;
+    let cipher = Arc::new(
+        CredentialCipher::from_base64(&CredentialCipher::generate_key_base64())
+            .expect("密钥应可用"),
+    );
+    let app = support::router_with_db(
+        db,
+        ServerConfig::default(),
+        AuthMode::Disabled,
+        Some(cipher),
+        acmecast_server::dependencies::credential_registry(),
+        acmecast_server::dependencies::step_registry(),
+    )
+    .await;
+
+    let body = serde_json::json!({
+        "name": "目录部署回显",
+        "enabled": true,
+        "steps": [{
+            "type_id": "cert.deploy",
+            "enabled": true,
+            "input": {
+                "target": "local",
+                "config": {
+                    "fullchain_path": "tmp/ssl/",
+                    "ca_path": "tmp/ssl/",
+                    "key_path": "tmp/ssl/"
+                }
+            }
+        }]
+    });
+    let response = send(&app, json_request("POST", "/api/pipelines", &body)).await;
+    assert_eq!(response.status(), StatusCode::OK, "目录写法应可保存");
+    let created = json(response).await;
+    let id = created["data"]["id"].as_i64().expect("应返回主键");
+
+    let response = send(
+        &app,
+        json_request("GET", &format!("/api/pipelines/{id}"), &serde_json::json!({})),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let found = json(response).await;
+    let config = &found["data"]["steps"][0]["input"]["config"];
+
+    assert_eq!(config["fullchain_path"], "tmp/ssl/fullchain.cer");
+    assert_eq!(config["ca_path"], "tmp/ssl/ca.cer");
+    assert_eq!(config["key_path"], "tmp/ssl/key");
+
+    // S3/WebDAV 的目录补全落占位模板，部署时按主域展开。
+    let body = serde_json::json!({
+        "name": "对象存储目录回显",
+        "enabled": true,
+        "steps": [
+            {
+                "type_id": "cert.deploy",
+                "enabled": true,
+                "input": {
+                    "target": "s3",
+                    "config": { "credential_id": 1, "key_filename": "keys/" }
+                }
+            },
+            {
+                "type_id": "cert.deploy",
+                "enabled": true,
+                "input": {
+                    "target": "webdav",
+                    "config": { "credential_id": 1, "ca_path": "certs/" }
+                }
+            }
+        ]
+    });
+    let response = send(&app, json_request("POST", "/api/pipelines", &body)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let created = json(response).await;
+
+    assert_eq!(
+        created["data"]["steps"][0]["input"]["config"]["key_filename"],
+        "keys/{domain}.key"
+    );
+    assert_eq!(
+        created["data"]["steps"][1]["input"]["config"]["ca_path"],
+        "certs/{domain}.ca.cer"
+    );
 }

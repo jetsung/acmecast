@@ -76,7 +76,7 @@ async fn deploy(
         .deploy(
             &LocalTarget,
             &json!({
-                "cert_path": cert.display().to_string(),
+                "fullchain_path": cert.display().to_string(),
                 "key_path": key.display().to_string(),
                 "reload_command": format!("touch {}", marker.display()),
             }),
@@ -92,8 +92,10 @@ async fn deploy(
 
 // ---- Scenario: 指纹未变化 ----
 
+/// 指纹幂等只剩云 API 目标（`tencent-ssl` / `cloud.tencent`）：文件类目标
+/// 每次都真写，且重载照走。
 #[tokio::test]
-async fn an_unchanged_fingerprint_skips_the_write_but_still_reloads() {
+async fn an_unchanged_fingerprint_still_writes_for_file_targets() {
     let (_db, store, deployer) = setup().await;
     let temp = TempDir::new();
 
@@ -103,17 +105,16 @@ async fn an_unchanged_fingerprint_skips_the_write_but_still_reloads() {
     assert!(!first.skipped_write, "首次要真写");
     assert_eq!(first.reload_output.as_deref(), Some("ran"));
 
-    // 同一份证书再来一次。
+    // 同一份证书再来一次：文件类目标不再按指纹跳过，仍然真写 + 重载。
     let second = deploy(&deployer, &store, &temp, "sha256:aaa", false)
         .await
         .expect("重复部署应成功");
 
-    assert!(second.skipped_write, "指纹一致时应跳过写入: {:?}", second);
-    // 关键：写入省了，重载没省。
+    assert!(!second.skipped_write, "文件类目标每次都应写入: {:?}", second);
     assert_eq!(
         second.reload_output.as_deref(),
         Some("ran"),
-        "跳过写入时重载仍要走完"
+        "写入时重载要走完"
     );
 }
 
@@ -129,17 +130,17 @@ async fn a_changed_fingerprint_writes_again() {
     let renewed = deploy(&deployer, &store, &temp, "sha256:bbb", false)
         .await
         .expect("续期后应成功");
-    assert!(!renewed.skipped_write, "指纹变了就必须重新写入");
+    assert!(!renewed.skipped_write, "文件类目标每次都必须写入");
 
     // 文件确实是新内容。
     let content = std::fs::read_to_string(temp.path().join("cert.pem")).unwrap();
     assert_eq!(content, "CERT");
 
-    // 并且这次写入后的指纹被记住了。
+    // 再部署一次仍然真写（文件类目标不按指纹跳过）。
     let again = deploy(&deployer, &store, &temp, "sha256:bbb", false)
         .await
         .expect("再部署应成功");
-    assert!(again.skipped_write, "新指纹应被记下");
+    assert!(!again.skipped_write);
 
     // 回退到旧指纹也要重写。
     let rolled_back = deploy(&deployer, &store, &temp, "sha256:aaa", false)
@@ -189,11 +190,11 @@ async fn a_different_target_is_judged_independently() {
         elsewhere
     );
 
-    // 它自己再部署一次就该跳过了。
+    // 它自己再部署一次：文件类目标恒写入（不再按指纹跳过）。
     let repeated = deploy(&deployer, &store, &second, "sha256:aaa", false)
         .await
         .expect("重复应成功");
-    assert!(repeated.skipped_write);
+    assert!(!repeated.skipped_write, "文件类目标每次都应写入");
 }
 
 #[tokio::test]
@@ -206,7 +207,7 @@ async fn a_failed_deployment_is_not_remembered() {
     let cert = temp.path().join("cert.pem");
 
     let bad = json!({
-        "cert_path": cert.display().to_string(),
+        "fullchain_path": cert.display().to_string(),
         "key_path": temp.path().join("key.pem").display().to_string(),
         // 权限写错 → 部署失败。
         "cert_mode": "oops",

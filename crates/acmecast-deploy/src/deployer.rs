@@ -42,7 +42,12 @@ impl Deployer {
         let reference = target_ref_of(target.type_id(), input);
         let deployed = self.state.deployed_fingerprint(&reference).await?;
 
-        let mode = if target.supports_skip_write() { decide_mode(deployed.as_deref(), &materials.fingerprint, force) } else { DeployMode::Write };
+        let mode = decide_mode(
+            target.type_id(),
+            deployed.as_deref(),
+            &materials.fingerprint,
+            force,
+        );
 
         let outcome = target.deploy(input, materials, credentials, mode).await?;
 
@@ -62,10 +67,18 @@ impl Deployer {
     }
 }
 
-/// 幂等的规则：指纹一致且未强制 → 跳过写入。
+/// 幂等的规则：仅云 API 目标（`tencent-ssl` / `cloud.tencent`）按指纹一致
+/// 跳过写入；其余目标每次都写入。
 ///
+/// 指纹幂等只在「目标侧状态由本服务全权管理」时才安全：文件类目标的历史
+/// 配置可能被外部改动（目录补全、手工覆盖），云 API 目标则不存在这个问题。
+/// 存量 `DeploymentEntry` 的旧指纹仍照常记录，只是对非云目标不参与判定。
 /// 抽成函数是为了让这条规则能被单独测试。
-fn decide_mode(deployed: Option<&str>, current: &str, force: bool) -> DeployMode {
+fn decide_mode(target_type: &str, deployed: Option<&str>, current: &str, force: bool) -> DeployMode {
+    const FINGERPRINT_IDEMPOTENT_TARGETS: [&str; 2] = ["tencent-ssl", "cloud.tencent"];
+    if !FINGERPRINT_IDEMPOTENT_TARGETS.contains(&target_type) {
+        return DeployMode::Write;
+    }
     match deployed {
         Some(previous) if previous == current && !force => DeployMode::SkipWrite,
         _ => DeployMode::Write,
@@ -78,13 +91,16 @@ mod tests {
 
     #[test]
     fn never_deployed_means_write() {
-        assert_eq!(decide_mode(None, "sha256:abc", false), DeployMode::Write);
+        assert_eq!(
+            decide_mode("tencent-ssl", None, "sha256:abc", false),
+            DeployMode::Write
+        );
     }
 
     #[test]
     fn the_same_fingerprint_skips() {
         assert_eq!(
-            decide_mode(Some("sha256:abc"), "sha256:abc", false),
+            decide_mode("tencent-ssl", Some("sha256:abc"), "sha256:abc", false),
             DeployMode::SkipWrite
         );
     }
@@ -92,7 +108,7 @@ mod tests {
     #[test]
     fn force_overrides_a_matching_fingerprint() {
         assert_eq!(
-            decide_mode(Some("sha256:abc"), "sha256:abc", true),
+            decide_mode("tencent-ssl", Some("sha256:abc"), "sha256:abc", true),
             DeployMode::Write
         );
     }
@@ -100,8 +116,32 @@ mod tests {
     #[test]
     fn a_changed_fingerprint_always_writes() {
         assert_eq!(
-            decide_mode(Some("sha256:old"), "sha256:new", false),
+            decide_mode("tencent-ssl", Some("sha256:old"), "sha256:new", false),
             DeployMode::Write
         );
+    }
+
+    /// 指纹幂等仅限云 API 目标：文件类目标每次都写入。
+    #[test]
+    fn non_tencent_always_write() {
+        for target_type in ["local", "ssh", "s3", "webdav"] {
+            assert_eq!(
+                decide_mode(target_type, Some("sha256:abc"), "sha256:abc", false),
+                DeployMode::Write,
+                "{target_type} 指纹一致也不应跳过写入"
+            );
+        }
+    }
+
+    /// 云 API 目标保留原有指纹一致跳过的语义。
+    #[test]
+    fn tencent_fingerprint_skip() {
+        for target_type in ["tencent-ssl", "cloud.tencent"] {
+            assert_eq!(
+                decide_mode(target_type, Some("sha256:abc"), "sha256:abc", false),
+                DeployMode::SkipWrite,
+                "{target_type} 指纹一致应跳过写入"
+            );
+        }
     }
 }

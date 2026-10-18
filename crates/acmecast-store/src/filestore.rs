@@ -56,7 +56,7 @@ fn sanitize_file_prefix(normalized: String) -> String {
 ///
 /// `*` 显式映射为 `_wildcard`（`*.hello.example.com` → `_wildcard.hello.example.com`），
 /// 而非模糊的 `_`；字母数字与 `.`、`-`、`_` 原样保留。空域名兜底为 `certificate`。
-fn domain_file_prefix(domain: &str) -> String {
+pub(crate) fn domain_file_prefix(domain: &str) -> String {
     let normalized = if let Some(stripped) = domain.strip_prefix("*.") {
         format!("_wildcard.{stripped}")
     } else if domain == "*" {

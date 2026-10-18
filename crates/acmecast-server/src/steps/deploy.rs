@@ -36,7 +36,7 @@ fn platform_summary(input: &CertDeployInput) -> String {
             let region = get("region").or_else(|| get("Region"));
             match (cid, region) { (Some(c), Some(r)) => format!("credential={c} region={r}"), (Some(c), None) => format!("credential={c}"), (None, Some(r)) => r, _ => "unknown".to_owned() }
         }
-        "local" => get("cert_path").or_else(|| get("certPath")).or_else(|| get("key_path")).unwrap_or_else(|| "unknown".to_owned()),
+        "local" => get("fullchain_path").or_else(|| get("cert_path")).or_else(|| get("certPath")).or_else(|| get("key_path")).unwrap_or_else(|| "unknown".to_owned()),
         "webdav" => { let url = get("url").or_else(|| get("endpoint")); url.as_deref().and_then(|u| url_host(u)).unwrap_or_else(|| "unknown".to_owned()) }
         _ => "unknown".to_owned(),
     }
@@ -221,6 +221,20 @@ impl PipelineStep for CertDeployStep {
                 acmecast_dns::proxy_log_target(&proxy)
             ));
         }
+        // `bastion: ` 行：经跳板机连接时说明走了哪台跳板。只落 host:port 与
+        // 凭据 ID 这类元数据，不含密钥材料；直连（未配跳板）不输出。
+        if let Some(bastion_id) = input
+            .config
+            .get("bastion_credential_id")
+            .and_then(serde_json::Value::as_i64)
+            && let Some(bastion) = ctx.credentials().resolve(bastion_id).await.ok()
+        {
+            let host = bastion.fields.get("host").and_then(|v| v.as_str()).unwrap_or("").trim();
+            if !host.is_empty() {
+                let port = bastion.fields.get("port").and_then(serde_json::Value::as_u64).unwrap_or(22);
+                ctx.log_info(format!("bastion: via {host}:{port} (id={bastion_id})"));
+            }
+        }
         let deployer = Deployer::new(Arc::clone(&self.state));
         // force 已移除：仅 tencent-ssl 走指纹幂等，其余每次都写入
         let force = false;
@@ -280,6 +294,13 @@ impl PipelineStep for CertDeployStep {
                 target.type_id(), platform, outcome.paths.len(), target.type_id(), platform, fingerprint,
             ));
         }
+        // 非 tencent-ssl 目标（文件类）逐行列出本次传输的目标路径，
+        // 方便到服务器/存储上按路径逐一核对；每个文件一行。
+        if target.type_id() != "tencent-ssl" {
+            for path in &outcome.paths {
+                ctx.log_info(format!("  → {path}"));
+            }
+        }
 
         Ok(StepOutput::empty()
             .with_artifact("deployed_paths", serde_json::json!(outcome.paths))
@@ -311,6 +332,8 @@ mod tests_platform {
         assert_eq!(platform_summary(&input("tencent-ssl", serde_json::json!({"credential_id": 7, "region":"ap-guangzhou"}))), "credential=7 region=ap-guangzhou");
         assert_eq!(platform_summary(&input("webdav", serde_json::json!({"url":"https://dav.example.com/files"}))), "dav.example.com");
         assert_eq!(platform_summary(&input("webdav", serde_json::json!({}))), "unknown");
+        assert_eq!(platform_summary(&input("local", serde_json::json!({"fullchain_path":"/etc/ssl/example.com.fullchain.cer"}))), "/etc/ssl/example.com.fullchain.cer");
+        // 存量配置只有旧字段时，摘要仍可读。
         assert_eq!(platform_summary(&input("local", serde_json::json!({"cert_path":"/etc/ssl/cert.pem"}))), "/etc/ssl/cert.pem");
         assert_eq!(platform_summary(&input("local", serde_json::json!({}))), "unknown");
         assert_eq!(platform_summary(&input("unknown-target", serde_json::json!({}))), "unknown");
@@ -337,6 +360,12 @@ mod tests {
         registry
             .register(acmecast_deploy::TencentSslTarget::default())
             .expect("首次注册应成功");
+        registry
+            .register(acmecast_deploy::S3Target)
+            .expect("首次注册应成功");
+        registry
+            .register(acmecast_deploy::WebdavTarget)
+            .expect("首次注册应成功");
         let step =
             CertDeployStep::new(Arc::new(registry), Arc::new(InMemoryDeploymentState::new()));
 
@@ -349,8 +378,30 @@ mod tests {
         assert_eq!(targets["local"]["display_name"], "本地文件系统");
         assert!(targets["local"]["example"]["fullchain_path"].is_string());
         assert_eq!(targets["local"]["schema"]["type"], "object");
-        // SSH 的示例是档案式写法：一个 `credential_id` 打底，路径可选。
+        // 目录写法说明随各目标 schema 一起下发，前端直接作为字段 Tooltip。
+        for (target, path_field) in [
+            ("local", "fullchain_path"),
+            ("ssh", "fullchain_path"),
+            ("s3", "fullchain_filename"),
+            ("webdav", "fullchain_path"),
+        ] {
+            let description = targets[target]["schema"]["properties"][path_field]["description"]
+                .as_str()
+                .unwrap_or_default();
+            assert!(
+                description.contains("以 `/` 结尾视为目录"),
+                "{target}.{path_field} 的说明应包含目录写法: {description}"
+            );
+        }
+        // S3 的示例展示目录写法，用户直接套用即可。
+        assert_eq!(targets["s3"]["example"]["key_filename"], "certs/");
+        assert!(targets["s3"]["schema"]["properties"]["ca_filename"].is_object());
+        assert!(targets["webdav"]["schema"]["properties"]["ca_path"].is_object());
+        // SSH 的示例是档案式写法：一个 `credential_id` 打底，三文件路径齐备。
         assert!(targets["ssh"]["example"]["credential_id"].is_i64());
+        assert!(targets["ssh"]["example"]["fullchain_path"].is_string());
+        assert!(targets["ssh"]["example"]["ca_path"].is_string());
+        assert!(targets["ssh"]["example"]["key_path"].is_string());
         assert_eq!(targets["ssh"]["schema"]["type"], "object");
         // 跳板是可选的第二份档案引用：只带标识（可空），材料不进 schema。
         assert_eq!(
@@ -574,6 +625,12 @@ mod tests {
         assert_eq!(out["cert_ids"][0], "cert-abc123");
         assert_eq!(out["skipped_write"], false);
         assert_eq!(structured.level, StepLogLevel::Info);
+
+        // tencent-ssl 是云 API 语义（无文件路径），不打逐行路径。
+        assert!(
+            logs.iter().all(|log| !log.message.starts_with("  → ")),
+            "tencent-ssl 不应出现逐行路径: {logs:?}"
+        );
     }
 
     #[tokio::test]
@@ -608,6 +665,14 @@ mod tests {
             logs.iter().all(|log| log.output.is_none()),
             "非 tencent-ssl 目标不应产生结构化输出"
         );
+
+        // 文件类目标逐行列出传输目标路径：每个文件一行，前缀「  → 」。
+        let path_lines: Vec<String> = logs
+            .iter()
+            .map(|log| log.message.clone())
+            .filter(|m| m.starts_with("  → "))
+            .collect();
+        assert_eq!(path_lines, vec!["  → /etc/ssl/cert.pem"], "{logs:?}");
     }
 
     #[tokio::test]
@@ -671,9 +736,6 @@ mod tests {
             }
             fn example_input(&self) -> serde_json::Value {
                 serde_json::json!({})
-            }
-            fn supports_skip_write(&self) -> bool {
-                true
             }
             async fn deploy(
                 &self,
@@ -910,6 +972,60 @@ mod tests {
         assert!(
             !logs.iter().any(|m| m.starts_with("proxy: ")),
             "deploy 链路无全局代理来源，inherit 不应打 proxy 行: {logs:?}"
+        );
+    }
+
+    /// 配了跳板（`bastion_credential_id`）时打一行脱敏的 `bastion: ` 日志，
+    /// 直连（未配跳板）不出现该行。
+    #[tokio::test]
+    async fn bastion_logs_line_only_when_configured() {
+        let cipher = CredentialCipher::from_base64(&CredentialCipher::generate_key_base64())
+            .expect("密钥应可用");
+        let db = mem_db().await;
+        let bastion_id = insert_credential(
+            &db,
+            &cipher,
+            serde_json::json!({ "host": "10.0.0.9", "port": 2222 }),
+        )
+        .await;
+
+        let mut registry = DeploymentRegistry::new();
+        registry
+            .register(MockTarget { type_id_val: "ssh", cert_ids: vec![] })
+            .expect("注册应成功");
+        let step = CertDeployStep::new(Arc::new(registry), Arc::new(InMemoryDeploymentState::new()));
+
+        let mut credential_registry = CredentialRegistry::new();
+        credential_registry.register(ProxyFieldCredentialType).expect("注册应成功");
+        let credentials = CredentialStore::new(&db, Arc::new(credential_registry), Arc::new(cipher));
+        let pipeline_state = MemoryState::default();
+        let artifacts = cert_artifacts();
+
+        let input = serde_json::json!({
+            "target": "ssh",
+            "config": { "bastion_credential_id": bastion_id },
+            "force": false,
+        });
+        let mut ctx = StepContext::new(1, 1, 0, &input, &artifacts, &credentials, &pipeline_state);
+        step.execute(&mut ctx).await.expect("部署应成功");
+        let logs: Vec<String> = ctx.take_logs().into_iter().map(|log| log.message).collect();
+        assert!(
+            logs.iter().any(|m| m == &format!("bastion: via 10.0.0.9:2222 (id={bastion_id})")),
+            "经跳板应打一行 bastion 日志: {logs:?}"
+        );
+
+        // 直连：未配跳板不应出现 bastion 行。
+        let input = serde_json::json!({
+            "target": "ssh",
+            "config": {},
+            "force": false,
+        });
+        let mut ctx = StepContext::new(1, 1, 0, &input, &artifacts, &credentials, &pipeline_state);
+        step.execute(&mut ctx).await.expect("部署应成功");
+        let logs: Vec<String> = ctx.take_logs().into_iter().map(|log| log.message).collect();
+        assert!(
+            !logs.iter().any(|m| m.starts_with("bastion: ")),
+            "直连不应打 bastion 行: {logs:?}"
         );
     }
 

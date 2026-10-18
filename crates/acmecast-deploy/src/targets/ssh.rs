@@ -15,6 +15,7 @@
 use std::sync::Arc;
 
 use acmecast_access::{CredentialStore, ResolvedCredential};
+use acmecast_cert::ca_pem_of;
 use async_trait::async_trait;
 use schemars::schema::RootSchema;
 use schemars::schema_for;
@@ -101,10 +102,23 @@ pub struct SshInput {
     /// 认证方式（直填时使用：材料按标识从凭据系统取）。
     #[serde(default)]
     pub auth: Option<SshAuth>,
-    /// 远程的证书路径。
+    /// 远程的完整证书链路径（旧字段名 `cert_path` 经 serde alias 兼容）。
+    ///
+    /// 以 `/` 结尾视为目录，保存时按当前证书主域补为 `<prefix>.fullchain.cer`
+    /// 等（通配 `*.example.com` → `_wildcard.example.com.*`；无主域时以
+    /// `{domain}` 占位，部署时展开），未重保存的目录写法部署时同样兜底。
+    #[serde(default, alias = "cert_path")]
+    pub fullchain_path: Option<String>,
+    /// 远程的中间链路径；留空（或缺省）时跳过 ca 文件写入。
+    ///
+    /// 以 `/` 结尾视为目录，保存时按当前证书主域补为 `<prefix>.ca.cer` 等
+    /// （无主域时以 `{domain}` 占位，部署时展开）。
     #[serde(default)]
-    pub cert_path: Option<String>,
+    pub ca_path: Option<String>,
     /// 远程的私钥路径。
+    ///
+    /// 以 `/` 结尾视为目录，保存时按当前证书主域补为 `<prefix>.key` 等
+    /// （无主域时以 `{domain}` 占位，部署时展开）。
     #[serde(default)]
     pub key_path: Option<String>,
     /// 远程证书文件的权限。
@@ -150,8 +164,10 @@ pub struct ResolvedSshConfig {
     pub user: String,
     /// 认证材料的来源。
     pub auth: SshAuthSource,
-    /// 远程的证书路径。
-    pub cert_path: String,
+    /// 远程的完整证书链路径。
+    pub fullchain_path: String,
+    /// 远程的中间链路径；`None` 表示跳过 ca 文件写入。
+    pub ca_path: Option<String>,
     /// 远程的私钥路径。
     pub key_path: String,
     /// 远程证书文件的权限。
@@ -261,11 +277,16 @@ pub fn resolve_input(
         ));
     };
 
-    let cert_path = input
-        .cert_path
+    let fullchain_path = input
+        .fullchain_path
         .clone()
         .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| missing_path("cert_path"))?;
+        .ok_or_else(|| missing_path("fullchain_path"))?;
+    // ca 路径可选：缺省或空白都表示「不写中间链文件」，不拦部署。
+    let ca_path = input
+        .ca_path
+        .clone()
+        .filter(|value| !value.trim().is_empty());
     let key_path = input
         .key_path
         .clone()
@@ -280,7 +301,8 @@ pub fn resolve_input(
             .unwrap_or_else(default_port),
         user,
         auth,
-        cert_path,
+        fullchain_path,
+        ca_path,
         key_path,
         cert_mode: input
             .cert_mode
@@ -301,6 +323,85 @@ pub fn resolve_input(
         }),
         bastion,
     })
+}
+
+/// 补全 SSH 路径字段的目录写法。
+///
+/// 与 `local` 同规则（仅 `/` 后缀，不探测远端目录），供保存时归一化与执行期
+/// 兜底共用；主域前缀已知（部署时从证书材料解析）时补 `<prefix>.fullchain.cer`
+/// 等带前缀文件名，未知时回落静态名。`cert_path` 是 `fullchain_path` 的旧别名。
+pub(crate) fn normalize_ssh_config(value: &mut Value, prefix: Option<&str>) {
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    let [fullchain_name, ca_name, key_name] = super::default_file_names(prefix);
+    for (field, default_name) in [
+        ("fullchain_path", fullchain_name.as_str()),
+        ("cert_path", fullchain_name.as_str()),
+        ("ca_path", ca_name.as_str()),
+        ("key_path", key_name.as_str()),
+    ] {
+        super::fill_directory_field(object, field, default_name);
+    }
+}
+
+/// 远端路径是目录时按默认文件名写入该目录。
+///
+/// SSH 无法在本地探测远端目录，仅以 `/` 结尾判定——用户按目录写就得把
+/// 斜杠带上，语义清晰且不多花一次远端命令。
+fn resolve_remote_path(path: &str, default_name: &str) -> String {
+    if path.ends_with('/') {
+        format!("{path}{default_name}")
+    } else {
+        path.to_owned()
+    }
+}
+
+/// 要写入的远端文件：路径、内容、权限。
+///
+/// 3 文件语义：fullchain（`chain_pem` 原样）、ca（拆链剩余；`ca_path` 缺省/
+/// 留空或链仅单张时跳过）、key（`key_pem` 原样）。远端路径为目录时按默认
+/// 文件名（`fullchain.cer`／`ca.cer`／`key`）写入该目录。
+fn ssh_files(config: &ResolvedSshConfig, materials: &CertMaterials) -> Vec<(String, String, String)> {
+    let mut files = Vec::with_capacity(3);
+    files.push((
+        resolve_remote_path(&config.fullchain_path, "fullchain.cer"),
+        materials.chain_pem.clone(),
+        config.cert_mode.clone(),
+    ));
+    if let Some(ca_path) = &config.ca_path {
+        let content = ca_pem_of(&materials.chain_pem);
+        // 链里只有叶子证书时没有可写的中间链，跳过（与 ca_path 留空一致）。
+        if !content.is_empty() {
+            files.push((
+                resolve_remote_path(ca_path, "ca.cer"),
+                content,
+                config.cert_mode.clone(),
+            ));
+        }
+    }
+    files.push((
+        resolve_remote_path(&config.key_path, "key"),
+        materials.key_pem.clone(),
+        config.key_mode.clone(),
+    ));
+    files
+}
+
+/// 兼容存量输入：`fullchain_path` 与旧别名 `cert_path` 同时出现时丢弃旧键。
+///
+/// serde 的 `alias` 把两者视作同一个字段，双键同交会报 `duplicate field`；
+/// 存量步骤经前端别名回显后保存时两个键都会带上，这里兜底去重（新键优先）。
+fn without_legacy_alias(input: &Value) -> Value {
+    let mut value = input.clone();
+    if let Some(object) = value.as_object_mut()
+        && object
+            .get("fullchain_path")
+            .is_some_and(|value| !value.is_null())
+    {
+        object.remove("cert_path");
+    }
+    value
 }
 
 /// 一个已建立的远程连接。
@@ -383,7 +484,8 @@ impl DeploymentTarget for SshTarget {
     fn example_input(&self) -> Value {
         serde_json::json!({
             "credential_id": 1,
-            "cert_path": "/etc/ssl/example.com.crt",
+            "fullchain_path": "/etc/ssl/example.com.fullchain.cer",
+            "ca_path": "/etc/ssl/example.com.ca.cer",
             "key_path": "/etc/ssl/example.com.key",
             "reload_command": "systemctl reload nginx"
         })
@@ -396,7 +498,14 @@ impl DeploymentTarget for SshTarget {
         credentials: &CredentialStore<'_>,
         mode: DeployMode,
     ) -> Result<DeployOutcome> {
-        let input: SshInput = parse_input(input)?;
+        // 目录写法在保存时已归一化；这里再补一次，覆盖未重新保存的历史配置。
+        // 主域取本次部署的证书材料，与保存时按 `cert.apply` 主域补全同源。
+        let mut normalized = input.clone();
+        normalize_ssh_config(
+            &mut normalized,
+            super::primary_domain_prefix(materials).as_deref(),
+        );
+        let input: SshInput = parse_input(&without_legacy_alias(&normalized))?;
 
         // 引用了主机档案就先取出并解密：档案里的材料与默认值从这里来。
         let profile = match input.credential_id {
@@ -425,25 +534,25 @@ impl DeploymentTarget for SshTarget {
         )?;
 
         let transport = self.connector.connect(&config, credentials).await?;
+        let files = ssh_files(&config, materials);
 
-        let mut paths: Vec<String> = if mode == DeployMode::Write {
-            Vec::with_capacity(2)
+        let mut paths = Vec::with_capacity(files.len());
+        if mode == DeployMode::Write {
+            for (path, content, file_mode) in &files {
+                transport
+                    .write_file(path, content, file_mode)
+                    .await
+                    .map_err(|e| Error::Write {
+                        path: format!("{}:{}", config.host, path),
+                        reason: e.to_string(),
+                    })?;
+                paths.push(path.clone());
+            }
         } else {
-            vec![config.cert_path.clone(), config.key_path.clone()]
-        };
-
-        for (path, content, file_mode) in [
-            (&config.cert_path, &materials.chain_pem, &config.cert_mode),
-            (&config.key_path, &materials.key_pem, &config.key_mode),
-        ] {
-            transport
-                .write_file(path, content, file_mode)
-                .await
-                .map_err(|e| Error::Write {
-                    path: format!("{}:{}", config.host, path),
-                    reason: e.to_string(),
-                })?;
-            paths.push(path.clone());
+            // 跳过写入，但路径照实列出——调用方要知道这次碰的是哪些文件。
+            for (path, _, _) in &files {
+                paths.push(path.clone());
+            }
         }
 
         let outcome = if mode == DeployMode::SkipWrite {
@@ -1082,19 +1191,9 @@ impl SshTransport for RusshTransport {
         //
         // 通过 stdin 灌进 `cat`，避免把整份证书塞进命令行参数——
         // 参数长度有限制，而且会出现在远端的 ps 输出里。
+        // 父目录与 local 目标同口径：写入前 `mkdir -p`，不存在就建。
         let temp = format!("{path}.acmecast-{}.tmp", uuid::Uuid::new_v4().simple());
-        let script = format!(
-            "set -e\n\
-             trap 'rm -f {temp}' 0\n\
-             cat > {temp} <<'ACMECAST_EOF'\n{content}\nACMECAST_EOF\n\
-             chmod {mode} {temp}\n\
-             mv {temp} {path}\n\
-             trap - 0\n",
-            temp = shell_quote(&temp),
-            path = shell_quote(path),
-            content = content,
-            mode = shell_quote(mode),
-        );
+        let script = remote_write_script(path, content, mode, &temp);
 
         let fut = run_channel(&self.session, &script);
         let (exit_code, output) = tokio::time::timeout(self.network_timeout, fut)
@@ -1119,6 +1218,32 @@ impl SshTransport for RusshTransport {
     }
 }
 
+/// 构造远端写入脚本：先建父目录，再写临时文件 + 原子替换。
+///
+/// `mkdir -p` 与 local 目标的 `create_dir_all` 同口径——目录不存在就建，
+/// 建不出来让 `set -e` 直接中止，失败必须可见（而不是「成功」但文件缺失）。
+fn remote_write_script(path: &str, content: &str, mode: &str, temp: &str) -> String {
+    let parent = std::path::Path::new(path)
+        .parent()
+        .map(|p| p.to_string_lossy().into_owned())
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(|| ".".to_owned());
+    format!(
+        "set -e\n\
+         trap 'rm -f {temp}' 0\n\
+         mkdir -p {parent}\n\
+         cat > {temp} <<'ACMECAST_EOF'\n{content}\nACMECAST_EOF\n\
+         chmod {mode} {temp}\n\
+         mv {temp} {path}\n\
+         trap - 0\n",
+        temp = shell_quote(temp),
+        parent = shell_quote(&parent),
+        path = shell_quote(path),
+        content = content,
+        mode = shell_quote(mode),
+    )
+}
+
 /// 开一个会话通道执行脚本，返回退出码与合并输出。
 async fn run_channel(
     session: &russh::client::Handle<ClientHandler>,
@@ -1137,6 +1262,9 @@ async fn run_channel(
     let mut collected = Vec::new();
     let mut exit_code = 0_i32;
 
+    // 只认 `ExitStatus` 作为终态：`Eof` 可能先于退出码到达，提前 break 会让
+    // 失败命令的退出码丢掉、被当成成功——这正是「部署显示成功但文件没写进去」
+    // 的根源。命令不发退出码时由上层超时兜底。
     while let Some(message) = channel.wait().await {
         match message {
             russh::ChannelMsg::Data { data, .. } | russh::ChannelMsg::ExtendedData { data, .. } => {
@@ -1146,7 +1274,6 @@ async fn run_channel(
                 exit_code = exit_status as i32;
                 break;
             }
-            russh::ChannelMsg::Eof => break,
             _ => {}
         }
     }
@@ -1170,6 +1297,77 @@ async fn run_channel(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 写入脚本必须先建父目录，且失败路径（非零退出）不会被吞成成功。
+    #[test]
+    fn the_write_script_creates_the_parent_directory_first() {
+        let script = remote_write_script("/tmp/t3/example.com.fullchain.cer", "PEM", "0644", "/tmp/t3/example.com.fullchain.cer.acmecast-x.tmp");
+
+        let mkdir = script.find("mkdir -p '/tmp/t3'").expect("应含 mkdir -p 父目录");
+        let cat = script.find("cat > '/tmp/t3/example.com.fullchain.cer.acmecast-x.tmp'").expect("应先写临时文件");
+        let mv = script.find("mv '/tmp/t3/example.com.fullchain.cer.acmecast-x.tmp' '/tmp/t3/example.com.fullchain.cer'").expect("最后原子替换");
+        assert!(mkdir < cat && cat < mv, "顺序必须是 mkdir → 临时写入 → 替换: {script}");
+    }
+
+    #[test]
+    fn directory_paths_are_filled_before_parsing() {
+        let mut input = serde_json::json!({
+            "credential_id": 1,
+            "fullchain_path": "/srv/ssl/",
+            "ca_path": "/srv/ssl/",
+            "key_path": "/srv/ssl/"
+        });
+
+        normalize_ssh_config(&mut input, None);
+
+        assert_eq!(input["fullchain_path"], "/srv/ssl/fullchain.cer");
+        assert_eq!(input["ca_path"], "/srv/ssl/ca.cer");
+        assert_eq!(input["key_path"], "/srv/ssl/key");
+    }
+
+    #[test]
+    fn a_known_primary_domain_prefills_prefixed_names() {
+        let mut input = serde_json::json!({
+            "fullchain_path": "/srv/ssl/",
+            "ca_path": "/tmp/t1/",
+            "key_path": "/srv/ssl/"
+        });
+
+        normalize_ssh_config(&mut input, Some("_wildcard.example.com"));
+
+        assert_eq!(input["fullchain_path"], "/srv/ssl/_wildcard.example.com.fullchain.cer");
+        assert_eq!(input["ca_path"], "/tmp/t1/_wildcard.example.com.ca.cer");
+        assert_eq!(input["key_path"], "/srv/ssl/_wildcard.example.com.key");
+    }
+
+    #[test]
+    fn directory_inputs_resolve_to_the_filled_remote_paths() {
+        let mut raw = serde_json::json!({
+            "host": "example.com",
+            "user": "deploy",
+            "auth": { "kind": "private_key", "credential_id": 3 },
+            "fullchain_path": "/srv/ssl/",
+            "ca_path": "/srv/ssl/",
+            "key_path": "/srv/ssl/"
+        });
+        normalize_ssh_config(&mut raw, None);
+        let input: SshInput = parse_input(&raw).unwrap();
+        let config = resolve_input(&input, None, None, None).unwrap();
+        let files = ssh_files(&config, &CertMaterials::new(
+            concat!(
+                "-----BEGIN CERTIFICATE-----\n叶子\n-----END CERTIFICATE-----\n",
+                "-----BEGIN CERTIFICATE-----\n中间\n-----END CERTIFICATE-----\n"
+            ),
+            "-----BEGIN PRIVATE KEY-----\n钥\n-----END PRIVATE KEY-----\n",
+            "sha256:abc",
+        ));
+
+        let paths: Vec<&str> = files.iter().map(|(path, _, _)| path.as_str()).collect();
+        assert_eq!(
+            paths,
+            vec!["/srv/ssl/fullchain.cer", "/srv/ssl/ca.cer", "/srv/ssl/key"]
+        );
+    }
 
     #[tokio::test]
     async fn socks5_tunnel_handshakes_with_an_in_process_proxy() {
@@ -1288,7 +1486,7 @@ mod tests {
     #[test]
     fn resolved_config_carrying_a_custom_proxy_passes_it_through() {
         let input = SshInput {
-            cert_path: Some("/etc/ssl/example.com.crt".to_owned()),
+            fullchain_path: Some("/etc/ssl/example.com.fullchain.cer".to_owned()),
             key_path: Some("/etc/ssl/example.com.key".to_owned()),
             ..SshInput::default()
         };
@@ -1398,7 +1596,8 @@ mod tests {
     fn a_profile_with_input_paths_resolves_into_a_full_config() {
         let input: SshInput = serde_json::from_value(serde_json::json!({
             "credential_id": 1,
-            "cert_path": "/srv/ssl/site.crt",
+            "fullchain_path": "/srv/ssl/site.fullchain.cer",
+            "ca_path": "/srv/ssl/site.ca.cer",
             "key_path": "/srv/ssl/site.key",
         }))
         .expect("应能解析");
@@ -1407,7 +1606,8 @@ mod tests {
         assert_eq!(config.host, "web-1.example.com");
         assert_eq!(config.user, "deploy");
         assert_eq!(config.port, 2222, "输入未给端口时回退档案值");
-        assert_eq!(config.cert_path, "/srv/ssl/site.crt");
+        assert_eq!(config.fullchain_path, "/srv/ssl/site.fullchain.cer");
+        assert_eq!(config.ca_path.as_deref(), Some("/srv/ssl/site.ca.cer"));
         assert_eq!(config.cert_mode, "0644", "输入未给权限时回退档案值");
         assert_eq!(config.key_mode, "0600", "档案未给权限时用系统缺省");
         assert!(
@@ -1429,7 +1629,7 @@ mod tests {
         let err = resolve_input(&input, Some(&profile()), None, None).expect_err("档案不含路径应报错");
 
         let text = err.to_string();
-        assert!(text.contains("cert_path"), "应指出缺证书路径: {text}");
+        assert!(text.contains("fullchain_path"), "应指出缺完整链路径: {text}");
         assert!(
             text.contains("部署输入"),
             "报错要说明路径从哪补: {text}"
@@ -1437,11 +1637,80 @@ mod tests {
     }
 
     #[test]
+    fn missing_paths_are_named_and_ca_path_is_optional() {
+        // 缺 fullchain_path：报错指向该字段。
+        let input: SshInput = serde_json::from_value(serde_json::json!({
+            "credential_id": 1,
+            "key_path": "/srv/ssl/site.key",
+        }))
+        .expect("应能解析");
+        let err = resolve_input(&input, Some(&profile()), None, None).expect_err("缺完整链路径应报错");
+        assert!(err.to_string().contains("fullchain_path"), "{err}");
+
+        // 缺 key_path：同样指向该字段。
+        let input: SshInput = serde_json::from_value(serde_json::json!({
+            "credential_id": 1,
+            "fullchain_path": "/srv/ssl/site.fullchain.cer",
+        }))
+        .expect("应能解析");
+        let err = resolve_input(&input, Some(&profile()), None, None).expect_err("缺私钥路径应报错");
+        assert!(err.to_string().contains("key_path"), "{err}");
+
+        // ca_path 缺省或空白都合法：解析为 None（部署时跳过 ca 文件）。
+        for raw in [
+            serde_json::json!({
+                "credential_id": 1,
+                "fullchain_path": "/srv/ssl/site.fullchain.cer",
+                "key_path": "/srv/ssl/site.key",
+            }),
+            serde_json::json!({
+                "credential_id": 1,
+                "fullchain_path": "/srv/ssl/site.fullchain.cer",
+                "ca_path": "   ",
+                "key_path": "/srv/ssl/site.key",
+            }),
+        ] {
+            let input: SshInput = serde_json::from_value(raw).expect("应能解析");
+            let config =
+                resolve_input(&input, Some(&profile()), None, None).expect("ca_path 可选不该拦");
+            assert_eq!(config.ca_path, None, "缺省/空白 ca_path 应视作跳过");
+        }
+    }
+
+    #[test]
+    fn a_legacy_cert_path_deserializes_into_fullchain_path() {
+        let input: SshInput = serde_json::from_value(serde_json::json!({
+            "credential_id": 1,
+            "cert_path": "/srv/ssl/site.crt",
+            "key_path": "/srv/ssl/site.key",
+        }))
+        .expect("存量 cert_path 应经 alias 解析");
+        assert_eq!(input.fullchain_path.as_deref(), Some("/srv/ssl/site.crt"));
+    }
+
+    #[test]
+    fn duplicate_legacy_and_new_paths_keep_the_new_key() {
+        // 存量步骤经前端别名回显保存时两个键都会带上；去重后只留新键。
+        let raw = serde_json::json!({
+            "credential_id": 1,
+            "fullchain_path": "/new/site.fullchain.cer",
+            "cert_path": "/old/site.crt",
+            "key_path": "/srv/ssl/site.key",
+        });
+        let input: SshInput =
+            serde_json::from_value(without_legacy_alias(&raw)).expect("去重后应能解析");
+        assert_eq!(input.fullchain_path.as_deref(), Some("/new/site.fullchain.cer"));
+
+        // 对照：不去重时 serde 会报 duplicate field。
+        assert!(serde_json::from_value::<SshInput>(raw.clone()).is_err());
+    }
+
+    #[test]
     fn explicit_input_values_win_over_profile_values() {
         let input: SshInput = serde_json::from_value(serde_json::json!({
             "credential_id": 1,
             "port": 2223,
-            "cert_path": "/override/site.crt",
+            "fullchain_path": "/override/site.crt",
             "key_path": "/override/site.key",
             "cert_mode": "0600",
             "reload_command": "systemctl reload caddy",
@@ -1450,7 +1719,7 @@ mod tests {
         let config = resolve_input(&input, Some(&profile()), None, None).expect("合并应成功");
 
         assert_eq!(config.port, 2223, "输入显式端口应覆盖档案");
-        assert_eq!(config.cert_path, "/override/site.crt");
+        assert_eq!(config.fullchain_path, "/override/site.crt");
         assert_eq!(config.key_path, "/override/site.key");
         assert_eq!(config.cert_mode, "0600", "输入权限应覆盖档案默认值");
         assert_eq!(config.reload_command.as_deref(), Some("systemctl reload caddy"));
@@ -1463,7 +1732,7 @@ mod tests {
             "host": "10.0.0.9",
             "user": "root",
             "auth": { "kind": "password", "credential_id": 3 },
-            "cert_path": "/c.pem",
+            "fullchain_path": "/c.pem",
             "key_path": "/k.pem",
         }))
         .expect("应能解析");
@@ -1490,7 +1759,7 @@ mod tests {
         let input: SshInput = serde_json::from_value(serde_json::json!({
             "host": "10.0.0.9",
             "user": "root",
-            "cert_path": "/c.pem",
+            "fullchain_path": "/c.pem",
             "key_path": "/k.pem",
         }))
         .expect("应能解析");
@@ -1525,7 +1794,7 @@ mod tests {
         let input: SshInput = serde_json::from_value(serde_json::json!({
             "credential_id": 1,
             "bastion_credential_id": 2,
-            "cert_path": "/srv/ssl/site.crt",
+            "fullchain_path": "/srv/ssl/site.crt",
             "key_path": "/srv/ssl/site.key",
         }))
         .expect("应能解析");
@@ -1570,7 +1839,7 @@ mod tests {
     fn no_bastion_profile_leaves_the_jump_unset() {
         let input: SshInput = serde_json::from_value(serde_json::json!({
             "credential_id": 1,
-            "cert_path": "/srv/ssl/site.crt",
+            "fullchain_path": "/srv/ssl/site.crt",
             "key_path": "/srv/ssl/site.key",
         }))
         .expect("应能解析");
@@ -1583,7 +1852,7 @@ mod tests {
         let input: SshInput = serde_json::from_value(serde_json::json!({
             "credential_id": 1,
             "bastion_credential_id": 2,
-            "cert_path": "/srv/ssl/site.crt",
+            "fullchain_path": "/srv/ssl/site.crt",
             "key_path": "/srv/ssl/site.key",
         }))
         .expect("应能解析");

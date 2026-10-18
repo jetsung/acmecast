@@ -49,11 +49,24 @@ fn mode_of(path: &Path) -> u32 {
         & 0o777
 }
 
+/// 单证书链的材料：没有中间链可写，ca 文件应被跳过。
 fn materials() -> CertMaterials {
     CertMaterials::new(
         "-----BEGIN CERTIFICATE-----\n链\n-----END CERTIFICATE-----\n",
         "-----BEGIN PRIVATE KEY-----\n钥\n-----END PRIVATE KEY-----\n",
         "sha256:abc",
+    )
+}
+
+/// 叶子 + 中间两段的材料：ca 文件有内容可写。
+fn chained_materials() -> CertMaterials {
+    CertMaterials::new(
+        concat!(
+            "-----BEGIN CERTIFICATE-----\n叶子\n-----END CERTIFICATE-----\n",
+            "-----BEGIN CERTIFICATE-----\n中间\n-----END CERTIFICATE-----\n"
+        ),
+        "-----BEGIN PRIVATE KEY-----\n钥\n-----END PRIVATE KEY-----\n",
+        "sha256:chain",
     )
 }
 
@@ -73,15 +86,25 @@ fn credentials_of(db: &sea_orm::DatabaseConnection) -> CredentialStore<'_> {
     CredentialStore::new(db, Arc::new(CredentialRegistry::new()), Arc::new(cipher))
 }
 
-/// 走一遍部署。
+/// 走一遍部署（单证书链）。
 async fn deploy(
     target: &LocalTarget,
     db: &sea_orm::DatabaseConnection,
     input: serde_json::Value,
 ) -> acmecast_deploy::Result<acmecast_deploy::DeployOutcome> {
+    deploy_with(target, db, input, materials()).await
+}
+
+/// 指定材料走一遍部署。
+async fn deploy_with(
+    target: &LocalTarget,
+    db: &sea_orm::DatabaseConnection,
+    input: serde_json::Value,
+    materials: CertMaterials,
+) -> acmecast_deploy::Result<acmecast_deploy::DeployOutcome> {
     let credentials = credentials_of(db);
     target
-        .deploy(&input, &materials(), &credentials, DeployMode::Write)
+        .deploy(&input, &materials, &credentials, DeployMode::Write)
         .await
 }
 
@@ -97,7 +120,7 @@ async fn a_certificate_and_its_key_land_on_the_configured_paths() {
         &target,
         &db,
         json!({
-            "cert_path": cert.display().to_string(),
+            "fullchain_path": cert.display().to_string(),
             "key_path": key.display().to_string(),
         }),
     )
@@ -128,7 +151,7 @@ async fn missing_parent_directories_are_created() {
         &target,
         &db,
         json!({
-            "cert_path": cert.display().to_string(),
+            "fullchain_path": cert.display().to_string(),
             "key_path": key.display().to_string(),
         }),
     )
@@ -139,16 +162,188 @@ async fn missing_parent_directories_are_created() {
     assert!(key.is_file());
 }
 
-// ---- 权限 ----
+// ---- 三文件布局 ----
 
-#[cfg(unix)]
 #[tokio::test]
-async fn the_default_modes_are_applied() {
+async fn three_configured_paths_get_the_full_chain_ca_and_key() {
     let (temp, db, target) = setup().await;
-    let cert = temp.path().join("cert.pem");
-    let key = temp.path().join("key.pem");
+    let fullchain = temp.path().join("ssl/example.com.fullchain.cer");
+    let ca = temp.path().join("ssl/example.com.ca.cer");
+    let key = temp.path().join("ssl/example.com.key");
+    let materials = chained_materials();
 
-    deploy(
+    let outcome = deploy_with(
+        &target,
+        &db,
+        json!({
+            "fullchain_path": fullchain.display().to_string(),
+            "ca_path": ca.display().to_string(),
+            "key_path": key.display().to_string(),
+        }),
+        materials.clone(),
+    )
+    .await
+    .expect("应能部署");
+
+    // fullchain 原样落链，ca 落拆链剩余，key 原样。
+    assert_eq!(
+        std::fs::read_to_string(&fullchain).unwrap(),
+        materials.chain_pem
+    );
+    let ca_content = std::fs::read_to_string(&ca).unwrap();
+    assert_eq!(ca_content, acmecast_cert::ca_pem_of(&materials.chain_pem));
+    assert!(ca_content.contains("中间"), "ca 应含中间证书");
+    assert_eq!(std::fs::read_to_string(&key).unwrap(), materials.key_pem);
+
+    // 返回的路径按 fullchain → ca → key 顺序。
+    assert_eq!(
+        outcome.paths,
+        vec![
+            fullchain.display().to_string(),
+            ca.display().to_string(),
+            key.display().to_string(),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn an_absent_ca_path_derives_the_sibling_ca_file() {
+    let (temp, db, target) = setup().await;
+    let fullchain = temp.path().join("ssl/example.com.fullchain.cer");
+    let key = temp.path().join("ssl/example.com.key");
+    let materials = chained_materials();
+
+    let outcome = deploy_with(
+        &target,
+        &db,
+        json!({
+            "fullchain_path": fullchain.display().to_string(),
+            "key_path": key.display().to_string(),
+        }),
+        materials.clone(),
+    )
+    .await
+    .expect("应能部署");
+
+    // 未配置 ca_path：按 fullchain 同目录派生 `<stem>.ca.cer`。
+    let derived = temp.path().join("ssl/example.com.ca.cer");
+    assert_eq!(
+        std::fs::read_to_string(&derived).unwrap(),
+        acmecast_cert::ca_pem_of(&materials.chain_pem)
+    );
+    assert_eq!(
+        outcome.paths,
+        vec![
+            fullchain.display().to_string(),
+            derived.display().to_string(),
+            key.display().to_string(),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_blank_ca_path_writes_only_fullchain_and_key() {
+    let (temp, db, target) = setup().await;
+    let fullchain = temp.path().join("ssl/fullchain.cer");
+    let key = temp.path().join("ssl/key");
+
+    let outcome = deploy_with(
+        &target,
+        &db,
+        json!({
+            "fullchain_path": fullchain.display().to_string(),
+            "ca_path": "",
+            "key_path": key.display().to_string(),
+        }),
+        chained_materials(),
+    )
+    .await
+    .expect("应能部署");
+
+    assert!(fullchain.is_file());
+    assert!(key.is_file());
+    assert!(
+        !temp.path().join("ssl/ca.cer").exists(),
+        "显式留空时不应写 ca 文件"
+    );
+    assert_eq!(outcome.paths.len(), 2, "只应写两个文件");
+}
+
+#[tokio::test]
+async fn directory_paths_get_the_default_file_names() {
+    let (temp, db, target) = setup().await;
+    // 已有的目录（is_dir）与以 `/` 结尾的目录都按默认文件名落盘。
+    let fullchain_dir = temp.path().join("ssl");
+    std::fs::create_dir_all(&fullchain_dir).unwrap();
+    let ca_dir = temp.path().join("ca-dir");
+    let key_dir = temp.path().join("key-dir");
+
+    let outcome = deploy_with(
+        &target,
+        &db,
+        json!({
+            "fullchain_path": fullchain_dir.display().to_string(),
+            "ca_path": format!("{}/", ca_dir.display()),
+            "key_path": format!("{}/", key_dir.display()),
+        }),
+        chained_materials(),
+    )
+    .await
+    .expect("目录路径应能部署");
+
+    let fullchain = fullchain_dir.join("fullchain.cer");
+    let ca = ca_dir.join("ca.cer");
+    let key = key_dir.join("key");
+    assert!(fullchain.is_file(), "应写入 fullchain.cer");
+    assert!(ca.is_file(), "应写入 ca.cer");
+    assert!(key.is_file(), "应写入 key");
+    assert_eq!(
+        outcome.paths,
+        vec![
+            fullchain.display().to_string(),
+            ca.display().to_string(),
+            key.display().to_string(),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_single_cert_chain_skips_the_ca_file() {
+    let (temp, db, target) = setup().await;
+    let cert = temp.path().join("ssl/cert.pem");
+    let key = temp.path().join("ssl/key.pem");
+
+    let outcome = deploy(
+        &target,
+        &db,
+        json!({
+            "fullchain_path": cert.display().to_string(),
+            "key_path": key.display().to_string(),
+        }),
+    )
+    .await
+    .expect("应能部署");
+
+    assert!(cert.is_file());
+    assert!(
+        !temp.path().join("ssl/cert.ca.cer").exists(),
+        "链里没有中间证书时不应写 ca 文件"
+    );
+    assert_eq!(
+        outcome.paths,
+        vec![cert.display().to_string(), key.display().to_string()]
+    );
+}
+
+// ---- 旧输入兼容 ----
+
+#[tokio::test]
+async fn a_legacy_cert_path_input_still_deploys() {
+    let (temp, db, target) = setup().await;
+    let cert = temp.path().join("ssl/cert.pem");
+    let key = temp.path().join("ssl/key.pem");
+
+    let outcome = deploy(
         &target,
         &db,
         json!({
@@ -157,9 +352,68 @@ async fn the_default_modes_are_applied() {
         }),
     )
     .await
+    .expect("旧输入应经 serde alias 兼容");
+
+    assert_eq!(
+        std::fs::read_to_string(&cert).unwrap(),
+        materials().chain_pem
+    );
+    assert_eq!(outcome.paths.len(), 2, "单证书链下只写两个文件");
+}
+
+#[tokio::test]
+async fn an_input_carrying_both_path_keys_uses_the_new_one() {
+    // 前端把旧值回显成 `cert_path` 又补写 `fullchain_path`，保存时两个键同在；
+    // 后端应丢弃旧键而不是报 `duplicate field`。
+    let (temp, db, target) = setup().await;
+    let fullchain = temp.path().join("ssl/new.fullchain.cer");
+    let legacy = temp.path().join("ssl/old.pem");
+    let key = temp.path().join("ssl/key.pem");
+
+    let outcome = deploy_with(
+        &target,
+        &db,
+        json!({
+            "fullchain_path": fullchain.display().to_string(),
+            "cert_path": legacy.display().to_string(),
+            "key_path": key.display().to_string(),
+        }),
+        chained_materials(),
+    )
+    .await
+    .expect("双键同在时应去重后部署");
+
+    assert!(fullchain.is_file());
+    assert!(!legacy.exists(), "旧键不应被写入");
+    // 派生 ca 跟随新路径。
+    assert!(temp.path().join("ssl/new.ca.cer").is_file());
+    assert!(outcome.paths.contains(&fullchain.display().to_string()));
+}
+
+// ---- 权限 ----
+
+#[cfg(unix)]
+#[tokio::test]
+async fn the_default_modes_are_applied() {
+    let (temp, db, target) = setup().await;
+    let fullchain = temp.path().join("example.com.fullchain.cer");
+    let key = temp.path().join("example.com.key");
+
+    deploy_with(
+        &target,
+        &db,
+        json!({
+            "fullchain_path": fullchain.display().to_string(),
+            "key_path": key.display().to_string(),
+        }),
+        chained_materials(),
+    )
+    .await
     .expect("应能部署");
 
-    assert_eq!(mode_of(&cert), 0o644, "证书默认对所有人可读");
+    let ca = temp.path().join("example.com.ca.cer");
+    assert_eq!(mode_of(&fullchain), 0o644, "证书默认对所有人可读");
+    assert_eq!(mode_of(&ca), 0o644, "中间链与证书同权限");
     assert_eq!(mode_of(&key), 0o600, "私钥默认只给属主");
 }
 
@@ -167,23 +421,28 @@ async fn the_default_modes_are_applied() {
 #[tokio::test]
 async fn configured_modes_override_the_defaults() {
     let (temp, db, target) = setup().await;
-    let cert = temp.path().join("cert.pem");
-    let key = temp.path().join("key.pem");
+    let fullchain = temp.path().join("fullchain.cer");
+    let ca = temp.path().join("ca.cer");
+    let key = temp.path().join("key");
 
-    deploy(
+    deploy_with(
         &target,
         &db,
         json!({
-            "cert_path": cert.display().to_string(),
+            "fullchain_path": fullchain.display().to_string(),
+            "ca_path": ca.display().to_string(),
             "key_path": key.display().to_string(),
             "cert_mode": "0640",
+            "ca_mode": "0444",
             "key_mode": "0400",
         }),
+        chained_materials(),
     )
     .await
     .expect("应能部署");
 
-    assert_eq!(mode_of(&cert), 0o640);
+    assert_eq!(mode_of(&fullchain), 0o640);
+    assert_eq!(mode_of(&ca), 0o444);
     assert_eq!(mode_of(&key), 0o400, "配置的权限应覆盖默认值");
 }
 
@@ -202,7 +461,7 @@ async fn an_existing_file_gets_its_mode_corrected() {
         &target,
         &db,
         json!({
-            "cert_path": temp.path().join("cert.pem").display().to_string(),
+            "fullchain_path": temp.path().join("cert.pem").display().to_string(),
             "key_path": key.display().to_string(),
         }),
     )
@@ -222,7 +481,7 @@ async fn an_invalid_mode_is_refused_before_writing_anything() {
         &target,
         &db,
         json!({
-            "cert_path": cert.display().to_string(),
+            "fullchain_path": cert.display().to_string(),
             "key_path": key.display().to_string(),
             "cert_mode": "rw-r--r--",
         }),
@@ -250,7 +509,7 @@ async fn setting_the_owner_to_oneself_succeeds() {
         &target,
         &db,
         json!({
-            "cert_path": cert.display().to_string(),
+            "fullchain_path": cert.display().to_string(),
             "key_path": key.display().to_string(),
             "uid": me,
         }),
@@ -280,7 +539,7 @@ async fn an_owner_change_that_needs_privileges_says_so() {
         &target,
         &db,
         json!({
-            "cert_path": cert.display().to_string(),
+            "fullchain_path": cert.display().to_string(),
             "key_path": key.display().to_string(),
             "uid": 0,
         }),
@@ -303,7 +562,7 @@ async fn a_successful_reload_keeps_the_deployment_successful() {
         &target,
         &db,
         json!({
-            "cert_path": cert.display().to_string(),
+            "fullchain_path": cert.display().to_string(),
             "key_path": key.display().to_string(),
             "reload_command": "echo reloaded",
         }),
@@ -335,7 +594,7 @@ async fn a_failing_reload_fails_the_whole_deployment() {
         &target,
         &db,
         json!({
-            "cert_path": cert.display().to_string(),
+            "fullchain_path": cert.display().to_string(),
             "key_path": key.display().to_string(),
             // 像 nginx 那样把问题写进 stderr 再返回非零。
             "reload_command": "echo 'nginx: 配置文件第 42 行有误' >&2; exit 3",
@@ -367,7 +626,7 @@ async fn a_failed_write_skips_the_reload_entirely() {
         &target,
         &db,
         json!({
-            "cert_path": cert.display().to_string(),
+            "fullchain_path": cert.display().to_string(),
             "key_path": key.display().to_string(),
             "key_mode": "not-a-mode",
             "reload_command": format!("touch {}", marker.display()),
@@ -390,7 +649,7 @@ async fn without_a_reload_command_nothing_is_executed() {
         &target,
         &db,
         json!({
-            "cert_path": cert.display().to_string(),
+            "fullchain_path": cert.display().to_string(),
             "key_path": key.display().to_string(),
         }),
     )
@@ -412,7 +671,7 @@ async fn stderr_is_part_of_the_recorded_output() {
         &target,
         &db,
         json!({
-            "cert_path": cert.display().to_string(),
+            "fullchain_path": cert.display().to_string(),
             "key_path": key.display().to_string(),
             "reload_command": "echo '配置语法正确' >&2",
         }),
@@ -441,7 +700,7 @@ async fn an_unwritable_path_is_reported() {
         &target,
         &db,
         json!({
-            "cert_path": cert.display().to_string(),
+            "fullchain_path": cert.display().to_string(),
             // 一个不可能是目录的路径（父目录是刚写的文件）。
             "key_path": format!("{}/child/key.pem", cert.display()),
         }),

@@ -7,7 +7,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::error::{Error, Result};
-use acmecast_cert::parse_pem_leaf;
+use acmecast_cert::{ca_pem_of, parse_pem_leaf};
 use crate::target::{CertMaterials, DeployMode, DeployOutcome, DeploymentTarget, parse_input};
 
 const ACCEPTED_CREDENTIAL_TYPES: [&str; 1] = ["deploy.webdav"];
@@ -21,10 +21,23 @@ pub struct WebdavInput {
     /// 基路径覆盖：留空则使用凭据中的 `base_path`。
     #[serde(default)]
     pub base_path: Option<String>,
-    /// 证书对象路径模板；可选，含 `{domain}`，未填时跟随 cert.store 的本地文件名。
+    /// 完整证书链路径模板；可选，含 `{domain}`，未填时按主域派生 `<主域>.fullchain.cer`。
+    ///
+    /// 以 `/` 结尾视为目录，保存时按当前证书主域补为 `<prefix>.fullchain.cer`
+    /// 等（通配 `*.example.com` → `_wildcard.example.com.*`；无主域时以
+    /// `{domain}` 占位，部署时展开）。旧字段名 `cert_path` 经 serde alias 兼容。
+    #[serde(default, alias = "cert_path")]
+    pub fullchain_path: Option<String>,
+    /// 中间链路径模板；可选，含 `{domain}`，未填时按主域派生 `<主域>.ca.cer`。
+    ///
+    /// 以 `/` 结尾视为目录，保存时按当前证书主域补为 `<prefix>.ca.cer` 等
+    /// （无主域时以 `{domain}` 占位，部署时展开）。
     #[serde(default)]
-    pub cert_path: Option<String>,
-    /// 私钥对象路径模板；可选，未填时跟随 cert.store 的本地文件名。
+    pub ca_path: Option<String>,
+    /// 私钥路径模板；可选，含 `{domain}`，未填时按主域派生 `<主域>.key`。
+    ///
+    /// 以 `/` 结尾视为目录，保存时按当前证书主域补为 `<prefix>.key` 等
+    /// （无主域时以 `{domain}` 占位，部署时展开）。
     #[serde(default)]
     pub key_path: Option<String>,
     /// 跳过 TLS 证书校验。
@@ -41,13 +54,102 @@ fn normalize_base(raw: &Option<String>) -> String {
     }
 }
 
+/// 渲染路径模板；未填时按主域派生默认文件名。
+///
+/// 仍以 `/` 结尾的模板（历史配置未重保存）按目录兜底：拼上默认文件名，
+/// 与保存时补全后的路径一致。`suffix` 用完整文件名（`fullchain.cer` 等），
+/// 保持与 `certs/ssl/` 落盘命名同源。
 fn render_path(template: &Option<String>, domain: &str, suffix: &str) -> String {
     let safe = domain_file_prefix(domain);
-    if let Some(t) = template.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        t.replace("{domain}", &safe)
-    } else {
-        format!("{safe}.{suffix}")
+    match template.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(template) if template.ends_with('/') => format!("{template}{safe}.{suffix}"),
+        Some(template) => template.replace("{domain}", &safe),
+        None => format!("{safe}.{suffix}"),
     }
+}
+
+/// 补全 WebDAV 路径字段的目录写法。
+///
+/// 保存时由仓储层做同一补全；这里作为未重新保存的历史配置的执行期兜底。
+/// 主域前缀已知时补 `<prefix>.fullchain.cer` 等带前缀路径；未知时补成含
+/// `{domain}` 的占位模板，真实前缀在部署时按主域展开。`cert_path` 是
+/// `fullchain_path` 的旧别名。
+pub(crate) fn normalize_webdav_config(value: &mut Value, prefix: Option<&str>) {
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    super::normalize_joined_prefix(object, "base_path");
+    let [fullchain_name, ca_name, key_name] = match prefix {
+        Some(prefix) => [
+            format!("{prefix}.fullchain.cer"),
+            format!("{prefix}.ca.cer"),
+            format!("{prefix}.key"),
+        ],
+        None => [
+            "{domain}.fullchain.cer".to_owned(),
+            "{domain}.ca.cer".to_owned(),
+            "{domain}.key".to_owned(),
+        ],
+    };
+    for (field, default_name) in [
+        ("fullchain_path", fullchain_name.as_str()),
+        ("cert_path", fullchain_name.as_str()),
+        ("ca_path", ca_name.as_str()),
+        ("key_path", key_name.as_str()),
+    ] {
+        super::fill_directory_field(object, field, default_name);
+    }
+}
+
+/// 兼容存量输入：`fullchain_path` 与旧别名 `cert_path` 同时出现时丢弃旧键。
+fn without_legacy_alias(input: &Value) -> Value {
+    let mut value = input.clone();
+    if let Some(object) = value.as_object_mut()
+        && object
+            .get("fullchain_path")
+            .is_some_and(|value| !value.is_null())
+    {
+        object.remove("cert_path");
+    }
+    value
+}
+
+/// 三个预期 URL：fullchain / ca / key（无论 ca 是否有内容都列出）。
+///
+/// `base` 的尾部 `/` 与渲染后路径的头部 `/` 由 `join_path` 统一归一：
+/// 衔接处只有且仅有一个 `/`，协议部分（`base_url` 里的 `https://`）不受影响。
+fn webdav_paths(
+    input: &WebdavInput,
+    domain: &str,
+    base: &str,
+    base_url: &str,
+) -> [String; 3] {
+    let join = |template: &Option<String>, suffix: &str| {
+        super::join_path(base, &render_path(template, domain, suffix))
+    };
+    [
+        format!("{base_url}/{}", join(&input.fullchain_path, "fullchain.cer")),
+        format!("{base_url}/{}", join(&input.ca_path, "ca.cer")),
+        format!("{base_url}/{}", join(&input.key_path, "key")),
+    ]
+}
+
+/// 实际要 PUT 的对象：单张链没有中间链时不含 ca，与 `local`/`ssh` 一致。
+fn webdav_writes(
+    input: &WebdavInput,
+    materials: &CertMaterials,
+    domain: &str,
+    base: &str,
+    base_url: &str,
+) -> Vec<(String, String)> {
+    let [fullchain_url, ca_url, key_url] = webdav_paths(input, domain, base, base_url);
+    let mut writes = vec![(fullchain_url, materials.chain_pem.clone())];
+    let ca_pem = ca_pem_of(&materials.chain_pem);
+    if !ca_pem.is_empty() {
+        writes.push((ca_url, ca_pem));
+    }
+    writes.push((key_url, materials.key_pem.clone()));
+    writes
 }
 
 fn domain_file_prefix(domain: &str) -> String {
@@ -93,7 +195,14 @@ impl DeploymentTarget for WebdavTarget {
         }
         schema.schema.extensions.insert(
             "x-field-order".into(),
-            json!(["credential_id", "base_path", "cert_path", "key_path", "insecure_skip_verify"]),
+            json!([
+                "credential_id",
+                "base_path",
+                "fullchain_path",
+                "ca_path",
+                "key_path",
+                "insecure_skip_verify"
+            ]),
         );
         schema
     }
@@ -101,7 +210,10 @@ impl DeploymentTarget for WebdavTarget {
     fn example_input(&self) -> Value {
         json!({
             "credential_id": 1,
-            "base_path": "certs/"
+            "base_path": "certs/",
+            "fullchain_path": "live/",
+            "ca_path": "live/",
+            "key_path": "live/"
         })
     }
 
@@ -112,7 +224,14 @@ impl DeploymentTarget for WebdavTarget {
         credentials: &CredentialStore<'_>,
         mode: DeployMode,
     ) -> Result<DeployOutcome> {
-        let input: WebdavInput = parse_input(input)?;
+        // 目录写法在保存时已归一化；这里再补一次，覆盖未重新保存的历史配置。
+        // 主域取本次部署的证书材料，与保存时按 `cert.apply` 主域补全同源。
+        let mut normalized = input.clone();
+        normalize_webdav_config(
+            &mut normalized,
+            super::primary_domain_prefix(materials).as_deref(),
+        );
+        let input: WebdavInput = parse_input(&without_legacy_alias(&normalized))?;
         let resolved = credentials
             .resolve(input.credential_id)
             .await
@@ -130,12 +249,8 @@ impl DeploymentTarget for WebdavTarget {
         let url = if vault_url.trim().is_empty() { return Err(Error::invalid_input("credential_id", "凭据缺少 url")); } else { vault_url };
         let domain = primary_domain_of(materials)
             .unwrap_or_else(|_| "certificate".to_owned());
-        let cert_name = render_path(&input.cert_path, &domain, "cer");
-        let key_name = render_path(&input.key_path, &domain, "key");
         let base_url = url.trim_end_matches('/');
-        let cert_url = format!("{base_url}/{base}{cert_name}");
-        let key_url = format!("{base_url}/{base}{key_name}");
-        let paths = vec![cert_url.clone(), key_url.clone()];
+        let paths = webdav_paths(&input, &domain, &base, base_url).to_vec();
         if mode == DeployMode::SkipWrite {
             return Ok(DeployOutcome::skipped(paths));
         }
@@ -148,8 +263,9 @@ impl DeploymentTarget for WebdavTarget {
         // 真实 WebDAV PUT：凭据 proxy_mode=custom 时经代理出网（deploy 链路
         // 无全局代理来源，inherit 在此处等同直连）。
         let proxy_url = credential_proxy(&fields);
-        webdav_put(&cert_url, &username, &password, &materials.chain_pem, input.insecure_skip_verify, proxy_url.as_deref()).await?;
-        webdav_put(&key_url, &username, &password, &materials.key_pem, input.insecure_skip_verify, proxy_url.as_deref()).await?;
+        for (url, content) in webdav_writes(&input, materials, &domain, &base, base_url) {
+            webdav_put(&url, &username, &password, &content, input.insecure_skip_verify, proxy_url.as_deref()).await?;
+        }
         Ok(DeployOutcome::written(paths))
     }
 }
@@ -212,6 +328,167 @@ fn primary_domain_of(materials: &CertMaterials) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn chained_materials() -> CertMaterials {
+        CertMaterials::new(
+            concat!(
+                "-----BEGIN CERTIFICATE-----\n叶子\n-----END CERTIFICATE-----\n",
+                "-----BEGIN CERTIFICATE-----\n中间\n-----END CERTIFICATE-----\n"
+            ),
+            "-----BEGIN PRIVATE KEY-----\n钥\n-----END PRIVATE KEY-----\n",
+            "sha256:chain",
+        )
+    }
+
+    fn single_cert_materials() -> CertMaterials {
+        CertMaterials::new(
+            "-----BEGIN CERTIFICATE-----\n单张\n-----END CERTIFICATE-----\n",
+            "-----BEGIN PRIVATE KEY-----\n钥\n-----END PRIVATE KEY-----\n",
+            "sha256:single",
+        )
+    }
+
+    fn input(config: Value) -> WebdavInput {
+        parse_input(&config).expect("配置应可解析")
+    }
+
+    #[test]
+    fn default_paths_align_with_the_three_file_layout() {
+        let input = input(json!({ "credential_id": 1 }));
+        let paths = webdav_paths(&input, "example.com", "certs/", "https://dav.example.com");
+
+        assert_eq!(
+            paths,
+            [
+                "https://dav.example.com/certs/example.com.fullchain.cer".to_owned(),
+                "https://dav.example.com/certs/example.com.ca.cer".to_owned(),
+                "https://dav.example.com/certs/example.com.key".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn wildcard_domains_use_the_wildcard_prefix() {
+        let input = input(json!({ "credential_id": 1 }));
+        let paths = webdav_paths(&input, "*.example.com", "", "https://dav.example.com");
+
+        assert!(paths[0].ends_with("/_wildcard.example.com.fullchain.cer"));
+        assert!(paths[1].ends_with("/_wildcard.example.com.ca.cer"));
+        assert!(paths[2].ends_with("/_wildcard.example.com.key"));
+    }
+
+    #[test]
+    fn directory_templates_are_filled_with_domain_placeholders() {
+        let mut raw = json!({
+            "credential_id": 1,
+            "base_path": "/dav/certs/",
+            "fullchain_path": "live/",
+            "ca_path": "live/",
+            "key_path": "live/"
+        });
+
+        normalize_webdav_config(&mut raw, None);
+
+        assert_eq!(raw["base_path"], "dav/certs/");
+        assert_eq!(raw["fullchain_path"], "live/{domain}.fullchain.cer");
+        assert_eq!(raw["ca_path"], "live/{domain}.ca.cer");
+        assert_eq!(raw["key_path"], "live/{domain}.key");
+
+        let input = input(raw);
+        let paths = webdav_paths(&input, "example.com", "dav/certs/", "https://dav.example.com");
+        assert_eq!(
+            paths,
+            [
+                "https://dav.example.com/dav/certs/live/example.com.fullchain.cer".to_owned(),
+                "https://dav.example.com/dav/certs/live/example.com.ca.cer".to_owned(),
+                "https://dav.example.com/dav/certs/live/example.com.key".to_owned(),
+            ]
+        );
+    }
+
+    /// 绝对路径（`/` 开头）与 base 衔接时只允许一个 `/`，协议部分保留。
+    #[test]
+    fn absolute_paths_join_with_a_single_slash() {
+        let input = input(json!({
+            "credential_id": 1,
+            "base_path": "/dav/acmecast/",
+            "fullchain_path": "/tmp/t3/_wildcard.w.idev.top.fullchain.cer",
+            "ca_path": "/tmp/t3/_wildcard.w.idev.top.ca.cer",
+            "key_path": "/tmp/t3/_wildcard.w.idev.top.key"
+        }));
+
+        let paths = webdav_paths(&input, "*.w.idev.top", "dav/acmecast/", "https://dav.asfd.cn/dav");
+        assert_eq!(
+            paths,
+            [
+                "https://dav.asfd.cn/dav/dav/acmecast/tmp/t3/_wildcard.w.idev.top.fullchain.cer".to_owned(),
+                "https://dav.asfd.cn/dav/dav/acmecast/tmp/t3/_wildcard.w.idev.top.ca.cer".to_owned(),
+                "https://dav.asfd.cn/dav/dav/acmecast/tmp/t3/_wildcard.w.idev.top.key".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_known_primary_domain_prefills_prefixed_paths() {
+        let mut raw = json!({
+            "credential_id": 1,
+            "base_path": "/dav/certs/",
+            "fullchain_path": "/tmp/t1/",
+            "ca_path": "/tmp/t1/",
+            "key_path": "/tmp/t1/"
+        });
+
+        normalize_webdav_config(&mut raw, Some("_wildcard.example.com"));
+
+        assert_eq!(raw["base_path"], "dav/certs/");
+        assert_eq!(raw["fullchain_path"], "/tmp/t1/_wildcard.example.com.fullchain.cer");
+        assert_eq!(raw["ca_path"], "/tmp/t1/_wildcard.example.com.ca.cer");
+        assert_eq!(raw["key_path"], "/tmp/t1/_wildcard.example.com.key");
+    }
+
+    #[test]
+    fn a_single_cert_chain_puts_only_two_files() {
+        let input = input(json!({ "credential_id": 1 }));
+        let writes = webdav_writes(&input, &single_cert_materials(), "example.com", "", "https://dav.example.com");
+
+        assert_eq!(writes.len(), 2, "单张链不应 PUT ca 文件");
+        assert!(writes[0].0.ends_with("example.com.fullchain.cer"));
+        assert!(writes[1].0.ends_with("example.com.key"));
+    }
+
+    #[test]
+    fn a_chained_chain_puts_three_files() {
+        let input = input(json!({ "credential_id": 1 }));
+        let writes = webdav_writes(&input, &chained_materials(), "example.com", "", "https://dav.example.com");
+
+        assert_eq!(writes.len(), 3);
+        assert!(writes[1].1.contains("中间"), "ca 文件应是拆链剩余");
+    }
+
+    #[test]
+    fn the_legacy_cert_path_alias_still_parses() {
+        let mut raw = json!({
+            "credential_id": 1,
+            "cert_path": "backups/"
+        });
+        normalize_webdav_config(&mut raw, None);
+        let input: WebdavInput = parse_input(&without_legacy_alias(&raw)).unwrap();
+
+        assert_eq!(
+            input.fullchain_path.as_deref(),
+            Some("backups/{domain}.fullchain.cer")
+        );
+        assert_eq!(input.ca_path, None);
+    }
+
+    #[test]
+    fn the_schema_exposes_the_new_fields_and_directory_help() {
+        let rendered = serde_json::to_string(&WebdavTarget.input_schema()).unwrap();
+
+        assert!(rendered.contains("fullchain_path"), "{rendered}");
+        assert!(rendered.contains("ca_path"), "{rendered}");
+        assert!(rendered.contains("以 `/` 结尾视为目录"), "{rendered}");
+    }
 
     /// 部署侧代理派生：仅 `custom` 自带 URL 生效，其余直连。
     #[test]

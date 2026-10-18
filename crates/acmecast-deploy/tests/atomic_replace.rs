@@ -86,7 +86,7 @@ async fn deploy_to(
     LocalTarget
         .deploy(
             &json!({
-                "cert_path": cert.display().to_string(),
+                "fullchain_path": cert.display().to_string(),
                 "key_path": key.display().to_string(),
             }),
             &materials(chain),
@@ -141,30 +141,32 @@ async fn an_existing_file_is_replaced_with_the_new_content() {
 
 #[tokio::test]
 async fn a_failed_replace_cleans_up_its_temporary_file() {
-    // 目标路径是个目录：写入临时文件会成功，替换那一步会失败。
+    // 目标路径是目录 → 按默认文件名 `fullchain.cer` 落盘；但那个名字下已经有
+    // 一个同名目录占位，写入临时文件会成功，替换那一步会失败。
     let (_db, store) = credentials().await;
     let temp = TempDir::new();
     let cert = temp.path().join("cert.pem");
     let key = temp.path().join("key.pem");
 
-    std::fs::create_dir(&cert).expect("应能建目录占位");
-    std::fs::write(cert.join("原有内容"), "别动我").unwrap();
+    let fullchain = cert.join("fullchain.cer");
+    std::fs::create_dir_all(&fullchain).expect("应能建目录占位");
+    std::fs::write(fullchain.join("原有内容"), "别动我").unwrap();
 
     let err = deploy_to(&store, &cert, &key, "CHAIN")
         .await
         .expect_err("目标是目录时应失败");
 
     assert!(err.to_string().contains("原子替换失败"), "{err}");
-    // 临时产物被清掉了。
+    // 临时产物被清掉了（它生成在目标目录里）。
     assert!(
-        !has_temp_leftover(temp.path()),
+        !has_temp_leftover(&cert),
         "失败后不该留下临时文件: {:?}",
-        entries_of(temp.path())
+        entries_of(&cert)
     );
     // 原有目标（这里是目录及其内容）没被破坏。
-    assert!(cert.is_dir(), "原有目标不该被替换成文件");
+    assert!(fullchain.is_dir(), "原有目标不该被替换成文件");
     assert_eq!(
-        std::fs::read_to_string(cert.join("原有内容")).unwrap(),
+        std::fs::read_to_string(fullchain.join("原有内容")).unwrap(),
         "别动我"
     );
 }

@@ -58,6 +58,16 @@ interface FieldOption {
 }
 
 /**
+ * 「通知」多选的单条选项：label 是选中后所显示的短格式文本，channelType
+ * 是渠道类型展示名，仅用于渲染下拉列表展开时的完整格式。
+ */
+interface NotificationChannelOption {
+  value: string | number;
+  label: string;
+  channelType: string;
+}
+
+/**
  * 字段名 → 选项来源：取值是「某个资源的 ID」或「固定的几个标识」时改成下拉，
  * 免得手填一个界面上看不见的主键、或手打一个标识。
  *
@@ -160,8 +170,9 @@ export function PipelineEditorPage() {
     },
   });
 
-  // 「通知」多选选项：仅通知类凭据，标签为「名称（id=N）— 渠道类型」。
-  const notificationChannelOptions = useMemo<FieldOption[]>(() => {
+  // 「通知」多选选项：仅通知类凭据。label 保持短格式（选中后显示），
+  // 渠道类型由 optionRender 渲染下拉列表的完整格式。
+  const notificationChannelOptions = useMemo<NotificationChannelOption[]>(() => {
     const displayNames = new Map(
       (credentialTypes ?? []).map((type) => [type.type_id, type.display_name]),
     );
@@ -169,9 +180,8 @@ export function PipelineEditorPage() {
       .filter((credential) => NOTIFY_TYPE_IDS[credential.type_id])
       .map((credential) => ({
         value: credential.id,
-        label: `${credential.name}（id=${credential.id}）— ${
-          displayNames.get(credential.type_id) ?? credential.type_id
-        }`,
+        label: `${credential.name}（id=${credential.id}）`,
+        channelType: displayNames.get(credential.type_id) ?? credential.type_id,
       }));
   }, [credentialItems, credentialTypes]);
 
@@ -452,6 +462,9 @@ export function PipelineEditorPage() {
             style={{ width: 560 }}
             placeholder="选择通知渠道（通知类凭据）"
             options={notificationChannelOptions}
+            // 下拉列表展开时展示完整格式（含渠道类型）；选中后标签由 labelRender 渲染。
+            optionRender={(option) => `${option.label}— ${option.data.channelType}`}
+            labelRender={(props) => props.label}
           />
         </Form.Item>
 
@@ -593,27 +606,30 @@ function TaskSchemaFields({
  * SSH 变体表单只保留的字段：`credential_id` 引用 SSH 主机档案——连接信息
  * （host/port/user）与认证材料在执行时从档案取，权限位用档案值或系统缺省；
  * `bastion_credential_id` 可选地再引用一份档案作跳板；其余是部署输入，
- * 绑定「证书装到哪、怎么重载」，档案不携带。
+ * 绑定「证书装到哪、怎么重载」，档案不携带。声明顺序即渲染顺序：key 与
+ * fullchain 成对、ca 与 reload_command 成对（两行两列）。
  */
 const SSH_FIELDS = [
   "credential_id",
   "bastion_credential_id",
+  "key_path",
   "fullchain_path",
   "ca_path",
-  "key_path",
   "reload_command",
 ] as const;
 
 /**
- * local 变体的字段渲染顺序：fullchain/ca/key 路径与其权限位成对相邻
- * （路径字段半宽即同行），uid/gid 成对在后；重载命令最后。字段全部保留，仅声明顺序。
+ * local 变体的字段渲染顺序：key/fullchain/ca 三行两列——每行左路径右权限
+ * （路径与权限位均半宽，成对相邻即同行）；key 行在最上；uid/gid 成对在后；
+ * 重载命令最后。字段全部保留，仅声明顺序。
  */
 const LOCAL_FIELD_ORDER = [
-  "fullchain_path",
-  "ca_path",
-  "cert_mode",
   "key_path",
   "key_mode",
+  "fullchain_path",
+  "cert_mode",
+  "ca_path",
+  "ca_mode",
   "uid",
   "gid",
   "reload_command",
@@ -631,9 +647,9 @@ const SSH_LABELS: Record<string, string> = {
 
 /**
  * 收紧 SSH 变体 schema：只保留 `SSH_FIELDS` 声明的字段，并注入展示标签与
- * 行尾标记——「SSH 主机档案」「跳板机」与「重载命令」各独占一行（右侧空列
- * 占位），fullchain/ca/key 路径成对同行。跳板字段仅在目标主机档案已选后
- * 渲染（`credential_id` 非空）。连接、认证、权限字段从表单剔除——后端
+ * 行尾标记——「SSH 主机档案」「跳板机」各独占一行（右侧空列占位），
+ * key/fullchain 与 ca/reload_command 两两成对同行。跳板字段仅在目标主机档案
+ * 已选后渲染（`credential_id` 非空）。连接、认证、权限字段从表单剔除——后端
  * `SshInput` 仍接受它们（兼容旧数据），但界面上不再提供入口。
  */
 function tightenSshSchema(schema: Record<string, unknown>): Record<string, unknown> {
@@ -645,12 +661,8 @@ function tightenSshSchema(schema: Record<string, unknown>): Record<string, unkno
     if (!node) continue;
     const decorated: Record<string, unknown> = { ...node };
     if (SSH_LABELS[field]) decorated["x-label"] = SSH_LABELS[field];
-    // 主引用、跳板与重载命令独占一行，右侧空列占位，不让路径字段补位上来。
-    if (
-      field === "credential_id" ||
-      field === "bastion_credential_id" ||
-      field === "reload_command"
-    ) {
+    // 主引用与跳板独占一行，右侧空列占位，不让路径字段补位上来。
+    if (field === "credential_id" || field === "bastion_credential_id") {
       decorated["x-end-row"] = true;
     }
     // 跳板是可选组合：选了目标主机档案后才出现；留空 = 不走跳板。

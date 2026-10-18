@@ -515,6 +515,41 @@ describe("SchemaForm", () => {
     expect(await submitAndGet(onFinish)).toEqual({ fields: { account_credential_id: 2 } });
   });
 
+  it("x-options：单选下拉可清空，清空后退回未选", async () => {
+    const onFinish = vi.fn();
+    render(
+      <Harness
+        onFinish={onFinish}
+        schema={objectSchema({
+          account_credential_id: {
+            type: "integer",
+            description: "ACME 账号凭据标识。",
+            "x-options": [
+              { value: 1, label: "le-prod（id=1）" },
+              { value: 2, label: "le-staging（id=2）" },
+            ],
+          },
+        })}
+      />,
+    );
+
+    // 选一个值。
+    fireEvent.mouseDown(screen.getByRole("combobox"));
+    fireEvent.click(await screen.findByTitle("le-staging（id=2）"));
+
+    // 选中后渲染清空按钮（allowClear）；点清空退回未选。
+    const select = screen.getByRole("combobox").closest(".ant-select")!;
+    await waitFor(() => {
+      expect(select.querySelector(".ant-select-clear")).toBeTruthy();
+    });
+    fireEvent.click(select.querySelector(".ant-select-clear")!);
+
+    // 清空后提交：值不再是 2，为缺失或 null（allowClear 触发 onChange(undefined)）。
+    const result = await submitAndGet(onFinish);
+    const value = (result.fields as Record<string, unknown>).account_credential_id;
+    expect([undefined, null]).toContain(value);
+  });
+
   it("x-options：没有可选资源时也渲染下拉并提示", () => {
     render(
       <Harness

@@ -476,3 +476,122 @@ async fn list_reports_step_counts() {
     assert_eq!(summaries[0].step_count, 3);
     assert_eq!(summaries[1].step_count, 1);
 }
+
+// ---- 部署目录路径归一化 ----
+
+fn deploy_step(target: &str, config: serde_json::Value) -> PipelineStepInput {
+    PipelineStepInput {
+        type_id: "cert.deploy".to_owned(),
+        input: serde_json::json!({ "target": target, "config": config }),
+        enabled: true,
+    }
+}
+
+#[tokio::test]
+async fn deploy_directory_paths_are_filled_before_persisting() {
+    let db = setup().await;
+    let repo = PipelineRepository::new(&db);
+
+    let id = repo
+        .save(
+            None,
+            pipeline(
+                "目录部署",
+                vec![
+                    deploy_step(
+                        "local",
+                        serde_json::json!({
+                            "fullchain_path": "/data/certs/ssl/",
+                            "ca_path": "/data/certs/ssl/",
+                            "key_path": "/data/certs/ssl/"
+                        }),
+                    ),
+                    deploy_step(
+                        "s3",
+                        serde_json::json!({
+                            "credential_id": 1,
+                            "prefix": "acme",
+                            "key_filename": "my-keys/"
+                        }),
+                    ),
+                    deploy_step(
+                        "webdav",
+                        serde_json::json!({
+                            "credential_id": 1,
+                            "cert_path": "certs/"
+                        }),
+                    ),
+                ],
+            ),
+        )
+        .await
+        .expect("应能保存");
+
+    let found = repo.find(id).await.unwrap().unwrap();
+    assert_eq!(
+        found.steps[0].input["config"],
+        serde_json::json!({
+            "fullchain_path": "/data/certs/ssl/fullchain.cer",
+            "ca_path": "/data/certs/ssl/ca.cer",
+            "key_path": "/data/certs/ssl/key"
+        }),
+        "本地目录应补全后入库"
+    );
+    assert_eq!(
+        found.steps[1].input["config"]["prefix"],
+        "acme/",
+        "prefix 应归一化"
+    );
+    assert_eq!(
+        found.steps[1].input["config"]["key_filename"],
+        "my-keys/{domain}.key"
+    );
+    assert_eq!(
+        found.steps[2].input["config"]["cert_path"],
+        "certs/{domain}.fullchain.cer",
+        "旧别名同样补全"
+    );
+}
+
+#[tokio::test]
+async fn non_directory_and_other_step_inputs_survive_untouched() {
+    let db = setup().await;
+    let repo = PipelineRepository::new(&db);
+
+    let id = repo
+        .save(
+            None,
+            pipeline(
+                "混合",
+                vec![
+                    step("cert.apply", &["example.com"]),
+                    deploy_step(
+                        "local",
+                        serde_json::json!({
+                            "fullchain_path": "/data/certs/fullchain.pem",
+                            "ca_path": "  ",
+                            "key_path": "/data/certs/key.pem"
+                        }),
+                    ),
+                ],
+            ),
+        )
+        .await
+        .expect("应能保存");
+
+    let found = repo.find(id).await.unwrap().unwrap();
+    assert_eq!(
+        found.steps[0].input,
+        serde_json::json!({ "domains": ["example.com"] }),
+        "非 cert.deploy 步骤不应被改写"
+    );
+    assert_eq!(
+        found.steps[1].input["config"],
+        serde_json::json!({
+            "fullchain_path": "/data/certs/fullchain.pem",
+            "ca_path": "  ",
+            "key_path": "/data/certs/key.pem"
+        }),
+        "非目录与空白值保持原样"
+    );
+}

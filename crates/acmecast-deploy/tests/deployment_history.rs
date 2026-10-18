@@ -9,12 +9,13 @@ use std::sync::Arc;
 use acmecast_access::{CredentialRegistry, CredentialStore};
 use acmecast_core::CredentialCipher;
 use acmecast_deploy::{
-    CertMaterials, DatabaseDeploymentState, Deployer, DeploymentQuery, DeploymentStateStore,
-    LocalTarget,
+    CertMaterials, DatabaseDeploymentState, DeployMode, DeployOutcome, Deployer, DeploymentQuery,
+    DeploymentStateStore, DeploymentTarget, LocalTarget,
 };
 use acmecast_store::migrate;
 use sea_orm::Database;
-use serde_json::json;
+use serde_json::{json, Value};
+use schemars::schema::RootSchema;
 
 /// 临时目录，Drop 时清理。
 struct TempDir(PathBuf);
@@ -64,7 +65,40 @@ async fn setup() -> (
     (db, credentials, state, deployer)
 }
 
-/// 往某个目录部署一次，带重载命令。
+/// 模拟云 API 目标（`tencent-ssl`）：只认指纹幂等语义——`SkipWrite` 时返回
+/// 跳过结果。文件类目标在新语义下恒写入，skip 行为只剩云 API 目标会触发。
+#[derive(Debug)]
+struct CloudTarget;
+
+#[async_trait::async_trait]
+impl DeploymentTarget for CloudTarget {
+    fn type_id(&self) -> &'static str {
+        "tencent-ssl"
+    }
+    fn display_name(&self) -> &'static str {
+        "模拟云目标"
+    }
+    fn input_schema(&self) -> RootSchema {
+        RootSchema::default()
+    }
+    fn example_input(&self) -> Value {
+        json!({})
+    }
+    async fn deploy(
+        &self,
+        _input: &Value,
+        _materials: &CertMaterials,
+        _credentials: &acmecast_access::CredentialStore<'_>,
+        mode: DeployMode,
+    ) -> acmecast_deploy::Result<DeployOutcome> {
+        Ok(match mode {
+            DeployMode::SkipWrite => DeployOutcome::skipped(vec!["cert-same".to_owned()]),
+            DeployMode::Write => DeployOutcome::written(vec!["cert-same".to_owned()]),
+        })
+    }
+}
+
+/// 往某个目录部署一次（local，真写），带重载命令。
 async fn deploy_into(
     deployer: &Deployer,
     store: &CredentialStore<'_>,
@@ -76,13 +110,30 @@ async fn deploy_into(
         .deploy(
             &LocalTarget,
             &json!({
-                "cert_path": temp.path().join("cert.pem").display().to_string(),
+                "fullchain_path": temp.path().join("cert.pem").display().to_string(),
                 "key_path": temp.path().join("key.pem").display().to_string(),
                 "reload_command": "echo 重载完成",
             }),
             &CertMaterials::new("CHAIN", "KEY", fingerprint),
             store,
             force,
+        )
+        .await
+}
+
+/// 往模拟云目标部署一次（无重载）。
+async fn deploy_into_cloud(
+    deployer: &Deployer,
+    store: &CredentialStore<'_>,
+    fingerprint: &str,
+) -> acmecast_deploy::Result<acmecast_deploy::DeployOutcome> {
+    deployer
+        .deploy(
+            &CloudTarget,
+            &json!({}),
+            &CertMaterials::new("CHAIN", "KEY", fingerprint),
+            store,
+            false,
         )
         .await
 }
@@ -128,14 +179,14 @@ async fn a_deployment_is_recorded_with_its_paths_and_reload_output() {
 
 #[tokio::test]
 async fn history_reflects_the_skip_flag_across_runs() {
+    // 指纹跳过只剩云 API 目标会触发（文件类目标恒写入），这里用模拟云目标。
     let (_db, store, state, deployer) = setup().await;
-    let temp = TempDir::new();
 
     // 第一次真写，第二次同指纹跳过。
-    deploy_into(&deployer, &store, &temp, "sha256:aaa", false)
+    deploy_into_cloud(&deployer, &store, "sha256:aaa")
         .await
         .expect("首次应成功");
-    deploy_into(&deployer, &store, &temp, "sha256:aaa", false)
+    deploy_into_cloud(&deployer, &store, "sha256:aaa")
         .await
         .expect("重复应成功");
 

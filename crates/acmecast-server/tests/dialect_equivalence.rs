@@ -311,7 +311,7 @@ async fn run_suite(db: DatabaseConnection) {
         Deployer::new(Arc::clone(&state) as Arc<dyn acmecast_deploy::DeploymentStateStore>);
     let temp = TempDir::new("dialect-deploy");
     let target_input = serde_json::json!({
-        "cert_path": temp.path().join("cert.pem").display().to_string(),
+        "fullchain_path": temp.path().join("cert.pem").display().to_string(),
         "key_path": temp.path().join("key.pem").display().to_string()
     });
     let materials = acmecast_deploy::CertMaterials::new(

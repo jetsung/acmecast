@@ -32,6 +32,8 @@ struct Remote {
     commands: Mutex<Vec<String>>,
     /// 让 exec 返回非零退出码。
     fail_reload: Mutex<bool>,
+    /// 让 write_file 失败（返回 Some 文件名时首个该前缀的写入报错）。
+    fail_write: Mutex<bool>,
 }
 
 impl Remote {
@@ -54,6 +56,9 @@ struct FakeTransport {
 #[async_trait]
 impl SshTransport for FakeTransport {
     async fn write_file(&self, path: &str, content: &str, mode: &str) -> Result<()> {
+        if *self.remote.fail_write.lock().expect("锁不应中毒") {
+            return Err(Error::Remote(format!("写入 {path} 失败：磁盘已满")));
+        }
         self.remote
             .files
             .lock()
@@ -262,6 +267,18 @@ fn materials() -> CertMaterials {
     CertMaterials::new("CERT-PEM", "KEY-PEM", "sha256:xyz")
 }
 
+/// 叶子 + 中间两段的材料：ca 文件有内容可写。
+fn chained_materials() -> CertMaterials {
+    CertMaterials::new(
+        concat!(
+            "-----BEGIN CERTIFICATE-----\n叶子\n-----END CERTIFICATE-----\n",
+            "-----BEGIN CERTIFICATE-----\n中间\n-----END CERTIFICATE-----\n"
+        ),
+        "-----BEGIN PRIVATE KEY-----\n钥\n-----END PRIVATE KEY-----\n",
+        "sha256:chain",
+    )
+}
+
 /// 装配一个带假连接器的 SSH 目标。
 fn target(remote: &Arc<Remote>, used: &Arc<Mutex<Vec<i64>>>) -> SshTarget {
     SshTarget::with_connector(Arc::new(FakeConnector {
@@ -305,7 +322,7 @@ async fn a_private_key_credential_writes_to_the_remote_path() {
                 "host": "web-1.example.com",
                 "user": "root",
                 "auth": { "kind": "private_key", "credential_id": id },
-                "cert_path": "/etc/nginx/ssl/fullchain.pem",
+                "fullchain_path": "/etc/nginx/ssl/fullchain.pem",
                 "key_path": "/etc/nginx/ssl/privkey.pem",
             }),
             &materials(),
@@ -359,7 +376,7 @@ async fn a_password_credential_also_writes_to_the_remote_path() {
                 "host": "web-2.example.com",
                 "user": "deploy",
                 "auth": { "kind": "password", "credential_id": id },
-                "cert_path": "/etc/ssl/cert.pem",
+                "fullchain_path": "/etc/ssl/cert.pem",
                 "key_path": "/etc/ssl/key.pem",
             }),
             &materials(),
@@ -394,7 +411,7 @@ async fn a_credential_missing_the_expected_field_is_reported() {
                 "host": "web-1",
                 "user": "root",
                 "auth": { "kind": "private_key", "credential_id": id },
-                "cert_path": "/c.pem",
+                "fullchain_path": "/c.pem",
                 "key_path": "/k.pem",
             }),
             &materials(),
@@ -431,7 +448,7 @@ async fn a_host_profile_supplies_connection_and_materials() {
             // 输入给档案引用与远端路径：连接、认证与权限来自档案。
             &json!({
                 "credential_id": id,
-                "cert_path": "/srv/ssl/site.crt",
+                "fullchain_path": "/srv/ssl/site.crt",
                 "key_path": "/srv/ssl/site.key",
             }),
             &materials(),
@@ -478,7 +495,7 @@ async fn explicit_input_values_override_the_profile() {
         .deploy(
             &json!({
                 "credential_id": id,
-                "cert_path": "/override/site.crt",
+                "fullchain_path": "/override/site.crt",
                 "key_path": "/override/site.key",
                 "cert_mode": "0600",
                 "reload_command": "systemctl reload caddy",
@@ -573,7 +590,7 @@ async fn a_bastion_credential_reaches_the_connector_as_a_jump_config() {
             &json!({
                 "credential_id": target_id,
                 "bastion_credential_id": bastion_id,
-                "cert_path": "/srv/ssl/site.crt",
+                "fullchain_path": "/srv/ssl/site.crt",
                 "key_path": "/srv/ssl/site.key",
             }),
             &materials(),
@@ -604,7 +621,7 @@ async fn the_same_credential_cannot_serve_as_target_and_bastion() {
             &json!({
                 "credential_id": id,
                 "bastion_credential_id": id,
-                "cert_path": "/srv/ssl/site.crt",
+                "fullchain_path": "/srv/ssl/site.crt",
                 "key_path": "/srv/ssl/site.key",
             }),
             &materials(),
@@ -630,7 +647,7 @@ async fn a_missing_bastion_credential_is_reported_with_its_id() {
             &json!({
                 "credential_id": id,
                 "bastion_credential_id": 4242,
-                "cert_path": "/srv/ssl/site.crt",
+                "fullchain_path": "/srv/ssl/site.crt",
                 "key_path": "/srv/ssl/site.key",
             }),
             &materials(),
@@ -666,7 +683,7 @@ async fn a_successful_remote_reload_keeps_the_deployment_successful() {
                 "host": "web-1",
                 "user": "root",
                 "auth": { "kind": "password", "credential_id": id },
-                "cert_path": "/c.pem",
+                "fullchain_path": "/c.pem",
                 "key_path": "/k.pem",
                 "reload_command": "nginx -s reload",
             }),
@@ -709,7 +726,7 @@ async fn a_nonzero_remote_exit_code_fails_the_whole_deployment() {
                 "host": "web-1",
                 "user": "root",
                 "auth": { "kind": "password", "credential_id": id },
-                "cert_path": "/c.pem",
+                "fullchain_path": "/c.pem",
                 "key_path": "/k.pem",
                 "reload_command": "nginx -s reload",
             }),
@@ -723,6 +740,350 @@ async fn a_nonzero_remote_exit_code_fails_the_whole_deployment() {
     let text = err.to_string();
     assert!(text.contains("配置有语法错误"), "应含远程输出: {text}");
     assert!(text.contains('7'), "应含退出码: {text}");
+}
+
+/// 写入失败必须立即短路成 `Error::Write`，且重载不得执行——失败不能被
+/// 后续动作掩盖，也不能在半成品路径上触发服务重载。
+#[tokio::test]
+async fn a_failed_write_short_circuits_before_any_reload() {
+    let (db, store, cipher, remote, used) = setup().await;
+    let id = seed_credential(
+        db,
+        &cipher,
+        "ssh.key",
+        "SSH 凭据",
+        json!({ "password": "s3cret" }),
+    )
+    .await;
+    *remote.fail_write.lock().unwrap() = true;
+
+    let err = target(&remote, &used)
+        .deploy(
+            &json!({
+                "host": "web-1",
+                "user": "root",
+                "auth": { "kind": "password", "credential_id": id },
+                "fullchain_path": "/c.pem",
+                "key_path": "/k.pem",
+                "reload_command": "nginx -s reload",
+            }),
+            &materials(),
+            &store,
+            DeployMode::Write,
+        )
+        .await
+        .expect_err("写入失败应导致部署失败");
+
+    assert!(
+        matches!(err, acmecast_deploy::Error::Write { .. }) || err.to_string().contains("写入"),
+        "应报告写入错误: {err:?}"
+    );
+    assert!(
+        remote.commands().is_empty(),
+        "写入失败后不得执行重载: {:?}",
+        remote.commands()
+    );
+}
+
+// ---- Scenario: 三个远端文件 ----
+
+#[tokio::test]
+async fn three_configured_paths_write_fullchain_ca_and_key() {
+    let (db, store, cipher, remote, used) = setup().await;
+    let id = seed_credential(
+        db,
+        &cipher,
+        "ssh.key",
+        "SSH 凭据",
+        json!({ "password": "s3cret" }),
+    )
+    .await;
+    let materials = chained_materials();
+
+    let outcome = target(&remote, &used)
+        .deploy(
+            &json!({
+                "host": "web-1",
+                "user": "root",
+                "auth": { "kind": "password", "credential_id": id },
+                "fullchain_path": "/etc/ssl/site.fullchain.cer",
+                "ca_path": "/etc/ssl/site.ca.cer",
+                "key_path": "/etc/ssl/site.key",
+            }),
+            &materials,
+            &store,
+            DeployMode::Write,
+        )
+        .await
+        .expect("三文件应部署成功");
+
+    assert_eq!(
+        outcome.paths,
+        vec![
+            "/etc/ssl/site.fullchain.cer".to_owned(),
+            "/etc/ssl/site.ca.cer".to_owned(),
+            "/etc/ssl/site.key".to_owned()
+        ]
+    );
+
+    let (fullchain, fullchain_mode) = remote
+        .file("/etc/ssl/site.fullchain.cer")
+        .expect("远程应有完整链");
+    assert_eq!(fullchain, materials.chain_pem, "fullchain 原样落链");
+    assert_eq!(fullchain_mode, "0644");
+
+    let (ca, ca_mode) = remote.file("/etc/ssl/site.ca.cer").expect("远程应有中间链");
+    assert_eq!(ca, acmecast_cert::ca_pem_of(&materials.chain_pem), "ca 落拆链剩余");
+    assert_eq!(ca_mode, "0644", "ca 权限随证书权限");
+
+    let (key, key_mode) = remote.file("/etc/ssl/site.key").expect("远程应有私钥");
+    assert_eq!(key, materials.key_pem);
+    assert_eq!(key_mode, "0600");
+}
+
+#[tokio::test]
+async fn a_missing_ca_path_writes_only_fullchain_and_key() {
+    let (db, store, cipher, remote, used) = setup().await;
+    let id = seed_credential(
+        db,
+        &cipher,
+        "ssh.key",
+        "SSH 凭据",
+        json!({ "password": "s3cret" }),
+    )
+    .await;
+    let materials = chained_materials();
+
+    // 缺省与空白字符串两种写法都表示跳过 ca 文件。
+    for ca_path in [None, Some("   ")] {
+        let mut input = json!({
+            "host": "web-1",
+            "user": "root",
+            "auth": { "kind": "password", "credential_id": id },
+            "fullchain_path": "/etc/ssl/site.fullchain.cer",
+            "key_path": "/etc/ssl/site.key",
+        });
+        if let Some(ca_path) = ca_path {
+            input["ca_path"] = json!(ca_path);
+        }
+
+        let outcome = target(&remote, &used)
+            .deploy(&input, &materials, &store, DeployMode::Write)
+            .await
+            .expect("两文件应部署成功");
+
+        assert_eq!(outcome.paths.len(), 2, "ca_path={ca_path:?} 应只写两个文件");
+        assert!(
+            remote.file("/etc/ssl/site.ca.cer").is_none(),
+            "ca_path={ca_path:?} 不该产生 ca 文件"
+        );
+    }
+}
+
+#[tokio::test]
+async fn trailing_slash_paths_get_the_default_file_names() {
+    let (db, store, cipher, remote, used) = setup().await;
+    let id = seed_credential(
+        db,
+        &cipher,
+        "ssh.key",
+        "SSH 凭据",
+        json!({ "password": "s3cret" }),
+    )
+    .await;
+
+    let outcome = target(&remote, &used)
+        .deploy(
+            &json!({
+                "host": "web-1",
+                "user": "root",
+                "auth": { "kind": "password", "credential_id": id },
+                "fullchain_path": "/etc/nginx/ssl/",
+                "ca_path": "/etc/nginx/ssl/",
+                "key_path": "/etc/nginx/ssl/",
+            }),
+            &chained_materials(),
+            &store,
+            DeployMode::Write,
+        )
+        .await
+        .expect("目录路径应部署成功");
+
+    assert_eq!(
+        outcome.paths,
+        vec![
+            "/etc/nginx/ssl/fullchain.cer".to_owned(),
+            "/etc/nginx/ssl/ca.cer".to_owned(),
+            "/etc/nginx/ssl/key".to_owned()
+        ]
+    );
+    assert!(remote.file("/etc/nginx/ssl/fullchain.cer").is_some());
+    assert!(remote.file("/etc/nginx/ssl/ca.cer").is_some());
+    assert!(remote.file("/etc/nginx/ssl/key").is_some());
+}
+
+#[tokio::test]
+async fn a_single_cert_chain_skips_the_ca_file() {
+    let (db, store, cipher, remote, used) = setup().await;
+    let id = seed_credential(
+        db,
+        &cipher,
+        "ssh.key",
+        "SSH 凭据",
+        json!({ "password": "s3cret" }),
+    )
+    .await;
+
+    // materials() 只有一张证书：ca_pem_of 为空串，即便配了 ca_path 也跳过。
+    let outcome = target(&remote, &used)
+        .deploy(
+            &json!({
+                "host": "web-1",
+                "user": "root",
+                "auth": { "kind": "password", "credential_id": id },
+                "fullchain_path": "/srv/ssl/site.fullchain.cer",
+                "ca_path": "/srv/ssl/site.ca.cer",
+                "key_path": "/srv/ssl/site.key",
+            }),
+            &materials(),
+            &store,
+            DeployMode::Write,
+        )
+        .await
+        .expect("单证书链应照常部署");
+
+    assert_eq!(outcome.paths.len(), 2, "链仅单张时只写两个文件");
+    assert!(remote.file("/srv/ssl/site.ca.cer").is_none());
+}
+
+// ---- Scenario: 存量 cert_path 兼容 ----
+
+#[tokio::test]
+async fn a_legacy_cert_path_still_deploys_to_the_same_remote_path() {
+    let (db, store, cipher, remote, used) = setup().await;
+    let id = seed_credential(
+        db,
+        &cipher,
+        "ssh.key",
+        "SSH 凭据",
+        json!({ "password": "s3cret" }),
+    )
+    .await;
+
+    let outcome = target(&remote, &used)
+        .deploy(
+            &json!({
+                "host": "web-1",
+                "user": "root",
+                "auth": { "kind": "password", "credential_id": id },
+                "cert_path": "/legacy/fullchain.pem",
+                "key_path": "/legacy/key.pem",
+            }),
+            &materials(),
+            &store,
+            DeployMode::Write,
+        )
+        .await
+        .expect("存量 cert_path 应经 alias 兼容部署");
+
+    assert_eq!(
+        outcome.paths,
+        vec!["/legacy/fullchain.pem".to_owned(), "/legacy/key.pem".to_owned()]
+    );
+    let (chain, _) = remote
+        .file("/legacy/fullchain.pem")
+        .expect("旧字段名应写到同一远端路径");
+    assert_eq!(chain, "CERT-PEM");
+}
+
+#[tokio::test]
+async fn both_path_keys_deploy_to_the_new_key() {
+    // 存量步骤经前端别名回显保存后新旧两键并存：以新键为准，不报 duplicate field。
+    let (db, store, cipher, remote, used) = setup().await;
+    let id = seed_credential(
+        db,
+        &cipher,
+        "ssh.key",
+        "SSH 凭据",
+        json!({ "password": "s3cret" }),
+    )
+    .await;
+
+    let outcome = target(&remote, &used)
+        .deploy(
+            &json!({
+                "host": "web-1",
+                "user": "root",
+                "auth": { "kind": "password", "credential_id": id },
+                "fullchain_path": "/new/fullchain.pem",
+                "cert_path": "/old/fullchain.pem",
+                "key_path": "/new/key.pem",
+            }),
+            &materials(),
+            &store,
+            DeployMode::Write,
+        )
+        .await
+        .expect("双键并存应去重后部署");
+
+    assert_eq!(
+        outcome.paths,
+        vec!["/new/fullchain.pem".to_owned(), "/new/key.pem".to_owned()]
+    );
+    assert!(remote.file("/new/fullchain.pem").is_some());
+    assert!(remote.file("/old/fullchain.pem").is_none());
+}
+
+#[tokio::test]
+async fn missing_paths_fail_before_writing() {
+    let (db, store, cipher, remote, used) = setup().await;
+    let id = seed_credential(
+        db,
+        &cipher,
+        "ssh.key",
+        "SSH 凭据",
+        json!({ "password": "s3cret" }),
+    )
+    .await;
+
+    // 缺 fullchain_path：执行前失败，报错指向字段名。
+    let err = target(&remote, &used)
+        .deploy(
+            &json!({
+                "host": "web-1",
+                "user": "root",
+                "auth": { "kind": "password", "credential_id": id },
+                "key_path": "/srv/ssl/site.key",
+            }),
+            &materials(),
+            &store,
+            DeployMode::Write,
+        )
+        .await
+        .expect_err("缺完整链路径应失败");
+    assert!(err.to_string().contains("fullchain_path"), "{err}");
+
+    // 缺 key_path：同样在写入前失败。
+    let err = target(&remote, &used)
+        .deploy(
+            &json!({
+                "host": "web-1",
+                "user": "root",
+                "auth": { "kind": "password", "credential_id": id },
+                "fullchain_path": "/srv/ssl/site.fullchain.cer",
+            }),
+            &materials(),
+            &store,
+            DeployMode::Write,
+        )
+        .await
+        .expect_err("缺私钥路径应失败");
+    assert!(err.to_string().contains("key_path"), "{err}");
+
+    assert!(
+        remote.files.lock().expect("锁不应中毒").is_empty(),
+        "校验应在写入与连接前完成"
+    );
 }
 
 // ---- 注册表 ----

@@ -519,6 +519,8 @@ function SchemaField({
         disabled={disabled}
         placeholder={options.length === 0 ? "暂无可选项" : undefined}
         options={selectOptions}
+        // 资源选择器允许清空：选错了能退回未选，而不是被卡在原值上。
+        allowClear
         {...control}
       />
     );

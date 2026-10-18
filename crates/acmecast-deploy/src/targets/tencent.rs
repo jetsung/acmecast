@@ -314,11 +314,9 @@ impl DeploymentTarget for TencentSslTarget {
     }
 
     fn display_name(&self) -> &'static str {
-        "腾讯云 SSL 证书"
-    }
-
-    fn supports_skip_write(&self) -> bool {
-        true
+        // 与文件类目标（local/ssh/s3/webdav 的 fullchain.cer/ca.cer/key 3 文件）区分：
+        // 腾讯云是云 API 上传，仅需 fullchain+key 两个材料，不产生/不要求 ca.cer。
+        "腾讯云 SSL 证书(仅需 fullchain+key)"
     }
 
     fn input_schema(&self) -> RootSchema {

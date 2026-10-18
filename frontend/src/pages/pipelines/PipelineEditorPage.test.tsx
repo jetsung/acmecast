@@ -169,8 +169,20 @@ vi.mock("@/api/client", () => ({
                             example: {},
                             schema: {
                               type: "object",
-                              required: ["cert_path"],
-                              properties: { cert_path: { type: "string" } },
+                              required: ["fullchain_path", "key_path"],
+                              // 键序故意与逻辑顺序不一致：渲染顺序来自前端注入的
+                              // x-field-order——key/fullchain/ca 三行两列，左路径右权限。
+                              properties: {
+                                key_mode: { type: ["string", "null"] },
+                                uid: { type: ["integer", "null"] },
+                                ca_mode: { type: ["string", "null"] },
+                                fullchain_path: { type: ["string", "null"] },
+                                key_path: { type: ["string", "null"] },
+                                cert_mode: { type: ["string", "null"] },
+                                ca_path: { type: ["string", "null"] },
+                                gid: { type: ["integer", "null"] },
+                                reload_command: { type: ["string", "null"] },
+                              },
                             },
                           },
                           ssh: {
@@ -581,9 +593,58 @@ describe("PipelineEditorPage", () => {
     // 非通知类凭据（DNS / 部署 / 账号）不出现在「通知」下拉里。
     expect(screen.queryByTitle("some-dns（id=8）")).toBeNull();
     expect(screen.queryByTitle("web-01（id=10）")).toBeNull();
-    // 选项标签含渠道类型（展示名来自 /api/credential-types）。
-    fireEvent.click(await screen.findByTitle("ops-feishu（id=50）— 飞书机器人"));
-    fireEvent.click(await screen.findByTitle("ops-mail（id=51）— 邮件"));
+
+    /**
+     * 打开「通知」下拉的面板（关闭的下拉会留在 DOM，jsdom 里退场动画不结束，
+     * 所以按 aria-owns 取所属面板而非依赖可见性）。
+     */
+    const openNotificationPanel = async (trigger: HTMLElement) => {
+      fireEvent.mouseDown(trigger);
+      return await waitFor(() => {
+        const listId = trigger.getAttribute("aria-owns");
+        expect(listId).toBeTruthy();
+        const list = document.getElementById(listId!);
+        expect(list).toBeTruthy();
+        return list!.closest<HTMLElement>(".ant-select-dropdown")!;
+      });
+    };
+    // 选项由短格式 label 定位（option 自身的 title 取自 label），
+    // 返回的是渲染后的内容元素，即下拉列表实际显示的文字。
+    const findNotificationOptionContent = async (
+      panel: HTMLElement,
+      shortLabel: string,
+    ) => {
+      const option = await waitFor(() => {
+        const found = panel.querySelector<HTMLElement>(
+          `.ant-select-item-option[title="${shortLabel}"]`,
+        );
+        expect(found).toBeTruthy();
+        return found!;
+      });
+      return option.querySelector<HTMLElement>(".ant-select-item-option-content")!;
+    };
+    // 已选标签（选中后显示在选择框内）的文本集合。
+    const selectedTagTexts = () =>
+      Array.from(
+        document.querySelectorAll<HTMLElement>(".ant-select-selection-item"),
+      ).map((element) => element.textContent ?? "");
+
+    const panel = await openNotificationPanel(field);
+    const feishuContent = await findNotificationOptionContent(panel, "ops-feishu（id=50）");
+    // 下拉列表展开时仍为完整格式（含渠道类型）。
+    expect(feishuContent.textContent).toContain("ops-feishu（id=50）— 飞书机器人");
+    const mailContent = await findNotificationOptionContent(panel, "ops-mail（id=51）");
+    expect(mailContent.textContent).toContain("ops-mail（id=51）— 邮件");
+
+    // 选项由短格式 label 选中，两个都选入。
+    fireEvent.click(await screen.findByTitle("ops-feishu（id=50）"));
+    fireEvent.click(await screen.findByTitle("ops-mail（id=51）"));
+
+    // 选中后标签为短格式，不再包含渠道类型。
+    const selectedTexts = selectedTagTexts();
+    expect(selectedTexts).toContain("ops-feishu（id=50）");
+    expect(selectedTexts).toContain("ops-mail（id=51）");
+    expect(selectedTexts.some((text) => text.includes("—"))).toBe(false);
 
     const body = await save();
     // 多选值保持数字 ID 数组。
@@ -594,9 +655,16 @@ describe("PipelineEditorPage", () => {
     posted.length = 0;
     await waitForTasks(renderPage("/pipelines/7"));
 
-    // 已选渠道以选中项标签回显。
-    expect(await screen.findByTitle("ops-feishu（id=50）— 飞书机器人")).toBeTruthy();
-    expect(screen.getByTitle("ops-mail（id=51）— 邮件")).toBeTruthy();
+    // 已选渠道以选中项标签回显：短格式，不含渠道类型。
+    const selectedTagTexts = () =>
+      Array.from(
+        document.querySelectorAll<HTMLElement>(".ant-select-selection-item"),
+      ).map((element) => element.textContent ?? "");
+    await waitFor(() => {
+      expect(selectedTagTexts()).toContain("ops-feishu（id=50）");
+    });
+    expect(selectedTagTexts()).toContain("ops-mail（id=51）");
+    expect(selectedTagTexts().some((text) => text.includes("—"))).toBe(false);
   });
 
   it("复制流水线时预填通知渠道", async () => {
@@ -613,7 +681,14 @@ describe("PipelineEditorPage", () => {
       }),
     );
 
-    expect(await screen.findByTitle("ops-feishu（id=50）— 飞书机器人")).toBeTruthy();
+    // 复制入时预填：选中项同样只显示短格式。
+    const selectedTagTexts = () =>
+      Array.from(
+        document.querySelectorAll<HTMLElement>(".ant-select-selection-item"),
+      ).map((element) => element.textContent ?? "");
+    await waitFor(() => {
+      expect(selectedTagTexts()).toContain("ops-feishu（id=50）");
+    });
   });
 
   it("按字段语义选控件：枚举/凭据走下拉，任意结构走 JSON 文本", async () => {
@@ -667,21 +742,31 @@ describe("PipelineEditorPage", () => {
     expect(rootOrder).not.toContain("force");
     expect(rootOrder.indexOf("target")).toBeLessThan(rootOrder.indexOf("SSH 主机档案"));
 
-    // 布局:SSH 主机档案、跳板机与 reload_command 各独占一行(右侧空列占位),
-    // fullchain/ca/key 路径成对同行(半宽)。
+    // 布局:SSH 主机档案、跳板机各独占一行(右侧空列占位),
+    // key/fullchain 与 ca/reload_command 两两成对同行(半宽)。
     const colOf = (label: string) =>
       allItems.find((item) => item.querySelector("label")?.textContent === label)
         ?.closest(".ant-col");
     expect(colOf("SSH 主机档案")?.className).toContain("ant-col-12");
     expect(colOf("跳板机")?.className).toContain("ant-col-12");
-    expect(colOf("fullchain_path")?.className).toContain("ant-col-12");
     expect(colOf("key_path")?.className).toContain("ant-col-12");
+    expect(colOf("fullchain_path")?.className).toContain("ant-col-12");
+    expect(colOf("ca_path")?.className).toContain("ant-col-12");
     expect(colOf("reload_command")?.className).toContain("ant-col-12");
-    // 空列占位:档案、跳板与重载命令所在行的行尾各有一个无 label 的空列。
+    // 空列占位:档案与跳板所在行的行尾各有一个无 label 的空列。
     const emptyCols = document.querySelectorAll<HTMLElement>(".ant-col[aria-hidden]");
-    expect(emptyCols.length).toBe(3);
+    expect(emptyCols.length).toBe(2);
+
+    // 渲染顺序随 SSH_FIELDS(注入的 x-field-order):key→fullchain→ca→reload_command。
+    const fieldOrder = ["key_path", "fullchain_path", "ca_path", "reload_command"].map((label) =>
+      rootOrder.indexOf(label),
+    );
+    expect(fieldOrder[0]).toBeLessThan(fieldOrder[1]);
+    expect(fieldOrder[1]).toBeLessThan(fieldOrder[2]);
+    expect(fieldOrder[2]).toBeLessThan(fieldOrder[3]);
 
     fireEvent.change(screen.getByLabelText("fullchain_path"), { target: { value: "/srv/ssl/site.fullchain.cer" } });
+    fireEvent.change(screen.getByLabelText("ca_path"), { target: { value: "/srv/ssl/site.ca.cer" } });
     fireEvent.change(screen.getByLabelText("key_path"), { target: { value: "/srv/ssl/site.key" } });
 
     const body = await save();
@@ -694,9 +779,61 @@ describe("PipelineEditorPage", () => {
         credential_id: 10,
         bastion_credential_id: null,
         fullchain_path: "/srv/ssl/site.fullchain.cer",
+        ca_path: "/srv/ssl/site.ca.cer",
         key_path: "/srv/ssl/site.key",
       },
     });
+  });
+
+  it("local 变体三行两列：key/fullchain/ca 各占一行，左路径右权限", async () => {
+    posted.length = 0;
+    const queryClient = renderPage();
+    await waitForTasks(queryClient);
+    await waitFor(() => expect(queryClient.getQueryState(["credentials"])?.status).toBe("success"));
+    fireEvent.change(screen.getByLabelText("名称"), { target: { value: "p" } });
+
+    await addStep("任务 F");
+
+    const target = await screen.findByLabelText("target");
+    fireEvent.mouseDown(target);
+    fireEvent.click(await screen.findByTitle("本地文件系统"));
+
+    // 渲染顺序来自 LOCAL_FIELD_ORDER（而非 schema 键序）：key 行在上，
+    // 每行左路径右权限。
+    const order = [
+      "key_path",
+      "key_mode",
+      "fullchain_path",
+      "cert_mode",
+      "ca_path",
+      "ca_mode",
+      "uid",
+      "gid",
+      "reload_command",
+    ];
+    // 切换 target 后子表单异步重渲，先等第一个字段出现。
+    await screen.findByLabelText(order[0]);
+    for (const label of order) {
+      expect(screen.getByLabelText(label)).toBeTruthy();
+    }
+
+    const allItems = Array.from(document.querySelectorAll<HTMLElement>(".ant-form-item"));
+    const labels = allItems
+      .map((item) => item.querySelector("label")?.textContent)
+      .filter((text): text is string => text !== null);
+    const indexes = order.map((label) => labels.indexOf(label));
+    expect(indexes.every((index) => index >= 0)).toBe(true);
+    for (let i = 1; i < indexes.length; i += 1) {
+      expect(indexes[i - 1]).toBeLessThan(indexes[i]);
+    }
+
+    // 九个字段都是半宽：相邻两个（左路径右权限）成对占满一行。
+    const colOf = (label: string) =>
+      allItems.find((item) => item.querySelector("label")?.textContent === label)
+        ?.closest(".ant-col");
+    for (const label of order) {
+      expect(colOf(label)?.className).toContain("ant-col-12");
+    }
   });
 
   it("跳板机字段随目标主机档案联动：未选隐藏、选中出现、切换目标刷新选项", async () => {
@@ -784,6 +921,60 @@ describe("PipelineEditorPage", () => {
     // 已选跳板值保留：目标引用切换不影响跳板选择。
     expect(config["credential_id"]).toBe(40);
     expect(config["bastion_credential_id"]).toBe(41);
+  });
+
+  it("跳板机下拉可清空：选中后能退回未选，保存提交 null", async () => {
+    posted.length = 0;
+    const queryClient = renderPage();
+    await waitForTasks(queryClient);
+    await waitFor(() => expect(queryClient.getQueryState(["credentials"])?.status).toBe("success"));
+    fireEvent.change(screen.getByLabelText("名称"), { target: { value: "p" } });
+
+    await addStep("任务 F");
+
+    const target = await screen.findByLabelText("target");
+    fireEvent.mouseDown(target);
+    fireEvent.click(await screen.findByTitle("SSH 远程主机"));
+
+    const hostCredential = await screen.findByLabelText("SSH 主机档案");
+    fireEvent.mouseDown(hostCredential);
+    fireEvent.click(await screen.findByTitle("web-01（id=10）"));
+
+    // 选跳板 jump-01（id=41）：下拉带 allowClear 后才出现清空按钮。
+    // 用 aria-owns 锁定跳板下拉自己的面板再点选，避免与残留的档案下拉面板
+    // （同样含 jump-01 选项）撞上「多个元素同 title」。
+    const bastion = await screen.findByLabelText("跳板机");
+    fireEvent.mouseDown(bastion);
+    const bastionPanel = await waitFor(() => {
+      const listId = bastion.getAttribute("aria-owns");
+      expect(listId).toBeTruthy();
+      const panel = document
+        .getElementById(listId!)
+        ?.closest<HTMLElement>(".ant-select-dropdown");
+      expect(panel).toBeTruthy();
+      return panel!;
+    });
+    const jumpOption = await waitFor(() => {
+      const o = bastionPanel.querySelector<HTMLElement>(
+        '.ant-select-item-option[title="jump-01（id=41）"]',
+      );
+      expect(o).toBeTruthy();
+      return o!;
+    });
+    fireEvent.click(jumpOption);
+
+    const bastionSelect = bastion.closest(".ant-select")!;
+    // 选中值后 antd 渲染清空按钮（.ant-select-clear）。
+    await waitFor(() => {
+      expect(bastionSelect.querySelector(".ant-select-clear")).toBeTruthy();
+    });
+    // 清空：退回未选，不再携带跳板引用（antd v6 清空按钮由 click 触发）。
+    fireEvent.click(bastionSelect.querySelector(".ant-select-clear")!);
+
+    const body = await save();
+    const config = body.steps[0].input.config as Record<string, unknown>;
+    // 清空后提交为 null 或缺失（allowClear 触发 onChange(undefined)）。
+    expect(config["bastion_credential_id"] ?? null).toBeNull();
   });
 
   it("cert.deploy 的腾讯云 SSL 变体渲染备注与替换开关", async () => {

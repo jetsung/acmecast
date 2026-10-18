@@ -794,14 +794,51 @@ ORDER BY (archived_at IS NULL) DESC,  -- 活跃 (1) 排前，已归档 (0) 排�
 
 各目标新增 `fullchain`/`ca` 路径或模板字段，存量 `cert_path`/`cert_filename` 视为 `fullchain` 的别名（`fullchain_path`/`fullchain_filename` 未配置时生效）；`ca` 路径未显式配置时按 fullchain 同目录同前缀派生 `*.ca.cer`，**显式留空**可跳过 `ca.cer` 产出。打开存量流水线步骤时 `fullchain_path`/`fullchain_filename` 自动回显 `cert_path`/`cert_filename` 值。
 
-| 目标 | 新增字段 | 别名字段 | 默认派生 |
-|---|---|---|---|
+**`local` 目标为 BREAKING 替换而非并存**：`LocalInput` 的 `cert_path` 字段已移除，`fullchain_path` 直接替换之（`#[serde(alias = "cert_path")]` 兜底旧输入反序列化）；schema 中不再出现 `cert_path`。前端 `migrateLegacyDeployInput` 已把存量 `cert_path` 回显为 `fullchain_path`、`ca_path` 回显派生的 `ca.cer` 路径，保存后落新字段。由于 serde `alias` 把新旧键视为同一字段，存量步骤回显后保存会同时带上两个键，后端在解析前经 `without_legacy_alias` 去重（`fullchain_path` 非空时丢弃 `cert_path`，新键优先），避免 `duplicate field` 报错。
+
 | `local` | `fullchain_path` / `ca_path` | `cert_path` | `ca_path` ← fullchain 同目录 `*.ca.cer` |
-| `ssh` | `fullchain_path` / `ca_path` | `cert_path` | `ca_path` ← fullchain 同目录 `*.ca.cer` |
+| `ssh` | `fullchain_path` / `ca_path` | `cert_path` | 无派生——`ca_path` 缺省/留空即跳过 ca 文件（不按 `fullchain_path` 派生） |
 | `s3` | `fullchain_filename` / `ca_filename` | `cert_filename` | `ca_filename` ← `<prefix>.ca.cer` |
 | `webdav` | `fullchain_path` / `ca_path` | `cert_path` | `ca_path` ← `<prefix>.ca.cer` |
 
-### 原子性、幂等与路径集合
+### 保存时目录补全与持久化
+
+文件类目标的路径/文件名字段以 `/` 结尾视为目录。`PipelineRepository::save` MUST 在校验与入库前对 `cert.deploy` 步骤的 `config` 做补全，并以补全后的值持久化（前端回显即为部署实际使用的路径）：
+
+- `local`/`ssh`：`fullchain_path`（含旧别名 `cert_path`）→ `<目录>fullchain.cer`，`ca_path` → `<目录>ca.cer`，`key_path` → `<目录>key`。
+- `s3`：`prefix` 归一化为 `<prefix>/`；`fullchain_filename`/`cert_filename` → `<目录>{domain}.fullchain.cer`，`ca_filename` → `<目录>{domain}.ca.cer`，`key_filename` → `<目录>{domain}.key`。
+- `webdav`：`base_path` 归一化为 `<base>/`；`fullchain_path`/`cert_path` → `<目录>{domain}.fullchain.cer`，`ca_path` → `<目录>{domain}.ca.cer`，`key_path` → `<目录>{domain}.key`。
+- 空白、缺省与非 `/` 结尾的值 MUST 保持原样；目录判据仅看 `/` 后缀，不做 `is_dir()` 探测。`{domain}` 在部署时按 `domain_file_prefix(primary_domain)` 展开。
+- 部署执行期 MUST 保留同一补全作为兜底，覆盖未重新保存的存量配置；`S3`/`WebDAV` 的 `ca` 内容为空（单张链）时跳过对应 PUT，但 `DeployOutcome.paths` 仍列出 3 个预期键。
+
+### local 三文件路径、权限与目录/留空语义
+
+`local` 目标的部署输入形成 fullchain/ca/key 三组「路径 + 权限」对：`fullchain_path` + `cert_mode`（fullchain 权限，保留 `cert_mode` 原名以对齐前端 `LOCAL_FIELD_ORDER`）、`ca_path` + `ca_mode`（默认 `0644`）、`key_path` + `key_mode`（默认 `0600`）；`uid`/`gid`/`reload_command` 不变。
+
+**表单渲染**：`cert.deploy` 选择 `local` 目标时，`config` 子表单 MUST 渲染 `fullchain_path`/`ca_path`/`key_path` 三路径与 `cert_mode`/`ca_mode`/`key_mode` 三权限，**三行两列**排列——每行左列为文件路径、右列为文件权限（`key_path`+`key_mode`、`fullchain_path`+`cert_mode`、`ca_path`+`ca_mode` 各占一行），顺序由前端 `LOCAL_FIELD_ORDER = ["key_path","key_mode","fullchain_path","cert_mode","ca_path","ca_mode","uid","gid","reload_command"]` 钉住（key 行在最上）。表单提示 MUST 明确该目标将部署 `fullchain.cer`/`ca.cer`/`key` 三文件，未自定义 `ca_path` 时按 `fullchain_path` 派生。
+
+**部署写入**：配置 `fullchain_path`/`ca_path`/`key_path` 均为文件路径并触发部署时，MUST 写入三个文件——`fullchain_path` 写入完整证书链（`chain_pem` 原样）、`ca_path` 写入中间链（`ca_pem_of(chain_pem)`）、`key_path` 写入私钥（`key_pem`），成功返回的路径集合即三者（ca 跳过时除外）。
+
+- **目录路径按默认文件名写入**：任一路径以 `/` 结尾或 `is_dir()` 为 true 时视为目录，拼接默认文件名写入该目录——fullchain → `fullchain.cer`、ca → `ca.cer`、key → `key`；为文件路径时原样写入（`LocalInput::files` 中 `resolve_target_path` 实现）。
+- **ca 跳过规则**：`ca_path` 显式留空（空串）时 MUST 跳过 `ca.cer` 文件写入，仅写入 fullchain 与 key 两个文件；`ca_pem_of(chain_pem)` 拆链为空（链仅含叶子证书）时同样跳过，不产生空文件（与显式留空一致）。`ca_path` 未配置（`None`）时按 `fullchain_path` 同目录派生 `<stem>.ca.cer`（`derive_ca_path`，如 `example.com.fullchain.cer` → `example.com.ca.cer`、`fullchain.cer` → `ca.cer`）。
+- **存量兼容**：仅含 `cert_path`/`key_path` 的旧步骤打开时，`fullchain_path` MUST 回显 `cert_path` 的值，`ca_path` 回显按 `fullchain_path` 派生的 `ca.cer` 路径（前端 `migrateLegacyDeployInput` + 后端 `#[serde(alias = "cert_path")]` 与 `without_legacy_alias` 去重，`fullchain_path` 非空时丢弃 `cert_path`）。
+- 文件清单由 `LocalInput::files` 返回 `Vec<(FileSpec, String)>`（ca 可选，数量可变），`deploy` 方法按可变清单分配容量与遍历；`example_input` 为三文件示例 `{"fullchain_path":"/etc/nginx/ssl/example.com.fullchain.cer","ca_path":"/etc/nginx/ssl/example.com.ca.cer","key_path":"/etc/nginx/ssl/example.com.key","reload_command":"nginx -s reload"}`，`input_schema` 由 `schemars::JsonSchema` 从 `LocalInput` 自动派生，不再含 `cert_path`。
+### SSH 三文件路径、目录/留空语义、表单两行两列与 allowClear
+
+`cert.deploy(ssh)` 的远端写入从 2 文件改为最多 3 文件，**BREAKING** 替换 `SshInput.cert_path: Option<String>` 为 `fullchain_path: Option<String>`（`#[serde(alias = "cert_path")]` 兼容存量，`#[serde(default)]` 的 `ca_path: Option<String>` 新增），`ResolvedSshConfig` 同步由 `cert_path: String` 改为 `fullchain_path: String` 并新增 `ca_path: Option<String>`；其余 `key_path`/`cert_mode`/`key_mode`/`credential_id`/`bastion_credential_id`/`host`/`port`/`user`/`auth`/`reload_command` 不变。`ca` 权限复用档案的 `cert_mode`（缺省 `0644`），不新增 `ca_mode`——SSH 变体不渲染权限字段，权限由档案提供。
+
+**输入与档案合并校验**：`resolve_input` 中 `fullchain_path` 与 `key_path` 为必填——值为 `None` 或空白（`trim().is_empty()`）时 MUST 在执行前失败并定位到对应字段名；`ca_path` 为可选——`None` 或空白均视为跳过 ca 文件，不报错。远端文件路径与 `reload_command` 仅来自部署输入，不参与档案合并；输入显式值覆盖档案默认值（端口 22、`cert_mode 0644`/`key_mode 0600`），未给出时回退档案值。不引用档案的直填输入保持兼容，仅路径字段由 `cert_path` 经 alias 映射到 `fullchain_path`。
+
+**部署写入**：`SshTarget::deploy` 构建 `Vec<(String,String,String)>`（`path, content, mode`）写入远端——`fullchain_path` 经 `resolve_remote_path(&fullchain_path,"fullchain.cer")` 写入 `chain_pem`（`mode=cert_mode`），`ca_path` 非空时经 `resolve_remote_path(ca_path,"ca.cer")` 写入 `ca_pem_of(&chain_pem)`（空串跳过，`mode=cert_mode`），`key_path` 经 `resolve_remote_path(&key_path,"key")` 写入 `key_pem`（`mode=key_mode`）；`ca_path` 留空/缺失或 `ca_pem_of` 为空（单证书链）时 MUST 仅写入 fullchain 与 key。`DeployOutcome.paths` MUST 列出实际写入的路径（2 或 3 个），`DeployMode::SkipWrite` 时不发起写入但仍列出预期路径。任一文件失败则整体失败，已写临时文件清理（原子写 `write_file`）。
+
+- **远端目录按默认文件名写入**：SSH 无法本地 `is_dir()`，仅以 `/` 结尾判定为目录——`resolve_remote_path(path, default_name)` 若 `path.ends_with('/')` 则 `format!("{path}{default_name}")`，否则原样返回；fullchain → `fullchain.cer`、ca → `ca.cer`、key → `key`。与 `local` 的 `is_dir() || ends_with('/')` 区分，不执行远端 `test -d`。
+- **存量兼容与去重**：存量仅含 `cert_path` 的步骤经 `#[serde(alias="cert_path")]` 映射到 `fullchain_path`；`deploy` 在 `parse_input` 前调用 `without_legacy_alias`（与 `local` 同逻辑，`fullchain_path` 非空时移除旧 `cert_path` 键，新键优先），避免双键 `duplicate field`。前端别名回显已覆盖 `fullchain_path` 回显 `cert_path`。
+- **`example_input` 与 schema**：`example_input` 更新为三文件示例 `{"credential_id":1,"fullchain_path":"/etc/ssl/example.com.fullchain.cer","ca_path":"/etc/ssl/example.com.ca.cer","key_path":"/etc/ssl/example.com.key","reload_command":"systemctl reload nginx"}`，`input_schema` 由 `schemars::JsonSchema` 从 `SshInput` 自动派生，不再含 `cert_path`。
+
+**表单两行两列**：`cert.deploy` 选择 SSH 远程主机时，`config` 子表单 MUST 仅渲染档案引用与部署输入——`fullchain_path`/`ca_path`/`key_path` 三远端路径与 `reload_command`，不渲染 `host`/`port`/`user`/`auth`/`cert_mode`/`key_mode`/`cert_path`（由档案提供）。字段顺序由 `SSH_FIELDS = ["credential_id","bastion_credential_id","key_path","fullchain_path","ca_path","reload_command"]` 钉住，`tightenSshSchema` 中仅 `credential_id` 与 `bastion_credential_id` 设 `x-end-row`（各独占一行右侧空列），`reload_command` 不再独占——`key_path`+`fullchain_path` 同行（key 左、fullchain 右）、`ca_path`+`reload_command` 同行（ca 左、reload 右），两行两列；`credential_id`/`bastion_credential_id` 各独占一行。
+
+**跳板与 allowClear**：`bastion_credential_id` 的 `x-visible-when: Not{Empty:"credential_id"}`、`x-options` 动态排除已选目标、`x-label="跳板机"` 保持不变；所有以 `x-options` 渲染的单选 `Select`（含 `credential_id`/`bastion_credential_id` 等）SHALL 启用 `allowClear`，用户可清空已选值回退到 `null`/缺省，清空后提交的 `config` 对应字段为 `null` 或缺失、`bastion_credential_id` 清空即不走跳板。多选与 `enum` 下拉不加。`bastion` 清空后部署直连目标主机。
+
 
 - `local`/`ssh`：3 文件走原子写（临时文件 + `rename`）、`parse_mode`/`set_mode`/`set_owner` 校验；任一文件失败则整体失败，已写临时文件清理。
 - `s3`/`webdav`：任一 PUT 失败即失败，不污染主存储；`DeployMode::SkipWrite`（指纹一致且非 `force`）时 3 文件路径均列入 `DeployOutcome.paths`，不发起写入。
@@ -811,7 +848,8 @@ ORDER BY (archived_at IS NULL) DESC,  -- 活跃 (1) 排前，已归档 (0) 排�
 
 - `crates/acmecast-cert/src/pem.rs: split_chain / ca_pem_of` — 拆链纯函数（主存储与部署侧共用）
 - `crates/acmecast-cert/src/lib.rs: domain_file_prefix` — 公共前缀派生（`*.example.com` → `_wildcard.example.com`）
-- `crates/acmecast-deploy/src/targets/local.rs: LocalInput / derive_ca_path` — `fullchain_path`/`ca_path`/`key_path` 与别名回填、`ca_path` 派生
+- `crates/acmecast-store/src/repository/pipeline.rs: normalize_deploy_inputs / normalize_deploy_config` — 保存时按 target 补全目录写法并持久化
+- `crates/acmecast-deploy/src/targets/local.rs: LocalInput / files / resolve_target_path / normalize_local_config / derive_ca_path / without_legacy_alias` — `fullchain_path`/`ca_path`/`key_path` 三组路径+权限、目录路径按默认文件名写入、`ca_path` 派生与留空/拆链空跳过、`cert_path` 别名去重
 - `crates/acmecast-deploy/src/targets/ssh.rs: SshInput / ResolvedSshConfig / resolve_input` — 同 local 的别名回填与派生逻辑
 - `crates/acmecast-deploy/src/targets/s3.rs: S3Input` — `fullchain_filename`/`ca_filename`/`key_filename` 与 `cert_filename` 别名
 - `crates/acmecast-deploy/src/targets/webdav.rs: WebdavInput` — `fullchain_path`/`ca_path`/`key_path` 与 `cert_path` 别名
