@@ -18,8 +18,8 @@ use serde_json::{Value, json};
 
 use crate::error::{Error, Result};
 use crate::http::{
-    HttpRequest, HttpResponse, HttpTransport, ReqwestTransport, encode, inject_proxy_field_annotations,
-    transport_for_credentials,
+    HttpRequest, HttpResponse, HttpTransport, ReqwestTransport, encode,
+    inject_proxy_field_annotations, transport_for_credentials,
 };
 use crate::provider::{DnsProvider, TxtRecord, parse_credentials};
 
@@ -369,7 +369,9 @@ mod tests {
         }
         // proxy_url 与 proxy_mode=custom 联动显隐。
         assert!(
-            rendered.contains(r#""x-visible-when":{"Equals":{"field":"proxy_mode","values":["custom"]}}"#),
+            rendered.contains(
+                r#""x-visible-when":{"Equals":{"field":"proxy_mode","values":["custom"]}}"#
+            ),
             "proxy_url 应仅在 custom 模式显隐: {rendered}"
         );
         // 前驱字段（api_token）带 x-end-row，使 proxy_mode 从新行首列开始、

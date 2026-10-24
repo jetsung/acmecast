@@ -291,6 +291,7 @@ async fn an_acme_account_credential(
     let row = acmecast_store::entity::credential::ActiveModel {
         name: Set("pebble 账号".to_owned()),
         type_id: Set("acme.account".to_owned()),
+        proxy_mode: Set("direct".to_owned()),
         encrypted_fields: Set(encrypted),
         created_at: Set(chrono::Utc::now()),
         updated_at: Set(chrono::Utc::now()),
@@ -1233,6 +1234,7 @@ async fn a_memory_dns_credential(db: &DatabaseConnection, cipher: &CredentialCip
     acmecast_store::entity::credential::ActiveModel {
         name: Set("内存 DNS".to_owned()),
         type_id: Set("memory".to_owned()),
+        proxy_mode: Set("direct".to_owned()),
         encrypted_fields: Set(encrypted),
         created_at: Set(chrono::Utc::now()),
         updated_at: Set(chrono::Utc::now()),
@@ -1625,6 +1627,7 @@ async fn auto_selected_dns_provider_completes_the_pipeline() {
         acmecast_store::entity::credential::ActiveModel {
             name: Set("内存 DNS".to_owned()),
             type_id: Set("memory".to_owned()),
+            proxy_mode: Set("direct".to_owned()),
             encrypted_fields: Set(encrypted),
             created_at: Set(chrono::Utc::now()),
             updated_at: Set(chrono::Utc::now()),
@@ -1768,6 +1771,7 @@ async fn a_tencent_credential(
     acmecast_store::entity::credential::ActiveModel {
         name: Set(name.to_owned()),
         type_id: Set("cloud.tencent".to_owned()),
+        proxy_mode: Set("direct".to_owned()),
         encrypted_fields: Set(encrypted),
         capabilities: Set(capabilities.to_owned()),
         created_at: Set(chrono::Utc::now()),
@@ -1907,7 +1911,11 @@ async fn deploy_directory_paths_round_trip_as_full_paths() {
 
     let response = send(
         &app,
-        json_request("GET", &format!("/api/pipelines/{id}"), &serde_json::json!({})),
+        json_request(
+            "GET",
+            &format!("/api/pipelines/{id}"),
+            &serde_json::json!({}),
+        ),
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);

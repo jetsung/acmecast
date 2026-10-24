@@ -141,6 +141,7 @@ async fn save_secret(db: &DatabaseConnection, cipher: &CredentialCipher) -> cred
     credential::ActiveModel {
         name: Set("测试凭据".to_owned()),
         type_id: Set("fake.secret".to_owned()),
+        proxy_mode: Set("direct".to_owned()),
         encrypted_fields: Set(sealed),
         created_at: Set(now),
         updated_at: Set(now),

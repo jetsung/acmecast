@@ -50,16 +50,14 @@ pub fn s3_http_client(proxy_url: Option<&str>) -> Option<SharedHttpClient> {
         };
         // 顶层 Builder 的 proxy 配置走连接器层面：每次连接器选择都按同一
         // ProxyConfig 建带代理的 hyper 连接器（TLS 走项目的 rustls-aws-lc）。
-        Some(
-            Builder::new().build_with_connector_fn(move |_, _| {
-                Connector::builder()
-                    .proxy_config(proxy.clone())
-                    .tls_provider(tls::Provider::Rustls(
-                        tls::rustls_provider::CryptoMode::AwsLc,
-                    ))
-                    .build()
-            }),
-        )
+        Some(Builder::new().build_with_connector_fn(move |_, _| {
+            Connector::builder()
+                .proxy_config(proxy.clone())
+                .tls_provider(tls::Provider::Rustls(
+                    tls::rustls_provider::CryptoMode::AwsLc,
+                ))
+                .build()
+        }))
     }
 }
 

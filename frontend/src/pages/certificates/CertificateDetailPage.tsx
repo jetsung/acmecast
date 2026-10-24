@@ -4,7 +4,7 @@ import type { components } from "@/api/schema";
 import { useNavigate, useParams } from "react-router";
 import { useState } from "react";
 import { client } from "@/api/client";
-import { downloadFile, formatTime, unwrapData } from "@/api/helpers";
+import { downloadFile, fetchText, formatTime, unwrapData } from "@/api/helpers";
 import { ApiError } from "@/api/client";
 import { useAuthStore } from "@/auth/store";
 import { PageHeader } from "@/components/PageHeader";
@@ -60,6 +60,23 @@ export function CertificateDetailPage() {
       );
     } catch (err) {
       message.error(err instanceof Error ? err.message : "下载失败");
+    } finally {
+      setDownloading(null);
+    }
+  };
+
+  // 与 doDownload 复用 downloading 键：同一文件复制/下载互斥，避免并发请求。
+  const doCopy = async (format: string) => {
+    setDownloading(format);
+    try {
+      const content = await fetchText(
+        `/api/certificates/${certId}/download?format=${format}`,
+        token,
+      );
+      await navigator.clipboard.writeText(content);
+      message.success("已复制");
+    } catch (err) {
+      message.error(err instanceof Error && err.message ? err.message : "复制失败");
     } finally {
       setDownloading(null);
     }
@@ -299,7 +316,10 @@ export function CertificateDetailPage() {
             <Space>
               <Typography.Text code copyable>{(cert as unknown as { ca_path?: string | null }).ca_path ?? "-"}</Typography.Text>
               {(cert as unknown as { ca_path?: string | null }).ca_path && (
-                <Button size="small" loading={downloading === "ca"} onClick={() => doDownload("ca")}>下载</Button>
+                <>
+                  <Button size="small" loading={downloading === "ca"} onClick={() => doDownload("ca")}>下载</Button>
+                  <Button size="small" loading={downloading === "ca"} onClick={() => doCopy("ca")}>复制</Button>
+                </>
               )}
             </Space>
           </Descriptions.Item>
@@ -307,12 +327,14 @@ export function CertificateDetailPage() {
             <Space>
               <Typography.Text code copyable>{(cert as unknown as { fullchain_path?: string | null }).fullchain_path ?? cert.cert_pem_path}</Typography.Text>
               <Button size="small" loading={downloading === "fullchain"} onClick={() => doDownload("fullchain")}>下载</Button>
+              <Button size="small" loading={downloading === "fullchain"} onClick={() => doCopy("fullchain")}>复制</Button>
             </Space>
           </Descriptions.Item>
           <Descriptions.Item label="私钥">
             <Space>
               <Typography.Text code copyable>{(cert as unknown as { key_path?: string | null }).key_path ?? cert.key_pem_path}</Typography.Text>
               <Button size="small" loading={downloading === "key"} onClick={() => doDownload("key")}>下载</Button>
+              <Button size="small" loading={downloading === "key"} onClick={() => doCopy("key")}>复制</Button>
             </Space>
           </Descriptions.Item>
         </Descriptions>

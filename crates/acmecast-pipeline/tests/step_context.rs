@@ -251,6 +251,7 @@ async fn a_step_reads_its_credential_by_identifier() {
     let stored = credential::ActiveModel {
         name: Set("申请用的账号".to_owned()),
         type_id: Set("acme.account".to_owned()),
+        proxy_mode: Set("direct".to_owned()),
         encrypted_fields: Set(cipher
             .encrypt_string(&serde_json::json!({ "ca": "letsencrypt" }).to_string())
             .unwrap()),

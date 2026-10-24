@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 use acmecast_access::{CredentialRegistry, CredentialStore, CredentialType};
 use acmecast_core::CredentialCipher;
 use acmecast_deploy::{
-    CertMaterials, DeployMode, DeploymentRegistry, DeploymentTarget, Error, Result, ResolvedSshConfig,
-    SshAuth, SshAuthSource, SshConnector, SshTarget, SshTransport, SshHostFields,
+    CertMaterials, DeployMode, DeploymentRegistry, DeploymentTarget, Error, ResolvedSshConfig,
+    Result, SshAuth, SshAuthSource, SshConnector, SshHostFields, SshTarget, SshTransport,
     ssh_host_fields_schema,
 };
 use acmecast_store::entity::credential;
@@ -193,8 +193,9 @@ impl CredentialType for SshHostType {
     }
 
     fn validate(&self, fields: &Value) -> acmecast_core::Result<()> {
-        let parsed: SshHostFields = serde_json::from_value(fields.clone())
-            .map_err(|error| acmecast_core::Error::validation("fields", format!("字段不合法: {error}")))?;
+        let parsed: SshHostFields = serde_json::from_value(fields.clone()).map_err(|error| {
+            acmecast_core::Error::validation("fields", format!("字段不合法: {error}"))
+        })?;
         parsed.validate()
     }
 }
@@ -218,6 +219,7 @@ async fn seed_credential(
     credential::ActiveModel {
         name: Set(name.to_owned()),
         type_id: Set(type_id.to_owned()),
+        proxy_mode: Set("direct".to_owned()),
         encrypted_fields: Set(sealed),
         created_at: Set(now),
         updated_at: Set(now),
@@ -544,7 +546,10 @@ async fn a_profile_without_auth_material_fails_before_writing() {
     let text = err.to_string();
     assert!(text.contains("1"), "应包含被引用的标识: {text}");
     assert!(text.contains("private_key"), "应指出档案缺认证材料: {text}");
-    assert!(remote.file("/srv/ssl/site.crt").is_none(), "不该写入任何东西");
+    assert!(
+        remote.file("/srv/ssl/site.crt").is_none(),
+        "不该写入任何东西"
+    );
 }
 
 #[tokio::test]
@@ -632,9 +637,18 @@ async fn the_same_credential_cannot_serve_as_target_and_bastion() {
         .expect_err("目标与跳板引用同一份凭据应被执行前拒绝");
 
     let text = err.to_string();
-    assert!(text.contains("bastion_credential_id"), "应指向跳板字段: {text}");
-    assert!(text.contains("同一份凭据"), "应说明目标与跳板不可相同: {text}");
-    assert!(remote.file("/srv/ssl/site.crt").is_none(), "不该写入任何东西");
+    assert!(
+        text.contains("bastion_credential_id"),
+        "应指向跳板字段: {text}"
+    );
+    assert!(
+        text.contains("同一份凭据"),
+        "应说明目标与跳板不可相同: {text}"
+    );
+    assert!(
+        remote.file("/srv/ssl/site.crt").is_none(),
+        "不该写入任何东西"
+    );
 }
 
 #[tokio::test]
@@ -658,9 +672,15 @@ async fn a_missing_bastion_credential_is_reported_with_its_id() {
         .expect_err("跳板凭据不存在应报错");
 
     let text = err.to_string();
-    assert!(text.contains("bastion_credential_id"), "应指向跳板字段: {text}");
+    assert!(
+        text.contains("bastion_credential_id"),
+        "应指向跳板字段: {text}"
+    );
     assert!(text.contains("4242"), "应包含被引用的标识: {text}");
-    assert!(remote.file("/srv/ssl/site.crt").is_none(), "不该写入任何东西");
+    assert!(
+        remote.file("/srv/ssl/site.crt").is_none(),
+        "不该写入任何东西"
+    );
 }
 
 // ---- Scenario: 远程写入后重载 ----
@@ -833,7 +853,11 @@ async fn three_configured_paths_write_fullchain_ca_and_key() {
     assert_eq!(fullchain_mode, "0644");
 
     let (ca, ca_mode) = remote.file("/etc/ssl/site.ca.cer").expect("远程应有中间链");
-    assert_eq!(ca, acmecast_cert::ca_pem_of(&materials.chain_pem), "ca 落拆链剩余");
+    assert_eq!(
+        ca,
+        acmecast_cert::ca_pem_of(&materials.chain_pem),
+        "ca 落拆链剩余"
+    );
     assert_eq!(ca_mode, "0644", "ca 权限随证书权限");
 
     let (key, key_mode) = remote.file("/etc/ssl/site.key").expect("远程应有私钥");
@@ -988,7 +1012,10 @@ async fn a_legacy_cert_path_still_deploys_to_the_same_remote_path() {
 
     assert_eq!(
         outcome.paths,
-        vec!["/legacy/fullchain.pem".to_owned(), "/legacy/key.pem".to_owned()]
+        vec![
+            "/legacy/fullchain.pem".to_owned(),
+            "/legacy/key.pem".to_owned()
+        ]
     );
     let (chain, _) = remote
         .file("/legacy/fullchain.pem")

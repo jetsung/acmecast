@@ -179,3 +179,85 @@
 
 - **WHEN** 用户提交 `type_id = "notify.generic"`、`name = "通用渠道"` 且 `fields = {"url": "https://ops.example.com/hook", "proxy_mode": "custom", "proxy_url": "socks5://127.0.0.1:7890"}`
 - **THEN** 凭据的 `name` 为 `通用渠道`，代理配置随 `encrypted_fields` 一并加密落库，读取时原样回显、不以明文暴露于列表响应
+
+### Requirement: 凭据列表返回代理模式
+
+凭据列表 API（`GET /api/credentials`）的每条记录 SHALL 携带 `proxy_mode` 字段，取值为 `direct` / `inherit` / `custom`，使前端无需打开编辑弹窗即可了解该凭据的出网代理方式。该字段 MUST 以明文列存储（与 `capabilities` 同口径：从加密字段中提取的非敏感枚举值单独持久化），列表 API 不得为返回该字段而解密凭据。创建与更新凭据时（`POST` / `PUT /api/credentials/{id}`），服务端 MUST 从请求 `fields.proxy_mode` 归一化后写入明文列；`fields.proxy_mode` 缺失但 `fields.proxy_url` 非空时视为 `custom`，两者均缺时视为 `direct`（与运行时 `ProxyMode::from_credentials` 同口径）。凭据详情响应（`GET /api/credentials/{id}`）同样返回该字段。`proxy_mode` 明文列不得携带 `proxy_url` 值——代理 URL 仍在 `encrypted_fields` 加密存储，列表响应不暴露。
+
+#### Scenario: 列表每条记录含代理模式
+
+- **WHEN** 调用凭据列表 API 且存在 `proxy_mode=custom` 的凭据
+- **THEN** 返回的对应记录包含 `proxy_mode: "custom"`
+
+#### Scenario: 直连凭据返回 direct
+
+- **WHEN** 凭据 `proxy_mode=direct`（缺省）
+- **THEN** 列表与详情响应中 `proxy_mode` 为 `"direct"`
+
+#### Scenario: 创建凭据时携带代理模式
+
+- **WHEN** 创建凭据请求 `fields.proxy_mode = "inherit"`
+- **THEN** 该凭据记录的明文 `proxy_mode` 列为 `inherit`，列表与详情返回该值
+
+#### Scenario: 更新代理模式后列表反映新值
+
+- **WHEN** 将某凭据从 `direct` 更新为 `custom`（含 `proxy_url`）
+- **THEN** 更新后的列表响应中该记录 `proxy_mode` 为 `"custom"`
+
+#### Scenario: 存量凭据缺字段视为直连
+
+- **WHEN** 存量凭据加密字段中不含 `proxy_mode` 与 `proxy_url`，迁移后
+- **THEN** 其明文 `proxy_mode` 列为 `"direct"`
+
+#### Scenario: 存量凭据有旧 proxy_url 视为 custom
+
+- **WHEN** 存量凭据加密字段含 `proxy_url` 但无 `proxy_mode`，迁移后
+- **THEN** 其明文 `proxy_mode` 列为 `"custom"`
+
+#### Scenario: 列表不暴露代理 URL
+
+- **WHEN** 凭据 `proxy_mode=custom` 且 `proxy_url=socks5://user:pass@host:port`
+- **THEN** 列表响应仅返回 `proxy_mode: "custom"`，不包含 `proxy_url` 值
+
+### Requirement: 凭据列表展示代理列
+
+凭据列表页 SHALL 新增「代理」列，按凭据 `proxy_mode` 展示中文标签：`direct`→「直连」、`inherit`→「继承全局」、`custom`→「自定义」。该列 MUST 保持与「可用权限」「名称」「备注」等列一致的默认左对齐，不得居中对齐。展示形式为纯文本（`Typography.Text`），不得使用标签（Tag）并排渲染。
+
+#### Scenario: 自定义代理显示对应标签
+
+- **WHEN** 列表中存在 `proxy_mode=custom` 的凭据
+- **THEN** 该行「代理」列显示「自定义」
+
+#### Scenario: 继承全局显示对应标签
+
+- **WHEN** 列表中存在 `proxy_mode=inherit` 的凭据
+- **THEN** 该行「代理」列显示「继承全局」
+
+#### Scenario: 直连显示对应标签
+
+- **WHEN** 列表中存在 `proxy_mode=direct` 的凭据
+- **THEN** 该行「代理」列显示「直连」
+
+#### Scenario: 代理列左对齐
+
+- **WHEN** 查看凭据列表的「代理」列
+- **THEN** 该列单元格内容为左对齐，与「名称」「类型」等列对齐方式一致
+
+### Requirement: 存量凭据 proxy_mode 回填迁移
+
+系统升级时 SHALL 通过数据库迁移为 `acmecast_credential` 表新增 `proxy_mode` 明文列，并回填存量凭据：从 `encrypted_fields` 解密后按 `ProxyMode::from_credentials` 归一化（旧 `proxy_url` 有值→`custom`，无值或缺字段→`direct`），写入明文列。迁移 MUST 幂等（重复执行不改已回填的值），且对空库无影响。迁移需要凭据加密密钥（`CredentialCipher`）来解密存量 `encrypted_fields`——迁移 MUST 在密钥已初始化的环境下执行，密钥未配置时迁移跳过回填（列仍以默认 `direct` 建立），待密钥配置后下次启动补回填。
+
+#### Scenario: 存量凭据迁移后可从列表读代理模式
+
+- **WHEN** 库中存在变更前保存的凭据记录，迁移完成且密钥已配置
+- **THEN** 其明文 `proxy_mode` 列按旧 `proxy_url` 有无归一化为 `custom` 或 `direct`，列表 API 返回该值
+
+#### Scenario: 迁移幂等
+
+- **WHEN** 迁移已执行过，再次执行
+- **THEN** 库中已有值的行保持不变
+
+#### Scenario: 空库迁移无影响
+
+- **WHEN** 迁移在空库上执行
+- **THEN** 仅创建 `proxy_mode` 列，无行需回填，不报错

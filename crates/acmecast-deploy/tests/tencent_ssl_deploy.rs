@@ -10,18 +10,16 @@ use std::sync::{Arc, Mutex};
 
 use acmecast_access::{CredentialRegistry, CredentialStore, CredentialType};
 use acmecast_core::CredentialCipher;
-use acmecast_deploy::{
-    CertMaterials, DeployMode, DeploymentTarget, TencentSslTarget,
-};
+use acmecast_deploy::{CertMaterials, DeployMode, DeploymentTarget, TencentSslTarget};
 use acmecast_dns::{HttpRequest, HttpResponse, HttpTransport};
 use acmecast_store::entity::credential;
 use acmecast_store::migrate;
 use async_trait::async_trait;
 use chrono::Utc;
 use rcgen::{CertificateParams, DnType, KeyPair, SanType};
+use schemars::schema::RootSchema;
 use sea_orm::{ActiveModelTrait, Database, Set};
 use serde_json::{Value, json};
-use schemars::schema::RootSchema;
 
 /// 按脚本依次应答的传输层替身。
 #[derive(Debug, Default)]
@@ -135,11 +133,14 @@ async fn seed_credential(
     type_id: &str,
     fields: Value,
 ) -> i64 {
-    let sealed = cipher.encrypt_string(&fields.to_string()).expect("应能加密");
+    let sealed = cipher
+        .encrypt_string(&fields.to_string())
+        .expect("应能加密");
     let now = Utc::now();
     credential::ActiveModel {
         name: Set("腾讯云凭据".to_owned()),
         type_id: Set(type_id.to_owned()),
+        proxy_mode: Set("direct".to_owned()),
         encrypted_fields: Set(sealed),
         created_at: Set(now),
         updated_at: Set(now),
@@ -210,21 +211,48 @@ fn upload_ok(id: &str) -> HttpResponse {
     )
 }
 
-/// `UploadUpdateCertificateInstance` 的成功响应（原证书 ID 不变、只更新内容）。
+/// `UpdateCertificateInstance` 的成功响应（原证书 ID 不变、只更新内容）。
 fn update_ok() -> HttpResponse {
-    HttpResponse::new(
-        200,
-        json!({"Response": {"RequestId": "req"}}).to_string(),
-    )
+    HttpResponse::new(200, json!({"Response": {"RequestId": "req"}}).to_string())
 }
 
-/// `UploadUpdateCertificateInstance` 的失败响应（更新失败）。
+/// `UpdateCertificateInstance` 的失败响应（更新失败）。
 fn update_fail(message: &str) -> HttpResponse {
     HttpResponse::new(
         200,
         json!({"Response": {"Error": {"Code": "FailedOperation", "Message": message}, "RequestId": "req"}})
             .to_string(),
     )
+}
+
+/// `DescribeDeployedResources` 的成功响应（单类型查询）。
+fn deployed_resources_of(resource_type: &str, count: u64) -> HttpResponse {
+    HttpResponse::new(
+        200,
+        json!({"Response": {"DeployedResources": [{
+            "CertificateId": "CERTX",
+            "Type": resource_type,
+            "Count": count,
+            "Resources": [],
+        }], "RequestId": "req"}})
+        .to_string(),
+    )
+}
+
+/// 为逐类型查询生成 7 个按序应答（实现按 clb/cdn/live/vod/waf/antiddos/teo
+/// 顺序逐个查询）：`bindings` 里列出的类型返回给出 Count，其余 Count=0。
+fn deployed_resources_per_type(bindings: &[(&str, u64)]) -> Vec<HttpResponse> {
+    ["clb", "cdn", "live", "vod", "waf", "antiddos", "teo"]
+        .iter()
+        .map(|query_type| {
+            let count = bindings
+                .iter()
+                .find(|(ty, _)| ty == query_type)
+                .map(|(_, count)| *count)
+                .unwrap_or(0);
+            deployed_resources_of(query_type, count)
+        })
+        .collect()
 }
 
 // ---- 需求：首次上传 ----
@@ -272,13 +300,7 @@ async fn a_fresh_certificate_is_uploaded() {
 #[tokio::test]
 async fn the_international_endpoint_serves_intl_credentials() {
     let (db, store, cipher) = setup().await;
-    let id = seed_credential(
-        db,
-        &cipher,
-        "cloud.tencent",
-        tencent_fields(Some("intl")),
-    )
-    .await;
+    let id = seed_credential(db, &cipher, "cloud.tencent", tencent_fields(Some("intl"))).await;
 
     let (chain, key) = self_signed_pem("example.com");
     let transport = ScriptedTransport::new(vec![describe_page(0, &[]), upload_ok("CERTNEW")]);
@@ -310,10 +332,10 @@ async fn an_existing_certificate_is_replaced() {
     let id = seed_credential(db, &cipher, "cloud.tencent", tencent_fields(None)).await;
 
     let (chain, key) = self_signed_pem("example.com");
-    let transport = ScriptedTransport::new(vec![
-        describe_page(1, &[("example.com", "OLD1")]),
-        update_ok(),
-    ]);
+    let mut transport_responses = vec![describe_page(1, &[("example.com", "OLD1")])];
+    transport_responses.extend(deployed_resources_per_type(&[("clb", 1)]));
+    transport_responses.push(update_ok());
+    let transport = ScriptedTransport::new(transport_responses);
     let target = TencentSslTarget::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
 
     let outcome = target
@@ -329,15 +351,24 @@ async fn an_existing_certificate_is_replaced() {
     assert_eq!(outcome.paths, vec!["OLD1".to_owned()], "原证书 ID 保持不变");
 
     let requests = transport.requests();
-    assert_eq!(requests.len(), 2, "应按查询、更新的顺序调用");
+    assert_eq!(requests.len(), 9, "应按查询、按类型抓取、更新的顺序调用");
     assert_eq!(
-        requests[1].headers["X-TC-Action"],
-        "UploadUpdateCertificateInstance"
+        requests[8].headers["X-TC-Action"],
+        "UpdateCertificateInstance"
     );
-    let payload = requests[1].body.as_ref().expect("更新应有请求体");
-    assert_eq!(payload["CertificateId"], json!("OLD1"), "更新应携带原证书 ID");
-    // UploadUpdateCertificateInstance 的判定：是否真发了这个 Action，而不是
-    // 旧的 DeleteCertificates——按 Action 名区分即可，无需断言 Repeatable。
+    let payload = requests[8].body.as_ref().expect("更新应有请求体");
+    assert_eq!(
+        payload["OldCertificateId"],
+        json!("OLD1"),
+        "更新应携带原证书 ID"
+    );
+    assert_eq!(
+        payload["Repeatable"],
+        json!(false),
+        "repeatable 按界面输入透传（默认 false）"
+    );
+    // UpdateCertificateInstance 的判定：是否真发了这个 Action，而不是
+    // 旧的 DeleteCertificates——按 Action 名区分即可。
 }
 
 #[tokio::test]
@@ -372,31 +403,7 @@ async fn wildcard_coverage_is_not_treated_as_existing() {
     );
 }
 
-#[tokio::test]
-async fn replace_existing_false_skips_the_lookup_and_the_delete() {
-    let (db, store, cipher) = setup().await;
-    let id = seed_credential(db, &cipher, "cloud.tencent", tencent_fields(None)).await;
-
-    let (chain, key) = self_signed_pem("example.com");
-    // 脚本里只有上传一个应答：若目标在关闭替换后仍发起查询，会因脚本耗尽而报错。
-    let transport = ScriptedTransport::new(vec![upload_ok("CERTNEW")]);
-    let target = TencentSslTarget::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
-
-    let outcome = target
-        .deploy(
-            &json!({ "credential_id": id, "replace_existing": false }),
-            &materials(&chain, &key),
-            &store,
-            DeployMode::Write,
-        )
-        .await
-        .expect("部署应成功");
-
-    assert_eq!(outcome.paths, vec!["CERTNEW".to_owned()]);
-    assert_eq!(transport.requests().len(), 1, "只应上传");
-}
-
-// ---- 需求：删除失败的容错 ----
+// ---- 需求：更新失败的容错 ----
 
 #[tokio::test]
 async fn a_failed_update_does_not_fail_the_deployment() {
@@ -404,10 +411,10 @@ async fn a_failed_update_does_not_fail_the_deployment() {
     let id = seed_credential(db, &cipher, "cloud.tencent", tencent_fields(None)).await;
 
     let (chain, key) = self_signed_pem("example.com");
-    let transport = ScriptedTransport::new(vec![
-        describe_page(1, &[("example.com", "OLD1")]),
-        update_fail("资源不存在或不可用"),
-    ]);
+    let mut transport_responses = vec![describe_page(1, &[("example.com", "OLD1")])];
+    transport_responses.extend(deployed_resources_per_type(&[("clb", 1)]));
+    transport_responses.push(update_fail("资源不存在或不可用"));
+    let transport = ScriptedTransport::new(transport_responses);
     let target = TencentSslTarget::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
 
     let outcome = target
@@ -516,12 +523,14 @@ async fn the_lookup_paginates_past_the_first_page() {
     let id = seed_credential(db, &cipher, "cloud.tencent", tencent_fields(None)).await;
 
     let (chain, key) = self_signed_pem("example.com");
-    let transport = ScriptedTransport::new(vec![
+    let mut transport_responses = vec![
         // 第一页声称共有 1001 张但没返回同域名证书 → 必须翻页。
         describe_page(1001, &[]),
         describe_page(1001, &[("example.com", "OLD9")]),
-        update_ok(),
-    ]);
+    ];
+    transport_responses.extend(deployed_resources_per_type(&[("clb", 1)]));
+    transport_responses.push(update_ok());
+    let transport = ScriptedTransport::new(transport_responses);
     let target = TencentSslTarget::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
 
     let outcome = target
@@ -537,11 +546,14 @@ async fn the_lookup_paginates_past_the_first_page() {
     assert_eq!(outcome.paths, vec!["OLD9".to_owned()]);
 
     let requests = transport.requests();
-    assert_eq!(requests.len(), 3);
+    assert_eq!(requests.len(), 10);
     assert_eq!(requests[1].body.as_ref().unwrap()["Offset"], 1000);
-    assert_eq!(requests[2].headers["X-TC-Action"], "UploadUpdateCertificateInstance");
-    let payload = requests[2].body.as_ref().expect("更新应有请求体");
-    assert_eq!(payload["CertificateId"], json!("OLD9"));
+    assert_eq!(
+        requests[9].headers["X-TC-Action"],
+        "UpdateCertificateInstance"
+    );
+    let payload = requests[9].body.as_ref().expect("更新应有请求体");
+    assert_eq!(payload["OldCertificateId"], json!("OLD9"));
 }
 
 #[tokio::test]
@@ -580,14 +592,7 @@ fn the_target_declares_itself() {
     assert_eq!(target.display_name(), "腾讯云 SSL 证书(仅需 fullchain+key)");
 
     let example = target.example_input();
-    for field in [
-        "credential_id",
-        "alias",
-        "repeatable",
-        "replace_existing",
-        "resource_types",
-        "resource_regions",
-    ] {
+    for field in ["credential_id", "alias", "repeatable"] {
         assert!(example.get(field).is_some(), "示例应含 {field}");
     }
 }
@@ -597,8 +602,9 @@ fn the_schema_keeps_the_declared_field_order() {
     let target = TencentSslTarget::with_transport(ScriptedTransport::new(vec![]));
     let rendered = serde_json::to_string(&target.input_schema()).unwrap();
     assert!(
-        rendered.contains(r#""x-field-order":["credential_id","alias","repeatable","replace_existing","resource_types","resource_regions"]"#),
-        "应注入声明顺序: {rendered}"
+        rendered
+            .contains(r#""x-field-order":["credential_id","alias","certificate_id","repeatable"]"#),
+        "应注入声明顺序（certificate_id 紧跟 alias）: {rendered}"
     );
 }
 
@@ -626,24 +632,6 @@ fn the_schema_injects_credential_type_allowlist() {
             .map(|object| object.properties.contains_key("repeatable"))
             .unwrap_or(false),
         "properties 应含 repeatable"
-    );
-    assert!(
-        schema
-            .schema
-            .object
-            .as_ref()
-            .map(|object| object.properties.contains_key("resource_types"))
-            .unwrap_or(false),
-        "properties 应含 resource_types"
-    );
-    assert!(
-        schema
-            .schema
-            .object
-            .as_ref()
-            .map(|object| object.properties.contains_key("resource_regions"))
-            .unwrap_or(false),
-        "properties 应含 resource_regions"
     );
 }
 
@@ -675,61 +663,18 @@ async fn repeatable_is_passthrough_to_upload_payload() {
 }
 
 #[tokio::test]
-async fn resource_types_and_regions_inject_into_update_payload() {
-    // resource_types 多选时，更新调用携带 ResourceTypes 为多项，Region 与 Type 笛卡尔积。
+async fn resource_types_come_from_cloud_bindings() {
+    // ResourceTypes 固定取旧证书的云端绑定（DescribeDeployedResources 逐
+    // 类型查询），Count>0 的类型进入 ResourceTypes；Count=0 的类型跳过；
+    // Repeatable 按界面输入透传；不携带 ResourceTypesRegions。
     let (db, store, cipher) = setup().await;
     let id = seed_credential(db, &cipher, "cloud.tencent", tencent_fields(None)).await;
 
     let (chain, key) = self_signed_pem("example.com");
-    let transport = ScriptedTransport::new(vec![
-        describe_page(1, &[("example.com", "OLD1")]),
-        update_ok(),
-    ]);
-    let target = TencentSslTarget::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
-
-    let outcome = target
-        .deploy(
-            &json!({
-                "credential_id": id,
-                "resource_types": ["clb", "cdn"],
-                "resource_regions": ["ap-guangzhou", "ap-shanghai"]
-            }),
-            &materials(&chain, &key),
-            &store,
-            DeployMode::Write,
-        )
-        .await
-        .expect("带多资源类型同步的更新应成功");
-
-    assert_eq!(outcome.paths, vec!["OLD1".to_owned()]);
-    let requests = transport.requests();
-    assert_eq!(
-        requests[1].headers["X-TC-Action"],
-        "UploadUpdateCertificateInstance"
-    );
-    let payload = requests[1].body.as_ref().expect("更新应有请求体");
-    assert_eq!(payload["ResourceTypes"], json!(["clb", "cdn"]));
-    assert_eq!(
-        payload["ResourceTypesRegions"],
-        json!([
-            { "Region": "ap-guangzhou", "Type": "clb" },
-            { "Region": "ap-shanghai", "Type": "clb" },
-            { "Region": "ap-guangzhou", "Type": "cdn" },
-            { "Region": "ap-shanghai", "Type": "cdn" }
-        ])
-    );
-}
-
-#[tokio::test]
-async fn without_resource_types_no_resource_fields_are_carried() {
-    let (db, store, cipher) = setup().await;
-    let id = seed_credential(db, &cipher, "cloud.tencent", tencent_fields(None)).await;
-
-    let (chain, key) = self_signed_pem("example.com");
-    let transport = ScriptedTransport::new(vec![
-        describe_page(1, &[("example.com", "OLD1")]),
-        update_ok(),
-    ]);
+    let mut transport_responses = vec![describe_page(1, &[("example.com", "OLD1")])];
+    transport_responses.extend(deployed_resources_per_type(&[("clb", 3), ("cdn", 0)]));
+    transport_responses.push(update_ok());
+    let transport = ScriptedTransport::new(transport_responses);
     let target = TencentSslTarget::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
 
     target
@@ -740,17 +685,110 @@ async fn without_resource_types_no_resource_fields_are_carried() {
             DeployMode::Write,
         )
         .await
-        .expect("默认 resource_types=[] 的更新应成功");
+        .expect("未填 resource_types 时应按云端绑定填充");
 
     let requests = transport.requests();
-    let payload = requests[1].body.as_ref().expect("更新应有请求体");
+    assert_eq!(requests.len(), 9, "查询 1 + 按类型抓取 7 + 更新 1");
+    assert_eq!(
+        requests[1].headers["X-TC-Action"], "DescribeDeployedResources",
+        "未填 resource_types 时应按类型逐个抓取旧证书绑定"
+    );
+    let fetched = requests[1].body.as_ref().expect("抓取应有请求体");
+    assert_eq!(fetched["CertificateIds"], json!(["OLD1"]));
+    assert_eq!(fetched["ResourceType"], json!("clb"));
+
+    let payload = requests[8].body.as_ref().expect("更新应有请求体");
+    assert_eq!(
+        payload["ResourceTypes"],
+        json!(["clb"]),
+        "Count>0 的类型进入 ResourceTypes，Count=0 的跳过"
+    );
+    assert_eq!(
+        payload["Repeatable"],
+        json!(false),
+        "repeatable 按界面输入透传（默认 false）"
+    );
+    assert!(payload.get("ResourceTypesRegions").is_none());
+}
+
+#[tokio::test]
+async fn empty_cloud_bindings_fail_with_deploy_hint() {
+    // 旧证书未绑定任何资源（抓取为空）：UpdateCertificateInstance 无法
+    // 执行，以可读错误失败并提示先在控制台手动部署（含部署链接），
+    // 不发起更新调用。
+    let (db, store, cipher) = setup().await;
+    let id = seed_credential(db, &cipher, "cloud.tencent", tencent_fields(None)).await;
+
+    let (chain, key) = self_signed_pem("example.com");
+    let mut transport_responses = vec![describe_page(1, &[("example.com", "OLD1")])];
+    transport_responses.extend(deployed_resources_per_type(&[]));
+    let transport = ScriptedTransport::new(transport_responses);
+    let target = TencentSslTarget::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
+
+    let error = target
+        .deploy(
+            &json!({ "credential_id": id }),
+            &materials(&chain, &key),
+            &store,
+            DeployMode::Write,
+        )
+        .await
+        .expect_err("云端绑定抓取为空时应以可读错误失败");
+
+    let message = error.to_string();
     assert!(
-        payload.get("ResourceTypes").is_none(),
-        "未选资源类型时不应携带 ResourceTypes"
+        message.contains("未绑定任何云资源")
+            && message.contains("https://console.cloud.tencent.com/ssl/dsc/deploy?id=OLD1"),
+        "错误应提示先手动部署并含部署链接: {message}"
+    );
+    let requests = transport.requests();
+    assert_eq!(
+        requests.len(),
+        8,
+        "查询 1 + 按类型抓取 7；抓取为空时不发起更新调用"
     );
     assert!(
-        payload.get("ResourceTypesRegions").is_none(),
-        "未选资源类型时不应携带 ResourceTypesRegions"
+        requests
+            .iter()
+            .all(|r| r.headers["X-TC-Action"] != "UpdateCertificateInstance"),
+        "不应发起更新调用"
+    );
+}
+
+#[tokio::test]
+async fn antiddos_binding_maps_to_ddos() {
+    // DescribeDeployedResources 的类型名 antiddos 映射为清单里的 ddos。
+    let (db, store, cipher) = setup().await;
+    let id = seed_credential(db, &cipher, "cloud.tencent", tencent_fields(None)).await;
+
+    let (chain, key) = self_signed_pem("example.com");
+    let mut transport_responses = vec![describe_page(1, &[("example.com", "OLD1")])];
+    transport_responses.extend(deployed_resources_per_type(&[("antiddos", 1), ("clb", 2)]));
+    transport_responses.push(update_ok());
+    let transport = ScriptedTransport::new(transport_responses);
+    let target = TencentSslTarget::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
+
+    target
+        .deploy(
+            &json!({ "credential_id": id }),
+            &materials(&chain, &key),
+            &store,
+            DeployMode::Write,
+        )
+        .await
+        .expect("antiddos 绑定应映射为 ddos");
+
+    let requests = transport.requests();
+    let payload = requests[8].body.as_ref().expect("更新应有请求体");
+    assert_eq!(
+        payload["ResourceTypes"],
+        json!(["clb", "ddos"]),
+        "antiddos→ddos 映射后与 clb 一起传入（按查询顺序收集）"
+    );
+    assert_eq!(
+        payload["Repeatable"],
+        json!(false),
+        "repeatable 按界面输入透传（默认 false）"
     );
 }
 
@@ -761,11 +799,17 @@ async fn multiple_existing_certificates_are_updated_one_by_one() {
     let id = seed_credential(db, &cipher, "cloud.tencent", tencent_fields(None)).await;
 
     let (chain, key) = self_signed_pem("example.com");
-    let transport = ScriptedTransport::new(vec![
-        describe_page(2, &[("example.com", "OLD1"), ("example.com", "OLD2")]),
-        update_ok(),
-        update_fail("资源不存在"),
-    ]);
+    let mut transport_responses = vec![describe_page(
+        2,
+        &[("example.com", "OLD1"), ("example.com", "OLD2")],
+    )];
+    // 每张证书分别解析最终 ResourceTypes：抓取 7 次 → 更新 1 次，逐张交替。
+    transport_responses.extend(deployed_resources_per_type(&[("clb", 1)]));
+    transport_responses.push(update_ok());
+    transport_responses.extend(deployed_resources_per_type(&[("clb", 1)]));
+    transport_responses.push(update_fail("资源不存在"));
+    let transport = ScriptedTransport::new(transport_responses);
+
     let target = TencentSslTarget::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
 
     let outcome = target
@@ -784,9 +828,22 @@ async fn multiple_existing_certificates_are_updated_one_by_one() {
         "paths 记录更新的全部证书 ID"
     );
     let requests = transport.requests();
-    assert_eq!(requests.len(), 3, "应查询 1 次 + 更新 2 次");
-    assert_eq!(requests[1].headers["X-TC-Action"], "UploadUpdateCertificateInstance");
-    assert_eq!(requests[2].headers["X-TC-Action"], "UploadUpdateCertificateInstance");
+    for (i, r) in requests.iter().enumerate() {
+        println!("req[{i}] = {}", r.headers["X-TC-Action"]);
+    }
+    assert_eq!(
+        requests.len(),
+        17,
+        "应查询 1 次 + 每张按类型抓取 7 次 + 更新 2 次"
+    );
+    assert_eq!(
+        requests[8].headers["X-TC-Action"],
+        "UpdateCertificateInstance"
+    );
+    assert_eq!(
+        requests[16].headers["X-TC-Action"],
+        "UpdateCertificateInstance"
+    );
 }
 
 // ---- 需求：能力校验 ----
@@ -804,6 +861,7 @@ async fn deploy_fails_without_cloud_requests_when_deploy_capability_is_missing()
     let id = credential::ActiveModel {
         name: Set("仅 DNS 凭据".to_owned()),
         type_id: Set("cloud.tencent".to_owned()),
+        proxy_mode: Set("direct".to_owned()),
         encrypted_fields: Set(sealed),
         capabilities: Set(r#"["dns"]"#.to_owned()),
         created_at: Set(now),
@@ -838,5 +896,187 @@ async fn deploy_fails_without_cloud_requests_when_deploy_capability_is_missing()
     assert!(
         transport.requests().is_empty(),
         "能力缺失时不得发起任何云端请求"
+    );
+}
+
+// ---- 需求：按选中证书 ID 部署 ----
+//
+// 选中证书 ID = 替换模式：跳过同域名存在性查询，直接调
+// UpdateCertificateInstance 把旧证书绑定的云资源切换到新证书。
+// `Repeatable` 对该接口可选，本实现不传（更新调用不携带）。
+
+#[tokio::test]
+async fn a_selected_certificate_id_falls_back_to_cloud_bindings() {
+    // 选中证书 ID 且未填 resource_types：跳过同域名查询，先抓取该证书的
+    // 云端绑定（DescribeDeployedResources）填充 ResourceTypes，再替换。
+    let (db, store, cipher) = setup().await;
+    let id = seed_credential(db, &cipher, "cloud.tencent", tencent_fields(None)).await;
+
+    let (chain, key) = self_signed_pem("example.com");
+    let mut transport_responses = deployed_resources_per_type(&[("clb", 2), ("cdn", 1)]);
+    transport_responses.push(update_ok());
+    let transport = ScriptedTransport::new(transport_responses);
+    let target = TencentSslTarget::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
+
+    let outcome = target
+        .deploy(
+            &json!({
+                "credential_id": id,
+                "certificate_id": "PICKED"
+            }),
+            &materials(&chain, &key),
+            &store,
+            DeployMode::Write,
+        )
+        .await
+        .expect("选中证书 ID 的部署应成功");
+
+    assert_eq!(
+        outcome.paths,
+        vec!["PICKED".to_owned()],
+        "paths 即选中的证书 ID"
+    );
+
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 8, "按类型抓取 7 + 更新 1，不发起同域名查询");
+    assert_eq!(
+        requests[0].headers["X-TC-Action"], "DescribeDeployedResources",
+        "未填 resource_types 时应先抓取选中证书的绑定"
+    );
+    let fetched = requests[0].body.as_ref().expect("抓取应有请求体");
+    assert_eq!(fetched["CertificateIds"], json!(["PICKED"]));
+    assert_eq!(
+        requests[7].headers["X-TC-Action"], "UpdateCertificateInstance",
+        "应走更新接口而非上传新证书"
+    );
+    let payload = requests[7].body.as_ref().expect("更新应有请求体");
+    assert_eq!(payload["OldCertificateId"], json!("PICKED"));
+    assert_eq!(
+        payload["ResourceTypes"],
+        json!(["clb", "cdn"]),
+        "按云端绑定填充 ResourceTypes"
+    );
+    assert_eq!(
+        payload["Repeatable"],
+        json!(false),
+        "repeatable 按界面输入透传（未填默认 false）"
+    );
+    assert!(payload.get("ResourceTypesRegions").is_none());
+    assert_eq!(payload["CertificatePublicKey"], chain);
+    assert_eq!(payload["CertificatePrivateKey"], key);
+}
+
+#[tokio::test]
+async fn a_selected_certificate_id_passes_repeatable_through() {
+    // 选中证书 ID = 替换模式：Repeatable 按界面输入透传给
+    // UpdateCertificateInstance（该接口支持此参数）。
+    let (db, store, cipher) = setup().await;
+    let id = seed_credential(db, &cipher, "cloud.tencent", tencent_fields(None)).await;
+
+    let (chain, key) = self_signed_pem("example.com");
+    let mut transport_responses = deployed_resources_per_type(&[("clb", 2)]);
+    transport_responses.push(update_ok());
+    let transport = ScriptedTransport::new(transport_responses);
+    let target = TencentSslTarget::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
+
+    target
+        .deploy(
+            &json!({
+                "credential_id": id,
+                "certificate_id": "PICKED",
+                "repeatable": true
+            }),
+            &materials(&chain, &key),
+            &store,
+            DeployMode::Write,
+        )
+        .await
+        .expect("选中证书 ID 且 repeatable=true 的部署应成功");
+
+    let requests = transport.requests();
+    let payload = requests[7].body.as_ref().expect("更新应有请求体");
+    assert_eq!(
+        payload["Repeatable"],
+        json!(true),
+        "repeatable 按界面输入透传（true）"
+    );
+    assert_eq!(payload["ResourceTypes"], json!(["clb"]));
+}
+
+#[tokio::test]
+async fn a_blank_certificate_id_falls_back_to_the_upload_flow() {
+    // 空白 certificate_id 按未提供处理：走上传 + 同域名匹配原流程。
+    let (db, store, cipher) = setup().await;
+    let id = seed_credential(db, &cipher, "cloud.tencent", tencent_fields(None)).await;
+
+    let (chain, key) = self_signed_pem("example.com");
+    let transport = ScriptedTransport::new(vec![describe_page(0, &[]), upload_ok("CERTNEW")]);
+    let target = TencentSslTarget::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
+
+    let outcome = target
+        .deploy(
+            &json!({ "credential_id": id, "certificate_id": "  " }),
+            &materials(&chain, &key),
+            &store,
+            DeployMode::Write,
+        )
+        .await
+        .expect("空白 certificate_id 的部署应成功");
+
+    assert_eq!(outcome.paths, vec!["CERTNEW".to_owned()]);
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 2, "应按查询、上传的原流程调用");
+    assert_eq!(requests[1].headers["X-TC-Action"], "UploadCertificate");
+}
+
+// ---- 需求：describe_certificates 全量分页与 label 口径 ----
+
+#[tokio::test]
+async fn describe_certificates_collects_every_page() {
+    let transport = ScriptedTransport::new(vec![
+        // 第一页声称共有 1001 张：必须翻到第二页才算全量。
+        describe_page(1001, &[("idev.top", "CERTA")]),
+        describe_page(1001, &[("idev.top", "CERTB")]),
+    ]);
+    let target = TencentSslTarget::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
+    let credentials: acmecast_dns::providers::tencent::TencentCredentials =
+        serde_json::from_value(tencent_fields(None)).expect("凭据字段应合法");
+
+    let certificates = target
+        .describe_certificates(&credentials, None)
+        .await
+        .expect("全量拉取应成功");
+
+    assert_eq!(certificates.len(), 2, "两页的证书都应被收集");
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 2);
+    for request in &requests {
+        assert_eq!(request.headers["X-TC-Action"], "DescribeCertificates");
+    }
+    let first = requests[0].body.as_ref().expect("查询应有请求体");
+    assert!(
+        first.get("SearchKey").is_none(),
+        "search_key=None 时不应携带 SearchKey"
+    );
+    assert_eq!(first["CertificateType"], "SVR");
+    assert_eq!(requests[1].body.as_ref().unwrap()["Offset"], 1000);
+}
+
+#[test]
+fn cert_labels_keep_the_declared_format() {
+    assert_eq!(
+        acmecast_deploy::format_cert_label("a9ZwitUs", "idev.top", Some("idev")),
+        "a9ZwitUs (idev.top - idev)",
+        "有别名：证书ID (域名 - 别名)"
+    );
+    assert_eq!(
+        acmecast_deploy::format_cert_label("a9ZwitUs", "idev.top", None),
+        "a9ZwitUs (idev.top)",
+        "无别名：证书ID (域名)"
+    );
+    assert_eq!(
+        acmecast_deploy::format_cert_label("a9ZwitUs", "idev.top", Some("   ")),
+        "a9ZwitUs (idev.top)",
+        "空白别名按无别名处理"
     );
 }

@@ -49,6 +49,20 @@ export async function downloadFile(url: string, token: string | null): Promise<v
   URL.revokeObjectURL(link.href);
 }
 
+/** 取文本端点：与 downloadFile 共享鉴权头与 ApiError 解析，返回响应体文本（用于复制 PEM 正文）。 */
+export async function fetchText(url: string, token: string | null): Promise<string> {
+  const response = await fetch(url, {
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => undefined)) as
+      | { error?: { code?: string; message?: string; field?: string } }
+      | undefined;
+    throw new ApiError(response.status, body?.error);
+  }
+  return await response.text();
+}
+
 /** 时间显示：本地时区的紧凑格式。 */
 export function formatTime(iso: string | null | undefined): string {
   if (!iso) return "-";

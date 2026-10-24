@@ -74,7 +74,12 @@ impl Deployer {
 /// 配置可能被外部改动（目录补全、手工覆盖），云 API 目标则不存在这个问题。
 /// 存量 `DeploymentEntry` 的旧指纹仍照常记录，只是对非云目标不参与判定。
 /// 抽成函数是为了让这条规则能被单独测试。
-fn decide_mode(target_type: &str, deployed: Option<&str>, current: &str, force: bool) -> DeployMode {
+fn decide_mode(
+    target_type: &str,
+    deployed: Option<&str>,
+    current: &str,
+    force: bool,
+) -> DeployMode {
     const FINGERPRINT_IDEMPOTENT_TARGETS: [&str; 2] = ["tencent-ssl", "cloud.tencent"];
     if !FINGERPRINT_IDEMPOTENT_TARGETS.contains(&target_type) {
         return DeployMode::Write;

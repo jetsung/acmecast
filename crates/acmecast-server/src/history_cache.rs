@@ -164,8 +164,10 @@ impl HistoryCache {
         let key = Self::meta_key(history_id);
 
         let op = async {
-            let map: std::collections::HashMap<String, String> =
-                redis::cmd("HGETALL").arg(&key).query_async(&mut conn).await?;
+            let map: std::collections::HashMap<String, String> = redis::cmd("HGETALL")
+                .arg(&key)
+                .query_async(&mut conn)
+                .await?;
             Ok::<_, redis::RedisError>(map)
         };
 
@@ -203,10 +205,7 @@ impl HistoryCache {
             .filter(|s| !s.is_empty())
             .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
             .map(|dt| dt.with_timezone(&Utc));
-        let error_message = map
-            .get("error_message")
-            .filter(|s| !s.is_empty())
-            .cloned();
+        let error_message = map.get("error_message").filter(|s| !s.is_empty()).cloned();
 
         Some(HistoryMeta {
             id: history_id,
@@ -263,7 +262,10 @@ impl HistoryCache {
         let key = Self::logs_key(history_id);
 
         let op = async {
-            let exists: bool = redis::cmd("EXISTS").arg(&key).query_async(&mut conn).await?;
+            let exists: bool = redis::cmd("EXISTS")
+                .arg(&key)
+                .query_async(&mut conn)
+                .await?;
             if !exists {
                 return Ok::<_, redis::RedisError>(None);
             }

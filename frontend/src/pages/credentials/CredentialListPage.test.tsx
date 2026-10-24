@@ -148,6 +148,7 @@ vi.mock("@/api/client", () => ({
                   name: "cf-main",
                   type_id: "cloud.cloudflare",
                   capabilities: ["dns", "deploy"],
+                  proxy_mode: "direct",
                   created_at: "2026-09-19T00:00:00Z",
                   updated_at: "2026-09-19T00:00:00Z",
                 },
@@ -155,11 +156,20 @@ vi.mock("@/api/client", () => ({
                   id: 6,
                   name: "le-account",
                   type_id: "acme.account",
+                  proxy_mode: "inherit",
+                  created_at: "2026-09-19T00:00:00Z",
+                  updated_at: "2026-09-19T00:00:00Z",
+                },
+                {
+                  id: 7,
+                  name: "ssh-1",
+                  type_id: "deploy.ssh",
+                  proxy_mode: "custom",
                   created_at: "2026-09-19T00:00:00Z",
                   updated_at: "2026-09-19T00:00:00Z",
                 },
               ],
-              total: 2,
+              total: 3,
               page: 1,
               page_size: 15,
             },
@@ -175,6 +185,21 @@ vi.mock("@/api/client", () => ({
       }
       if (path.startsWith("/api/credentials/")) {
         // 详情接口带回解密后的字段值（编辑回填的唯一来源）。
+        if (path === "/api/credentials/7") {
+          return {
+            data: {
+              data: {
+                id: 7,
+                name: "ssh-1",
+                type_id: "deploy.ssh",
+                fields: { host: "web-1.example.com", user: "deploy" },
+                created_at: "2026-09-19T00:00:00Z",
+                updated_at: "2026-09-19T00:00:00Z",
+              },
+            },
+            response: new Response(),
+          };
+        }
         const isAcme = path === "/api/credentials/6";
         return {
           data: {
@@ -552,6 +577,37 @@ describe("凭据编辑弹窗", () => {
     });
     expect(td.style.textAlign).not.toBe("center");
     expect(td.querySelector(".ant-tag")).toBeNull();
+  });
+
+  it("列表“代理”列按 proxy_mode 显示中文标签（直连/继承全局/自定义）且居左无标签", async () => {
+    renderPage();
+    // 三条 mock 凭据分别是 direct / inherit / custom，应各渲染对应中文标签。
+    await waitFor(() => {
+      const texts = [...document.querySelectorAll<HTMLElement>("tbody td")].map(
+        (cell) => cell.textContent,
+      );
+      for (const label of ["直连", "继承全局", "自定义"]) {
+        expect(texts).toContain(label);
+      }
+    });
+    // 列头与单元格都不应被 antd 注入居中内联样式（与「可用权限」列一致）。
+    const th = [...document.querySelectorAll<HTMLElement>("thead th")].find(
+      (cell) => cell.textContent === "代理",
+    );
+    expect(th).toBeTruthy();
+    expect(th!.style.textAlign).not.toBe("center");
+    const td = [...document.querySelectorAll<HTMLElement>("tbody td")].find(
+      (cell) => cell.textContent === "自定义",
+    )!;
+    expect(td.style.textAlign).not.toBe("center");
+    // 纯文本展示，不用 Tag 并排渲染。
+    expect(td.querySelector(".ant-tag")).toBeNull();
+    // 「代理」列位于「可用权限」与「备注」之间。
+    const titles = [...document.querySelectorAll<HTMLElement>("thead th")].map(
+      (cell) => cell.textContent,
+    );
+    expect(titles.indexOf("代理")).toBe(titles.indexOf("可用权限") + 1);
+    expect(titles.indexOf("备注")).toBe(titles.indexOf("代理") + 1);
   });
 
   it("连续编辑两条不同凭据:第二次弹窗不含第一条的字段残留", async () => {

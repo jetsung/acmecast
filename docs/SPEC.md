@@ -479,7 +479,18 @@ SSE 实时推送与终态持久化遵循双轨：
 
 ### 连通性测试
 
-凭据连通性测试仅校验凭据在对应云平台的身份有效性，不因 `capabilities` 取值而改变探测目标或判定结果。能力仅影响流水线侧的「能否被选 / 能否执行」。
+凭据页「测试」（`POST /api/credentials/{id}/test`）按凭据声明的能力分派探测接口：测试端点把 `capabilities` 传给凭据类型，探测动作与用途一一对应——同一对密钥各业务线彼此独立的权限，在测试阶段即被验证，而不是等流水线执行时才暴露。能力仅影响探测目标；其余类型（Cloudflare / 阿里云 / SSH 主机 / 通知渠道等）的探测行为不受能力影响。
+
+| 凭据类型 | 能力 | 探测接口 | 端点 |
+|---|---|---|---|
+| `cloud.tencent` | 仅 `deploy` | SSL [DescribeCertificates](https://cloud.tencent.com/document/api/400/41671)（单页 `Limit=1`） | `ssl.tencentcloudapi.com` / `ssl.intl.tencentcloudapi.com` |
+| `cloud.tencent` | 仅 `dns` | DNSPod [DescribeDomainList](https://cloud.tencent.com/document/api/1427/56172)（单页 `Limit=1`） | `dnspod.tencentcloudapi.com` / `dnspod.intl.tencentcloudapi.com` |
+| `cloud.tencent` | `dns` + `deploy` | 两侧都探测（DNSPod 与 SSL 各一次），全部通过才判定可用 | 同上两行 |
+| `dns.tencent-eo` | （不受控，无能力字段） | EdgeOne [DescribePlans](https://cloud.tencent.com/document/api/1552/118485)（单页 `Limit=1`） | `teo.tencentcloudapi.com` / `teo.intl.tencentcloudapi.com` |
+
+- 能力为空按双能力处理（与存储归一化的缺省口径一致）。
+- 任一侧失败即返回不可用，原因按用途点名（如「DNS 用途探测失败：…」「部署用途探测失败：…」），双侧失败并列给出；通过的一侧不被点名。
+- 原因经 `redact` 脱敏后呈现，不得回显任何凭据字段值；常见错误码（`AuthFailure.UnauthorizedOperation`、`AuthFailure.SecretIdNotFound`、`AuthFailure.SignatureFailure`、`OperationDenied*` 等）给出一句可操作的中文提示，request id 统一附于尾部供提工单定位。
 
 ### 实现索引
 
@@ -489,8 +500,72 @@ SSE 实时推送与终态持久化遵循双轨：
 - `crates/acmecast-server/src/handlers.rs: resolve_capabilities_text` — API 层校验（空数组 / 非法值 400）
 - `crates/acmecast-server/src/handlers.rs: validate_pipeline_credential_capabilities` — 流水线保存时能力校验
 - `crates/acmecast-deploy/src/targets/tencent.rs: resolve_tencent_credentials` — 部署执行时 `deploy` 能力校验
+- `crates/acmecast-access/src/credential/mod.rs: CredentialType::test_connectivity` — 连通性测试 trait 携带 `capabilities`
+- `crates/acmecast-server/src/handlers.rs: test_credential` — 测试端点传入 `resolved.capabilities`
+- `crates/acmecast-server/src/credentials.rs: TencentCredentialType::test_connectivity` — 按能力分派探测（双能力两侧都探测）
+- `crates/acmecast-dns/src/providers/tencent.rs: verify_credentials / verify_credentials_for_deploy` — DNSPod `DescribeDomainList` / SSL `DescribeCertificates` 探测
+- `crates/acmecast-dns/src/providers/tencent_eo.rs: verify_credentials` — EdgeOne `DescribePlans` 探测
 - `frontend/src/pages/credentials/CredentialListPage.tsx` — 凭据表单多选与列表标签列
 - `frontend/src/pages/pipelines/PipelineEditorPage.tsx: hasCapability` — 流水线下拉能力过滤
+
+
+## 凭据代理模式列（`proxy_mode`）
+
+出网代理模式 `proxy_mode`（`direct` / `inherit` / `custom`，语义见
+`04-credentials.md`「出网代理」）原本只存在加密字段 `encrypted_fields` 内，凭据
+列表 API 不解密、不返回，用户须逐条打开编辑弹窗才能确认某凭据的代理方式。
+现以明文冗余列单独持久化（与 `capabilities` 同口径：从加密字段中提取的非敏感
+枚举值），列表直接读明文列返回，不触解密。
+
+### 存储与归一化
+
+- `acmecast_credential.proxy_mode` 以文本存储，默认值 `direct`（迁移
+  `m20250117` 建列）。
+- 保存凭据（`POST` / `PUT /api/credentials/{id}`）时在字符串去空白之后、加密
+  之前，用 `ProxyMode::from_credentials(&fields)` 从归一化后的 `fields` 提取
+  写入：`fields.proxy_mode` 缺失但 `proxy_url` 非空视为 `custom`，两者均缺视为
+  `direct`（与运行时传输层选择同口径）。同一函数内同时写 `encrypted_fields`
+  与明文列，不会只写一处。
+- 代理 URL 本体仍在 `encrypted_fields` 加密保存——明文列只有模式枚举，不含
+  URL 或密钥材料。
+
+### 存量回填迁移
+
+- `m20250117` 迁移 `up` 仅建列（存量行得默认 `direct`）；回填不在迁移 `up`
+  内——启动序列中 `migrate` 先于凭据加密密钥初始化，回填由调用方在密钥就绪
+  后延迟执行（服务启动路径与 `migrate-certs` 子命令）。
+- 回填遍历列值为默认 `direct` 的行，解密 `encrypted_fields` 后按
+  `ProxyMode::from_credentials` 归一化，把归一化结果非 `direct`（`custom`，或
+  存量已显式保存的 `inherit`）的行写回明文列；重复执行幂等（回填后值不再是
+  默认值，不再命中）。
+- 密钥未配置时跳过回填不报错，待密钥配置后下次启动补回填；单行解密失败只记
+  日志跳过，不阻断启动——运行时行为读加密字段，明文列仅供列表展示，即使短暂
+  不一致也不影响出网行为。
+
+### API 返回
+
+- `CredentialResponse` / `CredentialDetailResponse` 均返回 `proxy_mode: String`
+  （读明文列，详情接口不因该字段重复解密）。
+- 列表响应不返回 `proxy_url`（敏感，仅详情接口解密返回）。
+
+### 凭据列表「代理」列
+
+- 前端凭据列表在「可用权限」列之后、「备注」列之前新增「代理」列，按
+  `proxy_mode` 展示中文标签：`direct`→「直连」、`inherit`→「继承全局」、
+  `custom`→「自定义」。
+- 该列用 `Typography.Text` 纯文本展示，不使用标签（Tag）并排渲染；保持与
+  「可用权限」「名称」「备注」等列一致的默认左对齐，不得设置为居中对齐。
+
+### 实现索引
+
+- `crates/acmecast-store/src/entity/credential.rs` — `proxy_mode: String` 明文列字段（`Column::ProxyMode`）
+- `crates/acmecast-store/src/migration/m20250117_000001_add_credential_proxy_mode.rs` — 建列迁移（`up` 仅 `ALTER TABLE ... ADD COLUMN proxy_mode TEXT NOT NULL DEFAULT 'direct'`）+ `backfill_credential_proxy_mode`（密钥就绪后延迟回填，幂等）
+- `crates/acmecast-store/src/migration/mod.rs` — 迁移注册（`AddCredentialProxyMode`）
+- `crates/acmecast-server/src/handlers.rs: save_credential` — 在 `trim_credential_strings` 之后、加密之前用 `ProxyMode::from_credentials(&fields)` 归一化写入 `ActiveModel.proxy_mode`，新建与更新两分支同写
+- `crates/acmecast-server/src/handlers.rs: CredentialResponse / CredentialDetailResponse` — `pub proxy_mode: String`（`From<Model>` 直接读明文列，详情不重复解密）
+- `crates/acmecast-server/src/main.rs` — 服务启动路径与 `migrate-certs` 子命令各一处 `backfill_credential_proxy_mode` 调用（密钥就绪后延迟执行，失败只记日志不阻断启动）
+- `frontend/src/pages/credentials/CredentialListPage.tsx` — 「代理」列（`Typography.Text` 纯文本、左对齐，位于「可用权限」之后「备注」之前）
+- `frontend/src/api/schema.d.ts` — `just gen-api` 刷新后带 `proxy_mode` 字段
 
 
 ## 凭据类型展示名（`display_name`）
@@ -992,6 +1067,73 @@ ORDER BY (archived_at IS NULL) DESC,  -- 活跃 (1) 排前，已归档 (0) 排�
 - `crates/acmecast-pipeline` — 错误分类与步骤终态（`failed` 而非 `skipped`）
 - `crates/acmecast-server/src/steps/apply.rs: zone_of` / `complete_challenge` — 跳过注入与正常签发共用产物键
 
+## 腾讯云 SSL 部署目标（证书选择与替换流程）
+
+`cert.deploy` 的 `tencent-ssl` 变体把签发证书部署到腾讯云 SSL 证书库（含国际站），为云 API 语义（非文件落盘）：上传证书链与私钥、判断云端是否已有同域名证书、已有则替换，并保证重复部署幂等。本节描述其证书选择与替换流程的业务语义；2 文件材料语义见「文件类部署目标 3 文件布局与腾讯云 2 文件区分」，凭据类型白名单与下拉过滤见「流水线下拉过滤」，代理与超时见「凭据出网代理与全局代理配置」的「网络操作超时」子节，运行历史结构化输出见「部署平台化日志（cert.deploy）」。
+
+### 输入字段
+
+`tencent-ssl` 部署目标的输入字段：
+
+- `credential_id`（必填）：腾讯云体系凭据引用（`cloud.tencent` 类型，DNS 与 SSL 证书部署通用）。
+- `alias`（可选）：云端备注名，仅 `UploadCertificate`（上传新证书）支持；`UpdateCertificateInstance`（替换）无此参数。
+- `certificate_id`（可选）：云端已存在证书 ID。非空时进入替换模式（见「按选中证书 ID 部署」），跳过同域名自动匹配。
+- `repeatable`（可选，默认 `false`）：是否允许重复上传。上传与替换流程均按界面输入透传到云端 `Repeatable` 参数。
+
+> 历史 `resource_types` / `replace_existing` / `resource_regions` 字段已移除（BREAKING，本项目无向上兼容负担）：资源类型始终从云端抓取，不再由用户手填。
+
+### 账号站点决定请求端点
+
+全部云端调用（查询、上传、更新、同步）发往凭据 `account_site` 对应端点：`cn` → `ssl.tencentcloudapi.com`，`intl` → `ssl.intl.tencentcloudapi.com`。国际站与国内站接口 Action 与参数结构相同。
+
+### 同域名证书存在性判断
+
+未选 `certificate_id` 时，写入式部署在上传前查询云端证书库（`DescribeCertificates` 全部分页遍历），判断是否已存在同域名证书。判定规则：云端服务器证书的主域名（`Domain`）与本次证书主域名**精确一致**（单域名匹配同名单域名，泛域名 `*.example.com` 匹配同形式泛域名）即视为已存在；仅 SAN 列表重叠或存在泛域名覆盖关系（云端 `*.example.com` 而本次为 `a.example.com`）MUST NOT 视为已存在。查询 MUST 遍历全部分页，不得因单页数量限制漏判。
+
+### 已存在证书的替换流程
+
+同域名命中即走替换（无「仅上传」开关），未命中走上传。替换调用 `UpdateCertificateInstance`（「一键更新旧证书资源」，[产品文档](https://cloud.tencent.com/document/product/400/91649)）：把本次证书内容作为新证书上传入云，并把旧证书（`OldCertificateId` 为匹配出的证书 ID）绑定的云资源**切换**到新证书。与原方案 `UploadUpdateCertificateInstance`（直接改写证书内容、ID 不变，但为白名单功能、`CertificateWhiteFuncError` 实证）相比，云端证书 ID 会变为新上传的证书 ID，旧证书内容保持不变、随后可人工下线。
+
+替换调用的关键约束：
+
+- **资源类型始终从云端抓取**：`ResourceTypes` 由 `DescribeDeployedResources` 逐类型查询旧证书的绑定（`Count>0` 视为有绑定，`antiddos` 映射为 `ddos`，清单外类型丢弃并告警），不从输入读取，不携带 `ResourceTypesRegions`（地域由服务端按旧证书绑定推导）。
+- **抓取为空时报错**：旧证书未绑定任何云资源时，部署 MUST 以可读的输入错误失败，错误信息 SHALL 包含腾讯云控制台手动部署链接 `https://console.cloud.tencent.com/ssl/dsc/deploy?id=<旧证书ID>`，提示用户先在该页把证书手动部署到目标资源后再重试（`UpdateCertificateInstance` 要求旧证书先有绑定资源，否则报 `CertificateDeployInstanceEmpty`）。MUST NOT 回退默认资源类型（如 `["clb"]`），MUST NOT 静默跳过该张证书。
+- **Repeatable 按输入透传**：更新调用 MUST 携带 `Repeatable`（按输入 `repeatable` 透传，该接口支持此参数）。
+- **不携带 Alias**：更新调用 MUST NOT 携带 `Alias`（该接口无此参数，备注名仅 `UploadCertificate` 支持）。
+- **异步接口**：`UpdateCertificateInstance` 返回 `DeployRecordId`；部署结果 paths 记录替换目标（旧证书 ID），云端实际生效的新证书 ID 以部署记录为准。
+- **多张逐张替换**：多张匹配的同域名证书 SHALL 逐张替换，每张分别从云端抓取其绑定资源类型；任一张的更新调用失败 MUST 以告警日志体现、不阻塞其他证书更新与整体部署；任一张的云端绑定抓取为空 MUST 以可读错误使整体部署失败（确定性输入问题，不静默跳过）。
+
+### 按选中证书 ID 部署
+
+`certificate_id` 非空时进入替换模式：跳过「同域名存在性判断 / 自动匹配」流程，直接以该值为 `OldCertificateId` 调用 `UpdateCertificateInstance`，把本次证书链与私钥作为新证书上传入云，并将选中证书绑定的云资源切换到新证书。`ResourceTypes` 从选中证书的云端绑定抓取（与同域名替换分支一致），抓取为空时报可读错误含手动部署链接。`Repeatable` 按输入透传，不携带 `Alias`。`certificate_id` 为空时走上传 + 同域名自动匹配替换流程。
+
+### 同步云端证书列表端点
+
+控制台后端提供 HTTP 端点，按给定腾讯云凭据调用 `DescribeCertificates`（[接口文档](https://cloud.tencent.com/document/product/400/41671)）拉取云端服务器证书列表，供部署表单的「证书 ID」下拉框同步填充。端点 MUST 接收凭据标识，按凭据 `account_site` 走对应站点端点，返回每张证书的标识与显示文本：`value` 为云端证书 ID，`label` 为「证书ID（域名）」或「证书ID（域名 - 别名）」（如 `a9ZwitUs (idev.top - idev)`）。端点 MUST 遍历全部分页不漏返回；对非 `cloud.tencent` 类型凭据 MUST 以可读的输入错误失败，不发起云端调用。
+
+### 部署表单证书 ID 下拉与同步交互
+
+`tencent-ssl` 部署目标表单提供「证书 ID」下拉框控件：默认为空、单选、可清空选值。该字段 SHALL 独占一行但只占半列（`x-end-row`，右侧留空占位列），「同步」按钮 SHALL 位于下拉框右侧、与下拉框同处一行，下拉框占满该半宽列的剩余宽度。点击「同步」按钮调用同步云端证书列表端点（按当前所选 `credential_id`）拉取证书列表并填充下拉框选项；未选凭据或凭据非 `cloud.tencent` 时同步按钮 SHALL 提示无法同步且不发起请求。下拉框选中一个证书 ID 后，表单 SHALL 进入替换模式：把 `repeatable` 固定为 `false` 并禁用其开关（用户无法在选中期间改动）；清空证书 ID 选值后，开关恢复可编辑。`repeatable` SHALL 占半宽。下拉框选项的显示文本与同步端点返回的 `label` 一致。
+
+### 跳过写入时不产生云端变更
+
+指纹幂等判定为跳过写入（证书指纹与上次部署一致且未强制）时，`tencent-ssl` 目标 MUST NOT 发起任何云端调用（不查询、不上传、不删除），结果按跳过写入返回（与「非 cloud.tencent 目标每次上传不检测指纹」节仅 tencent-ssl/cloud.tencent 走指纹判定一致）。
+
+### 凭据引用校验
+
+输入的 `credential_id` SHALL 引用 `cloud.tencent` 类型凭据；`dns.tencent-eo` 凭据不含 SSL 部署能力，引用它 MUST 以可读的输入错误失败；引用其他类型凭据时部署 MUST 同样以可读的输入错误失败，不发起任何云端调用。
+
+### 实现索引
+
+- `crates/acmecast-deploy/src/targets/tencent.rs: TencentSslInput` — 输入字段（`credential_id`/`alias`/`certificate_id`/`repeatable`，无 `resource_types`）
+- `crates/acmecast-deploy/src/targets/tencent.rs: RESOURCE_TYPES` — 资源类型清单（云端抓取校验）
+- `crates/acmecast-deploy/src/targets/tencent.rs: resolve_resource_types` — 纯云端抓取（`DescribeDeployedResources` 逐类型查询），空报 `invalid_input` 含部署链接，不回退默认
+- `crates/acmecast-deploy/src/targets/tencent.rs: update_certificate_instance` — `UpdateCertificateInstance` 调用，payload 含 `OldCertificateId`/`CertificatePublicKey`/`CertificatePrivateKey`/`ResourceTypes`/`Repeatable`，无 `Alias`
+- `crates/acmecast-deploy/src/targets/tencent.rs: input_schema` — `x-field-order`=`["credential_id","alias","certificate_id","repeatable"]`
+- `crates/acmecast-server/src/handlers.rs` — 同步云端证书列表端点（`DescribeCertificates` 全分页，label 规则）
+- `frontend/src/pages/pipelines/PipelineEditorPage.tsx` — 证书 ID 下拉与同步按钮（`x-end-row`）、`repeatable` 锁定 watch（选中证书 ID 后固定 false 禁用）
+- `frontend/src/components/SchemaForm.tsx: FieldControlRow` — 控件与插槽同行
+
 ## 文件类部署目标 3 文件布局与腾讯云 2 文件区分
 
 文件类部署目标（`local` / `ssh` / `s3` / `webdav`）的部署产物从 2 文件改为 **3 文件**，对齐主存储 `certificate-file-layout` 的 3 文件布局；腾讯云 `tencent-ssl` 为云 API 语义，保持 **2 文件**（fullchain + key），二者显式区分。
@@ -1229,3 +1371,33 @@ S3 与 WebDAV 的部署上传（S3 `PutObject`、WebDAV `MKCOL`/`PUT`）MUST 受
 - `crates/acmecast-deploy/src/targets/ssh.rs: RusshConnector::connect_via_bastion` — 两跳连接与认证，错误区分跳板/目标前缀
 - `frontend/src/pages/pipelines/PipelineEditorPage.tsx: SSH_FIELDS / SSH_LABELS / tightenSshSchema / withFieldOptions` — 跳板字段渲染、`x-visible-when`、`x-end-row`、`x-options` 动态排除目标
 - `frontend/src/components/SchemaForm.tsx: Condition` — `Not` 变体与 `conditionSatisfied` 取反
+
+## 证书详情页文件路径行复制正文（console-certificates）
+
+证书详情页（`/certificates/{id}`）的「CA 证书 / 完整证书链 / 私钥」三项文件路径行，除路径文本（`Typography.Text copyable` 复制路径）与「下载」按钮外，MUST 在各自「下载」按钮旁提供「复制」按钮，点击后获取该行对应文件的 PEM 文本内容并写入系统剪贴板，满足把证书/私钥正文直接粘贴到配置文件、工单或其它工具的场景，无需先下载文件再打开复制。
+
+### 复制内容与端点复用
+
+- 复制内容 MUST 与同一行「下载」按钮返回的文件正文一致：CA 证书行复制 `ca_path` 所指内容；完整证书链行复制 `fullchain_path`（缺省回退 `cert_pem_path`）所指内容；私钥行复制 `key_path`（缺省回退 `key_pem_path`）所指内容。
+- 复制请求 MUST 复用现有下载端点 `GET /api/certificates/{id}/download?format=ca|fullchain|key`，鉴权与下载一致（Bearer 令牌），MUST NOT 新增后端接口。
+- 仅 `ca`/`fullchain`/`key` 三种 PEM 格式提供复制；二进制格式（DER/PFX/JKS/P7B）非文本，不提供复制按钮。
+
+### 前端取文本与剪贴板写入
+
+- `api/helpers.ts` MUST 提供 `fetchText(url, token): Promise<string>`：与 `downloadFile` 共享 Bearer 鉴权头与非 2xx 时的 `ApiError` 错误解析（读取响应 JSON 中 `error.message`），但返回 `response.text()` 正文文本，不触发浏览器保存。
+- `doCopy(format)` MUST 依次执行：`fetchText` 取正文 → `navigator.clipboard.writeText` 写入系统剪贴板 → 成功提示「已复制」。
+- 复制任一步失败（下载端点返回非 2xx，或剪贴板写入被浏览器拒绝）MUST 透出错误信息（后端 `error.message` 或剪贴板异常 message），错误信息缺失或为空时 MUST 回退提示「复制失败」；失败时 MUST NOT 把内容写入剪贴板，按钮恢复可点击态。
+- 不实现 `document.execCommand('copy')` 回退；`navigator.clipboard` 在 dev（localhost）与 prod（HTTPS）安全上下文下可用，剪贴板 API 被拒时按失败提示处理。
+
+### 加载态与显隐规则
+
+- `doCopy` 与 `doDownload` MUST 共用 `downloading` 状态键（按 `format` 区分）：复制期间同行「下载」按钮与「复制」按钮均进入加载态，反之亦然，避免对同一文件并发请求。
+- CA 证书行「复制」按钮渲染条件 MUST 与「下载」一致：`ca_path` 存在时才渲染；完整证书链与私钥行 MUST 始终渲染「复制」按钮。
+- 既有 `Typography.Text copyable`（复制路径文本）与「下载」按钮（含多格式下载 PEM/DER/PFX/JKS/P7B）、归档、吊销、删除行为 MUST NOT 受影响。
+
+### 实现索引
+
+- `frontend/src/api/helpers.ts: fetchText` — 取文本端点（与 `downloadFile` 共享鉴权头与 `ApiError` 解析，返回正文文本）
+- `frontend/src/pages/certificates/CertificateDetailPage.tsx: doCopy` — 复制正文（`fetchText` → `clipboard.writeText`，与 `doDownload` 共用 `downloading` 键）
+- `frontend/src/pages/certificates/CertificateDetailPage.tsx` — 三行「下载」旁「复制」按钮（CA 行随 `ca_path` 显隐，`loading={downloading === "<format>"}`）
+- `frontend/src/pages/certificates/CertificateDetailPage.test.tsx` — 「复制正文」用例组（fullchain/key/ca 的 `format` 触发与 `clipboard.writeText` 断言、CA 缺失不渲染、失败提示「复制失败」）

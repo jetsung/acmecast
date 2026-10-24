@@ -330,6 +330,140 @@ async fn credential_remark_round_trips_through_api() {
 }
 
 #[tokio::test]
+async fn credential_list_returns_proxy_mode_from_plaintext_column() {
+    // spec（凭据列表返回代理模式）：列表/详情响应携带 `proxy_mode`，
+    // 由保存请求的 `fields.proxy_mode` 归一化写入明文列；旧 `proxy_url`
+    // 有值而无 `proxy_mode` 视为 `custom`，两者均缺视为 `direct`。
+    // 列表不触解密，也不得外泄 `proxy_url` 值。
+    let app = app_with_cipher().await;
+
+    // inherit：显式携带 proxy_mode。
+    let create_inherit = Request::post("/api/credentials")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            r#"{"name":"cf-inherit","type_id":"cloud.cloudflare","fields":{"api_token":"tok","proxy_mode":"inherit"}}"#,
+        ))
+        .unwrap();
+    let response = app.clone().oneshot(create_inherit).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(json_body(response).await["data"]["proxy_mode"], "inherit");
+
+    // custom：不传 proxy_mode 但传 proxy_url（存量旧口径）。
+    let create_legacy_custom = Request::post("/api/credentials")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            r#"{"name":"cf-legacy","type_id":"cloud.cloudflare","fields":{"api_token":"tok","proxy_url":"socks5://127.0.0.1:7890"}}"#,
+        ))
+        .unwrap();
+    let response = app.clone().oneshot(create_legacy_custom).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    let legacy_id = body["data"]["id"].as_i64().expect("应返回凭据 id");
+    assert_eq!(body["data"]["proxy_mode"], "custom");
+
+    // direct：两者均缺。
+    let create_direct = Request::post("/api/credentials")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            r#"{"name":"cf-direct","type_id":"cloud.cloudflare","fields":{"api_token":"tok"}}"#,
+        ))
+        .unwrap();
+    let response = app.clone().oneshot(create_direct).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(json_body(response).await["data"]["proxy_mode"], "direct");
+
+    // 列表按各记录返回归一化结果，且不外泄 proxy_url。
+    let list = app
+        .clone()
+        .oneshot(
+            Request::get("/api/credentials?page=1&page_size=10")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let list_body = json_body(list).await;
+    let items = list_body["data"]["items"].as_array().expect("应有列表项");
+    let mode_of = |name: &str| {
+        items
+            .iter()
+            .find(|item| item["name"] == name)
+            .map(|item| item["proxy_mode"].clone())
+            .unwrap_or_else(|| panic!("列表应含 {name}"))
+    };
+    assert_eq!(mode_of("cf-inherit"), "inherit");
+    assert_eq!(mode_of("cf-legacy"), "custom");
+    assert_eq!(mode_of("cf-direct"), "direct");
+    for item in items {
+        assert!(
+            item.get("proxy_url").is_none(),
+            "列表响应不得外泄 proxy_url: {item}"
+        );
+    }
+
+    // 详情同样返回该字段（读明文列，不重复解析加密字段）。
+    let detail = app
+        .oneshot(
+            Request::get(format!("/api/credentials/{legacy_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let detail_body = json_body(detail).await;
+    assert_eq!(detail_body["data"]["proxy_mode"], "custom");
+    assert_eq!(
+        detail_body["data"]["fields"]["proxy_url"],
+        "socks5://127.0.0.1:7890",
+        "详情仍解密返回 proxy_url（编辑回填）"
+    );
+}
+
+#[tokio::test]
+async fn credential_proxy_mode_updates_reflect_in_list() {
+    // spec：将凭据从 direct 更新为 custom（含 proxy_url）后，列表返回 custom。
+    let app = app_with_cipher().await;
+    let create = Request::post("/api/credentials")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            r#"{"name":"cf","type_id":"cloud.cloudflare","fields":{"api_token":"tok"}}"#,
+        ))
+        .unwrap();
+    let response = app.clone().oneshot(create).await.unwrap();
+    let id = json_body(response).await["data"]["id"].as_i64().expect("应返回凭据 id");
+    let list = app
+        .clone()
+        .oneshot(
+            Request::get("/api/credentials?page=1&page_size=10")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(json_body(list).await["data"]["items"][0]["proxy_mode"], "direct");
+
+    let update = Request::put(format!("/api/credentials/{id}"))
+        .header("content-type", "application/json")
+        .body(Body::from(
+            r#"{"name":"cf","type_id":"cloud.cloudflare","fields":{"api_token":"tok","proxy_mode":"custom","proxy_url":"http://127.0.0.1:8080"}}"#,
+        ))
+        .unwrap();
+    let response = app.clone().oneshot(update).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(json_body(response).await["data"]["proxy_mode"], "custom");
+
+    let list = app
+        .oneshot(
+            Request::get("/api/credentials?page=1&page_size=10")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(json_body(list).await["data"]["items"][0]["proxy_mode"], "custom");
+}
+
+#[tokio::test]
 async fn history_logs_expose_structured_output_with_tencent_cert_ids() {
     use acmecast_pipeline::{HistoryRecord, StepLogLevel, StepLogRecord};
     use acmecast_store::entity::history;

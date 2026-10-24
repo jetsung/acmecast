@@ -506,8 +506,14 @@ impl<'db> CertRepository<'db> {
         use sea_orm::sea_query::Expr;
         Ok(cert::Entity::find()
             .filter(cert::Column::Domains.eq(encoded))
-            .order_by(Expr::col(cert::Column::ArchivedAt).is_null(), sea_orm::Order::Desc)
-            .order_by(Expr::col(cert::Column::RevokedAt).is_null(), sea_orm::Order::Desc)
+            .order_by(
+                Expr::col(cert::Column::ArchivedAt).is_null(),
+                sea_orm::Order::Desc,
+            )
+            .order_by(
+                Expr::col(cert::Column::RevokedAt).is_null(),
+                sea_orm::Order::Desc,
+            )
             .order_by_desc(cert::Column::Id)
             .one(self.db)
             .await?)

@@ -335,10 +335,30 @@ pub fn prioritize_for_provider(
     // 提供商对应的 DoH 匹配关键词（排第一），其后跟固定兜底序。
     // 兜底序中已包含首选关键词——排序逻辑靠下标去重保证不重复。
     let (primary, fallback): (&[&str], &[&str]) = match tag.as_str() {
-        "cloud.cloudflare" => (&["cloudflare"], &["cloudflare", "阿里", "alidns", "腾讯", "1.12", "google"]),
-        "cloud.aliyun" => (&["阿里", "alidns", "120.53"], &["阿里", "alidns", "120.53", "cloudflare", "腾讯", "1.12", "google"]),
-        "cloud.tencent" | "dns.tencent-eo" => (&["腾讯", "1.12"], &["腾讯", "1.12", "cloudflare", "阿里", "alidns", "google"]),
-        _ => (&[], &["cloudflare", "阿里", "alidns", "腾讯", "1.12", "google"]),
+        "cloud.cloudflare" => (
+            &["cloudflare"],
+            &["cloudflare", "阿里", "alidns", "腾讯", "1.12", "google"],
+        ),
+        "cloud.aliyun" => (
+            &["阿里", "alidns", "120.53"],
+            &[
+                "阿里",
+                "alidns",
+                "120.53",
+                "cloudflare",
+                "腾讯",
+                "1.12",
+                "google",
+            ],
+        ),
+        "cloud.tencent" | "dns.tencent-eo" => (
+            &["腾讯", "1.12"],
+            &["腾讯", "1.12", "cloudflare", "阿里", "alidns", "google"],
+        ),
+        _ => (
+            &[],
+            &["cloudflare", "阿里", "alidns", "腾讯", "1.12", "google"],
+        ),
     };
 
     let ranked: Vec<&str> = {
@@ -486,7 +506,12 @@ where
 
         if published {
             match probe_resolvers(
-                &active, record, round, &mut missing, &mut unreachable, &mut probes,
+                &active,
+                record,
+                round,
+                &mut missing,
+                &mut unreachable,
+                &mut probes,
                 Some(&mut fallback),
             )
             .await
@@ -499,7 +524,10 @@ where
                     return Ok(());
                 }
                 ProbeOutcome::NotVisible => {
-                    on_progress(&format!("round {round} miss (resolvers: {})", missing.join(", ")));
+                    on_progress(&format!(
+                        "round {round} miss (resolvers: {})",
+                        missing.join(", ")
+                    ));
                     report_proxy_fallback(&fallback, &mut proxy_reported, &mut on_progress);
                     apply_breaker(&mut breaker, &mut active, &probes, &mut on_progress);
                     if active.is_empty() {
@@ -617,7 +645,10 @@ where
     // 命中单家 DNS：取 doh（已按 provider 感知排序的 ext_refs）首位，all_dns 与 doh 为同一 ext_refs 的两次引用时以 doh 为准
     // provider 未知/空时首位仍为固定兜底序首位（Cloudflare），保证在 round 1 miss 前可见且与后续 round x miss 同源。
     {
-        let hit_name = doh.first().map(|r| r.name()).or_else(|| all_dns.first().map(|r| r.name()));
+        let hit_name = doh
+            .first()
+            .map(|r| r.name())
+            .or_else(|| all_dns.first().map(|r| r.name()));
         if let Some(name) = hit_name {
             on_progress(&format!("provider dns: {name}"));
         } else if let Some(auth) = authoritative.first() {
@@ -660,7 +691,17 @@ where
             let in_doh = now >= phase3_end;
 
             if in_hit && hit {
-                match probe_resolvers(hit_single, record, round, &mut missing, &mut unreachable, &mut probes, Some(&mut fallback)).await {
+                match probe_resolvers(
+                    hit_single,
+                    record,
+                    round,
+                    &mut missing,
+                    &mut unreachable,
+                    &mut probes,
+                    Some(&mut fallback),
+                )
+                .await
+                {
                     ProbeOutcome::Visible(hit_name) => {
                         on_progress(&format!("round {round} hit (resolver: {hit_name})"));
                         report_proxy_fallback(&fallback, &mut proxy_reported, &mut on_progress);
@@ -669,13 +710,26 @@ where
                         return Ok(());
                     }
                     ProbeOutcome::NotVisible => {
-                        on_progress(&format!("round {round} miss (resolvers: {})", missing.join(", ")));
+                        on_progress(&format!(
+                            "round {round} miss (resolvers: {})",
+                            missing.join(", ")
+                        ));
                         report_proxy_fallback(&fallback, &mut proxy_reported, &mut on_progress);
                         apply_breaker(&mut breaker, &mut doh_active, &probes, &mut on_progress);
                     }
                 }
             } else if in_auth && !authoritative.is_empty() {
-                match probe_resolvers(authoritative, record, round, &mut missing, &mut unreachable, &mut probes, None).await {
+                match probe_resolvers(
+                    authoritative,
+                    record,
+                    round,
+                    &mut missing,
+                    &mut unreachable,
+                    &mut probes,
+                    None,
+                )
+                .await
+                {
                     ProbeOutcome::Visible(hit_name) => {
                         on_progress(&format!("round {round} hit (resolver: {hit_name})"));
                         report_evicted(&breaker, &mut on_progress);
@@ -683,11 +737,24 @@ where
                         return Ok(());
                     }
                     ProbeOutcome::NotVisible => {
-                        on_progress(&format!("round {round} miss (resolvers: {})", missing.join(", ")));
+                        on_progress(&format!(
+                            "round {round} miss (resolvers: {})",
+                            missing.join(", ")
+                        ));
                     }
                 }
             } else if in_all && !all_dns.is_empty() {
-                match probe_resolvers(all_dns, record, round, &mut missing, &mut unreachable, &mut probes, None).await {
+                match probe_resolvers(
+                    all_dns,
+                    record,
+                    round,
+                    &mut missing,
+                    &mut unreachable,
+                    &mut probes,
+                    None,
+                )
+                .await
+                {
                     ProbeOutcome::Visible(hit_name) => {
                         on_progress(&format!("round {round} hit (resolver: {hit_name})"));
                         report_evicted(&breaker, &mut on_progress);
@@ -695,14 +762,27 @@ where
                         return Ok(());
                     }
                     ProbeOutcome::NotVisible => {
-                        on_progress(&format!("round {round} miss (resolvers: {})", missing.join(", ")));
+                        on_progress(&format!(
+                            "round {round} miss (resolvers: {})",
+                            missing.join(", ")
+                        ));
                     }
                 }
             } else if in_doh {
                 // 末段 DoH 的 1/4 内再拆半：前 1/8 仅命中单家，后 1/8 整组
                 let in_doh_single = now < phase4_mid;
                 if in_doh_single && hit {
-                    match probe_resolvers(hit_single, record, round, &mut missing, &mut unreachable, &mut probes, Some(&mut fallback)).await {
+                    match probe_resolvers(
+                        hit_single,
+                        record,
+                        round,
+                        &mut missing,
+                        &mut unreachable,
+                        &mut probes,
+                        Some(&mut fallback),
+                    )
+                    .await
+                    {
                         ProbeOutcome::Visible(hit_name) => {
                             on_progress(&format!("round {round} hit (resolver: {hit_name})"));
                             report_proxy_fallback(&fallback, &mut proxy_reported, &mut on_progress);
@@ -711,7 +791,10 @@ where
                             return Ok(());
                         }
                         ProbeOutcome::NotVisible => {
-                            on_progress(&format!("round {round} miss (resolvers: {})", missing.join(", ")));
+                            on_progress(&format!(
+                                "round {round} miss (resolvers: {})",
+                                missing.join(", ")
+                            ));
                             report_proxy_fallback(&fallback, &mut proxy_reported, &mut on_progress);
                             apply_breaker(&mut breaker, &mut doh_active, &probes, &mut on_progress);
                         }
@@ -728,20 +811,54 @@ where
                     // doh 段仅探测熔断后存活子集；doh 原本为空时回退 all_dns（不参与熔断）。
                     // 回退 all_dns 的传输层保持直连（不走代理回退）——只有真正的 doh
                     // 集合才启用 fallback。
-                    let doh_full: &[&dyn DnsResolver] = if !doh.is_empty() { &doh_active } else { all_dns };
+                    let doh_full: &[&dyn DnsResolver] = if !doh.is_empty() {
+                        &doh_active
+                    } else {
+                        all_dns
+                    };
                     if !doh_full.is_empty() {
-                        match probe_resolvers(doh_full, record, round, &mut missing, &mut unreachable, &mut probes, if !doh.is_empty() { Some(&mut fallback) } else { None }).await {
+                        match probe_resolvers(
+                            doh_full,
+                            record,
+                            round,
+                            &mut missing,
+                            &mut unreachable,
+                            &mut probes,
+                            if !doh.is_empty() {
+                                Some(&mut fallback)
+                            } else {
+                                None
+                            },
+                        )
+                        .await
+                        {
                             ProbeOutcome::Visible(hit_name) => {
                                 on_progress(&format!("round {round} hit (resolver: {hit_name})"));
-                                report_proxy_fallback(&fallback, &mut proxy_reported, &mut on_progress);
+                                report_proxy_fallback(
+                                    &fallback,
+                                    &mut proxy_reported,
+                                    &mut on_progress,
+                                );
                                 report_evicted(&breaker, &mut on_progress);
                                 on_progress(&format!("propagation succeeded after {round} rounds"));
                                 return Ok(());
                             }
                             ProbeOutcome::NotVisible => {
-                                on_progress(&format!("round {round} miss (resolvers: {})", missing.join(", ")));
-                                report_proxy_fallback(&fallback, &mut proxy_reported, &mut on_progress);
-                                apply_breaker(&mut breaker, &mut doh_active, &probes, &mut on_progress);
+                                on_progress(&format!(
+                                    "round {round} miss (resolvers: {})",
+                                    missing.join(", ")
+                                ));
+                                report_proxy_fallback(
+                                    &fallback,
+                                    &mut proxy_reported,
+                                    &mut on_progress,
+                                );
+                                apply_breaker(
+                                    &mut breaker,
+                                    &mut doh_active,
+                                    &probes,
+                                    &mut on_progress,
+                                );
                             }
                         }
                     }
@@ -1224,8 +1341,8 @@ fn humanize(duration: Duration) -> String {
 mod tests {
     use parking_lot::Mutex;
 
-    use crate::http::HttpResponse;
     use super::*;
+    use crate::http::HttpResponse;
 
     /// 环境变量会跨测试共享进程状态，解析配置的测试统一串行。
     /// `serde_json` 无关；这里用 `Mutex` 占住一把全局锁来串行化。
@@ -1387,7 +1504,9 @@ mod tests {
                 .get(index)
                 .or_else(|| script.last())
                 .cloned()
-                .unwrap_or_else(|| -> std::result::Result<Vec<String>, String> { Err("连接超时".to_owned()) })
+                .unwrap_or_else(|| -> std::result::Result<Vec<String>, String> {
+                    Err("连接超时".to_owned())
+                })
                 .map_err(Error::provider)
         }
     }
@@ -1454,7 +1573,10 @@ mod tests {
         .expect("CA 查询名可见即应放行");
 
         assert!(
-            resolver.queries.lock().iter()
+            resolver
+                .queries
+                .lock()
+                .iter()
                 .all(|queried| queried == "_acme-challenge.skiy.net"),
             "解析器查询必须用 CA 查询名，而非写入名"
         );
@@ -1573,8 +1695,7 @@ mod tests {
         }
 
         async fn delete_txt(&self, _credentials: &Value, record: &TxtRecord) -> Result<()> {
-            self.deleted
-                .lock().push(record.name.clone());
+            self.deleted.lock().push(record.name.clone());
             Ok(())
         }
     }
@@ -2050,9 +2171,15 @@ mod tests {
     #[test]
     fn provider_aware_doh_resolvers_returns_all_four() {
         let _guard = ENV_LOCK.lock();
-        let http: Arc<dyn HttpTransport> =
-            Arc::new(crate::http::ReqwestTransport::default());
-        for id in [Some("cloud.aliyun"), Some("cloud.cloudflare"), Some("cloud.tencent"), Some("dns.tencent-eo"), None, Some("unknown")] {
+        let http: Arc<dyn HttpTransport> = Arc::new(crate::http::ReqwestTransport::default());
+        for id in [
+            Some("cloud.aliyun"),
+            Some("cloud.cloudflare"),
+            Some("cloud.tencent"),
+            Some("dns.tencent-eo"),
+            None,
+            Some("unknown"),
+        ] {
             let v = doh_resolvers_for_provider(Arc::clone(&http), id);
             assert_eq!(v.len(), 4, "provider={id:?} 应返回全部四家内置 DoH");
         }
@@ -2061,9 +2188,11 @@ mod tests {
     #[test]
     fn provider_aware_doh_resolvers_env_overrides_provider() {
         let _guard = ENV_LOCK.lock();
-        let _env = EnvGuard::set("ACMECAST_DOH_RESOLVERS", "my=https://dns.example.com/resolve");
-        let http: Arc<dyn HttpTransport> =
-            Arc::new(crate::http::ReqwestTransport::default());
+        let _env = EnvGuard::set(
+            "ACMECAST_DOH_RESOLVERS",
+            "my=https://dns.example.com/resolve",
+        );
+        let http: Arc<dyn HttpTransport> = Arc::new(crate::http::ReqwestTransport::default());
         let v = doh_resolvers_for_provider(http, Some("cloud.aliyun"));
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].name(), "my", "环境变量应覆盖提供商感知");
@@ -2073,8 +2202,7 @@ mod tests {
     fn provider_aware_doh_resolvers_env_none_short_circuits() {
         let _guard = ENV_LOCK.lock();
         let _env = EnvGuard::set("ACMECAST_DOH_RESOLVERS", "none");
-        let http: Arc<dyn HttpTransport> =
-            Arc::new(crate::http::ReqwestTransport::default());
+        let http: Arc<dyn HttpTransport> = Arc::new(crate::http::ReqwestTransport::default());
         let v = doh_resolvers_for_provider(http, Some("cloud.tencent"));
         assert!(v.is_empty(), "none 时应为空集");
     }
@@ -2082,9 +2210,13 @@ mod tests {
     #[test]
     fn resolvers_for_provider_mirrors_doh_provider_when_no_env() {
         let _guard = ENV_LOCK.lock();
-        let http: Arc<dyn HttpTransport> =
-            Arc::new(crate::http::ReqwestTransport::default());
-        for id in [Some("cloud.aliyun"), Some("cloud.cloudflare"), Some("cloud.tencent"), None] {
+        let http: Arc<dyn HttpTransport> = Arc::new(crate::http::ReqwestTransport::default());
+        for id in [
+            Some("cloud.aliyun"),
+            Some("cloud.cloudflare"),
+            Some("cloud.tencent"),
+            None,
+        ] {
             let a = doh_resolvers_for_provider(Arc::clone(&http), id);
             let b = resolvers_for_provider(Arc::clone(&http), "example.com", id);
             assert_eq!(a.len(), b.len(), "provider={id:?}");
@@ -2099,8 +2231,7 @@ mod tests {
         // 超时错误中 `missing` / `unreachable` 的名称应与提供商感知的解析器名称一致，
         // 便于排查。至少保证三家厂商名可被直接引用。
         let _guard = ENV_LOCK.lock();
-        let http: Arc<dyn HttpTransport> =
-            Arc::new(crate::http::ReqwestTransport::default());
+        let http: Arc<dyn HttpTransport> = Arc::new(crate::http::ReqwestTransport::default());
         let all = doh_resolvers_for_provider(http, Some("cloud.aliyun"));
         let names: Vec<_> = all.iter().map(|r| r.name().to_owned()).collect();
         assert!(names.contains(&"阿里 DNS".to_owned()));
@@ -2301,7 +2432,8 @@ mod tests {
 
         let logs = events.lock().clone();
         assert!(
-            logs.iter().any(|l| l.contains("propagation start timeout=300 interval=0")),
+            logs.iter()
+                .any(|l| l.contains("propagation start timeout=300 interval=0")),
             "应包含 propagation start: {logs:?}"
         );
         let start_pos = logs
@@ -2369,13 +2501,31 @@ mod tests {
             .iter()
             .find(|l| l.contains("propagation start"))
             .expect("缺 start");
-        assert!(!start.contains("provider dns:"), "首行不应含命中行: {start}");
-        let hit_line = logs.iter().find(|l| l.contains("provider dns:")).expect("缺命中行");
+        assert!(
+            !start.contains("provider dns:"),
+            "首行不应含命中行: {start}"
+        );
+        let hit_line = logs
+            .iter()
+            .find(|l| l.contains("provider dns:"))
+            .expect("缺命中行");
         // 命中单家取 doh 首位（此处 all_dns 即 ext_refs 首位应为 Cloudflare）
-        assert!(hit_line.contains("Cloudflare DNS"), "命中行应为单家 Cloudflare: {hit_line}");
-        assert!(!start.contains("authoritative:"), "首行不应拼权威上下文: {start}");
-        let start_pos = logs.iter().position(|l| l.contains("propagation start")).unwrap();
-        let hit_pos = logs.iter().position(|l| l.contains("provider dns:")).unwrap();
+        assert!(
+            hit_line.contains("Cloudflare DNS"),
+            "命中行应为单家 Cloudflare: {hit_line}"
+        );
+        assert!(
+            !start.contains("authoritative:"),
+            "首行不应拼权威上下文: {start}"
+        );
+        let start_pos = logs
+            .iter()
+            .position(|l| l.contains("propagation start"))
+            .unwrap();
+        let hit_pos = logs
+            .iter()
+            .position(|l| l.contains("provider dns:"))
+            .unwrap();
         assert!(start_pos < hit_pos, "start 应在命中行前: {logs:?}");
     }
 
@@ -2410,15 +2560,39 @@ mod tests {
             .iter()
             .find(|l| l.contains("propagation start"))
             .expect("缺 start");
-        assert!(!start.contains("resolvers:"), "首行 start 不应拼 resolvers: {start}");
+        assert!(
+            !start.contains("resolvers:"),
+            "首行 start 不应拼 resolvers: {start}"
+        );
         assert!(start.contains("propagation start timeout="), "{start}");
-        let hit_line = logs.iter().find(|l| l.contains("provider dns:")).expect("缺命中行");
-        assert!(hit_line.contains("阿里 DNS"), "命中单家行应为首个 resolver: {hit_line}");
-        assert!(!hit_line.contains("Cloudflare"), "命中单家不应含整组: {hit_line}");
-        let start_pos = logs.iter().position(|l| l.contains("propagation start")).unwrap();
-        let hit_pos = logs.iter().position(|l| l.contains("provider dns:")).unwrap();
-        let done_pos = logs.iter().position(|l| l.contains("propagation succeeded")).unwrap();
-        assert!(start_pos < hit_pos && hit_pos < done_pos, "start → 命中行 → succeeded 顺序: {logs:?}");
+        let hit_line = logs
+            .iter()
+            .find(|l| l.contains("provider dns:"))
+            .expect("缺命中行");
+        assert!(
+            hit_line.contains("阿里 DNS"),
+            "命中单家行应为首个 resolver: {hit_line}"
+        );
+        assert!(
+            !hit_line.contains("Cloudflare"),
+            "命中单家不应含整组: {hit_line}"
+        );
+        let start_pos = logs
+            .iter()
+            .position(|l| l.contains("propagation start"))
+            .unwrap();
+        let hit_pos = logs
+            .iter()
+            .position(|l| l.contains("provider dns:"))
+            .unwrap();
+        let done_pos = logs
+            .iter()
+            .position(|l| l.contains("propagation succeeded"))
+            .unwrap();
+        assert!(
+            start_pos < hit_pos && hit_pos < done_pos,
+            "start → 命中行 → succeeded 顺序: {logs:?}"
+        );
     }
 
     // ---- DoH 熔断剔除 ----
@@ -2428,10 +2602,7 @@ mod tests {
         // 连续 3 次网络失败后端点被剔除，后续轮次不再查询；
         // 同集合的未命中端点不受影响，等待照常走到超时。
         let provider = Publishes::always("value-1");
-        let failing = FailScriptResolver::new(
-            "总连不上",
-            vec![Err("连接超时".to_owned())],
-        );
+        let failing = FailScriptResolver::new("总连不上", vec![Err("连接超时".to_owned())]);
         let missing = ScriptedResolver::new("未命中的", vec![vec![]]);
 
         let events = Arc::new(Mutex::new(Vec::new()));
@@ -2449,12 +2620,18 @@ mod tests {
         .await
         .expect_err("熔断剔除后无 DoH 可用应超时");
 
-        assert_eq!(failing.calls(), 3, "3 次失败后应被剔除，不再查询: {}", failing.calls());
+        assert_eq!(
+            failing.calls(),
+            3,
+            "3 次失败后应被剔除，不再查询: {}",
+            failing.calls()
+        );
         assert!(missing.calls() > 3, "未命中端点不应受熔断影响");
 
         let logs = events.lock().clone();
         assert!(
-            logs.iter().any(|l| l.contains("总连不上") && l.contains("熔断剔除")),
+            logs.iter()
+                .any(|l| l.contains("总连不上") && l.contains("熔断剔除")),
             "剔除时进度日志应含端点标识: {logs:?}"
         );
         let text = err.to_string();
@@ -2467,10 +2644,7 @@ mod tests {
         // 命中单家段（doh_single）与末段整组（doh_full）共享剔除状态：
         // 连续 3 次网络失败即剔除，跨段不再查询，等待超时且权威/全量照常。
         let provider = Publishes::always("value-1");
-        let failing = FailScriptResolver::new(
-            "DoH-总失败",
-            vec![Err("连接拒绝".to_owned())],
-        );
+        let failing = FailScriptResolver::new("DoH-总失败", vec![Err("连接拒绝".to_owned())]);
         let all_dns = ScriptedResolver::new("全量", vec![vec![]]);
 
         let events = Arc::new(Mutex::new(Vec::new()));
@@ -2500,7 +2674,8 @@ mod tests {
 
         let logs = events.lock().clone();
         assert!(
-            logs.iter().any(|l| l.contains("DoH-总失败") && l.contains("熔断剔除")),
+            logs.iter()
+                .any(|l| l.contains("DoH-总失败") && l.contains("熔断剔除")),
             "剔除日志应含端点标识: {logs:?}"
         );
         assert!(err.to_string().contains("DoH-总失败"), "{err}");
@@ -2655,7 +2830,9 @@ mod tests {
         // 直连失败 → 代理重试成功：会话激活回退。
         let direct = Arc::new(ScriptedTransport::new(vec![Err("连接超时".to_owned())]));
         let resolver = DohResolver::google(Arc::clone(&direct) as Arc<dyn HttpTransport>);
-        let proxy = Arc::new(ScriptedTransport::new(vec![Ok(doh_txt_response("value-1"))]));
+        let proxy = Arc::new(ScriptedTransport::new(vec![Ok(doh_txt_response(
+            "value-1",
+        ))]));
         let mut fallback = DohProxyFallback::with_transport(
             "socks5://user:secret@10.0.0.1:7890",
             Arc::clone(&proxy) as Arc<dyn HttpTransport>,
@@ -2677,20 +2854,32 @@ mod tests {
 
         let mut reported = false;
         let mut messages: Vec<String> = Vec::new();
-        report_proxy_fallback(&fallback, &mut reported, &mut |m: &str| messages.push(m.to_owned()));
+        report_proxy_fallback(&fallback, &mut reported, &mut |m: &str| {
+            messages.push(m.to_owned())
+        });
         assert_eq!(messages.len(), 1, "{messages:?}");
-        assert_eq!(messages[0], "proxy: via socks5://10.0.0.1:7890", "{messages:?}");
-        assert!(!messages[0].contains("secret"), "认证材料不得进日志: {messages:?}");
+        assert_eq!(
+            messages[0], "proxy: via socks5://10.0.0.1:7890",
+            "{messages:?}"
+        );
+        assert!(
+            !messages[0].contains("secret"),
+            "认证材料不得进日志: {messages:?}"
+        );
         // 已上报后不再重复。
         let mut messages_again: Vec<String> = Vec::new();
-        report_proxy_fallback(&fallback, &mut reported, &mut |m: &str| messages_again.push(m.to_owned()));
+        report_proxy_fallback(&fallback, &mut reported, &mut |m: &str| {
+            messages_again.push(m.to_owned())
+        });
         assert!(messages_again.is_empty());
 
         // 未发生回退：不上报。
         let mut silent = DohProxyFallback::new(Some("socks5://127.0.0.1:7890"));
         let mut reported_silent = false;
         let mut empty: Vec<String> = Vec::new();
-        report_proxy_fallback(&silent, &mut reported_silent, &mut |m: &str| empty.push(m.to_owned()));
+        report_proxy_fallback(&silent, &mut reported_silent, &mut |m: &str| {
+            empty.push(m.to_owned())
+        });
         assert!(empty.is_empty(), "直连会话不应上报: {empty:?}");
         let _ = &mut silent;
     }
@@ -2818,10 +3007,7 @@ mod tests {
 
         // 累计两轮即达阈值（2 + 2 = 4 ≥ 3）。
         let mut breaker = CircuitBreaker::default();
-        assert!(
-            breaker.update(&probes).is_empty(),
-            "第一轮 2 次未达阈值"
-        );
+        assert!(breaker.update(&probes).is_empty(), "第一轮 2 次未达阈值");
         let newly = breaker.update(&probes);
         assert_eq!(
             newly,

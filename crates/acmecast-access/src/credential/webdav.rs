@@ -47,7 +47,14 @@ pub fn webdav_fields_schema() -> RootSchema {
     let mut schema = schema_for!(WebdavFields);
     schema.schema.extensions.insert(
         "x-field-order".to_owned(),
-        serde_json::json!(["url", "base_path", "username", "password", "proxy_mode", "proxy_url"]),
+        serde_json::json!([
+            "url",
+            "base_path",
+            "username",
+            "password",
+            "proxy_mode",
+            "proxy_url"
+        ]),
     );
     if let Some(schemars::schema::Schema::Object(obj)) = schema
         .schema
@@ -55,7 +62,8 @@ pub fn webdav_fields_schema() -> RootSchema {
         .as_mut()
         .and_then(|o| o.properties.get_mut("password"))
     {
-        obj.extensions.insert("x-multiline".into(), serde_json::Value::Bool(false));
+        obj.extensions
+            .insert("x-multiline".into(), serde_json::Value::Bool(false));
     }
     acmecast_core::inject_proxy_field_annotations(&mut schema);
     // url|base_path、username|password 各占一行——password 已在行尾,
@@ -67,10 +75,8 @@ pub fn webdav_fields_schema() -> RootSchema {
 /// 按凭据的代理模式取 `reqwest::Proxy`：`custom` 且 URL 合法时返回代理，
 /// `inherit` 继承全局代理；其余（`direct` / 无全局来源 / URL 非法）直连。
 fn webdav_proxy(fields: &WebdavFields, global_proxy_url: Option<&str>) -> Option<reqwest::Proxy> {
-    let url = acmecast_core::effective_proxy_url(
-        &serde_json::to_value(fields).ok()?,
-        global_proxy_url,
-    )?;
+    let url =
+        acmecast_core::effective_proxy_url(&serde_json::to_value(fields).ok()?, global_proxy_url)?;
     // 先过统一口径的 scheme 校验（reqwest 的 Proxy::all 接受 ftp:// 等 URL
     // 层面合法但出网不支持的 scheme）——非法 URL 忽略走直连。
     acmecast_core::validate_proxy_url(&url).ok()?;
@@ -80,7 +86,10 @@ fn webdav_proxy(fields: &WebdavFields, global_proxy_url: Option<&str>) -> Option
 /// 按凭据构建 WebDAV 客户端：`proxy_mode=custom` 时经代理出网，否则直连。
 fn webdav_client(fields: &WebdavFields, global_proxy_url: Option<&str>) -> reqwest::Client {
     match webdav_proxy(fields, global_proxy_url) {
-        Some(proxy) => reqwest::Client::builder().proxy(proxy).build().unwrap_or_default(),
+        Some(proxy) => reqwest::Client::builder()
+            .proxy(proxy)
+            .build()
+            .unwrap_or_default(),
         None => reqwest::Client::new(),
     }
 }
@@ -116,17 +125,37 @@ impl CredentialType for WebdavCredentialType {
         webdav_fields_schema()
     }
 
-    async fn test_connectivity(&self, fields: &serde_json::Value) -> ConnectivityOutcome {
+    async fn test_connectivity(
+        &self,
+        fields: &serde_json::Value,
+        _capabilities: &[String],
+    ) -> ConnectivityOutcome {
         let raw = fields.clone();
         let parsed: Result<WebdavFields, _> = serde_json::from_value(fields.clone());
         let f = match parsed {
-            Ok(v) if !v.username.trim().is_empty() && !v.password.is_empty() && !v.url.trim().is_empty() => v,
-            Ok(_) => return ConnectivityOutcome::Unavailable { reason: "username/password/url 均不能为空".to_owned() },
-            Err(e) => return ConnectivityOutcome::Unavailable { reason: e.to_string() },
+            Ok(v)
+                if !v.username.trim().is_empty()
+                    && !v.password.is_empty()
+                    && !v.url.trim().is_empty() =>
+            {
+                v
+            }
+            Ok(_) => {
+                return ConnectivityOutcome::Unavailable {
+                    reason: "username/password/url 均不能为空".to_owned(),
+                };
+            }
+            Err(e) => {
+                return ConnectivityOutcome::Unavailable {
+                    reason: e.to_string(),
+                };
+            }
         };
         match webdav_probe(&f, self.global_proxy_url.as_deref()).await {
             Ok(()) => ConnectivityOutcome::Ok,
-            Err(e) => ConnectivityOutcome::Unavailable { reason: self.redact(&raw, &e) },
+            Err(e) => ConnectivityOutcome::Unavailable {
+                reason: self.redact(&raw, &e),
+            },
         }
     }
 
@@ -147,15 +176,26 @@ impl CredentialType for WebdavCredentialType {
 }
 
 async fn webdav_probe(fields: &WebdavFields, global_proxy_url: Option<&str>) -> Result<(), String> {
-    let base = fields.base_path.as_deref().unwrap_or("").trim().trim_matches('/').to_owned();
+    let base = fields
+        .base_path
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .trim_matches('/')
+        .to_owned();
     let url = fields.url.trim_end_matches('/').to_owned();
-    let prefix = if base.is_empty() { String::new() } else { format!("{}/", base) };
+    let prefix = if base.is_empty() {
+        String::new()
+    } else {
+        format!("{}/", base)
+    };
     let key = format!("{}/{}{}", url, prefix, ".acmecast-probe/healthcheck.txt");
     // MKCOL parent
     if let Some(slash) = key.rfind('/') {
         let parent = &key[..slash];
         let client = webdav_client(fields, global_proxy_url);
-        let _ = client.request(reqwest::Method::from_bytes(b"MKCOL").unwrap(), parent)
+        let _ = client
+            .request(reqwest::Method::from_bytes(b"MKCOL").unwrap(), parent)
             .basic_auth(&fields.username, Some(&fields.password))
             .send()
             .await;
@@ -169,7 +209,11 @@ async fn webdav_probe(fields: &WebdavFields, global_proxy_url: Option<&str>) -> 
         .await
         .map_err(|e| format!("WebDAV 上传探测失败: {e}"))?;
     if !resp.status().is_success() {
-        return Err(format!("WebDAV 上传探测失败: {} {}", resp.status(), resp.text().await.unwrap_or_default()));
+        return Err(format!(
+            "WebDAV 上传探测失败: {} {}",
+            resp.status(),
+            resp.text().await.unwrap_or_default()
+        ));
     }
     let del = client
         .delete(&key)
@@ -199,13 +243,31 @@ mod tests {
     #[test]
     fn webdav_fields_schema_injects_field_order() {
         let schema = webdav_fields_schema();
-        let order = schema.schema.extensions.get("x-field-order").expect("应注入 x-field-order");
+        let order = schema
+            .schema
+            .extensions
+            .get("x-field-order")
+            .expect("应注入 x-field-order");
         assert_eq!(
             order,
-            &serde_json::json!(["url", "base_path", "username", "password", "proxy_mode", "proxy_url"])
+            &serde_json::json!([
+                "url",
+                "base_path",
+                "username",
+                "password",
+                "proxy_mode",
+                "proxy_url"
+            ])
         );
         let object = schema.schema.object.expect("应为对象 schema");
-        for key in ["url", "base_path", "username", "password", "proxy_mode", "proxy_url"] {
+        for key in [
+            "url",
+            "base_path",
+            "username",
+            "password",
+            "proxy_mode",
+            "proxy_url",
+        ] {
             assert!(object.properties.contains_key(key), "缺少字段 {key}");
         }
     }
@@ -221,10 +283,15 @@ mod tests {
             "proxy_mode 应注入枚举候选: {rendered}"
         );
         for label in ["直连", "继承全局", "自定义"] {
-            assert!(rendered.contains(label), "应含中文展示名 {label}: {rendered}");
+            assert!(
+                rendered.contains(label),
+                "应含中文展示名 {label}: {rendered}"
+            );
         }
         assert!(
-            rendered.contains(r#""x-visible-when":{"Equals":{"field":"proxy_mode","values":["custom"]}}"#),
+            rendered.contains(
+                r#""x-visible-when":{"Equals":{"field":"proxy_mode","values":["custom"]}}"#
+            ),
             "proxy_url 应联动 custom: {rendered}"
         );
         let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
@@ -249,10 +316,16 @@ mod tests {
         assert!(webdav_proxy(&fields, Some("socks5://9.9.9.9:9")).is_none());
         fields.proxy_mode = Some("direct".into());
         fields.proxy_url = Some("socks5://1.2.3.4:7890".into());
-        assert!(webdav_proxy(&fields, Some("socks5://9.9.9.9:9")).is_none(), "direct 应忽略 proxy_url");
+        assert!(
+            webdav_proxy(&fields, Some("socks5://9.9.9.9:9")).is_none(),
+            "direct 应忽略 proxy_url"
+        );
         // inherit：无全局来源 → 直连；有全局来源 → 继承。
         fields.proxy_mode = Some("inherit".into());
-        assert!(webdav_proxy(&fields, None).is_none(), "inherit 无全局来源应直连");
+        assert!(
+            webdav_proxy(&fields, None).is_none(),
+            "inherit 无全局来源应直连"
+        );
         assert!(
             webdav_proxy(&fields, Some("socks5://9.9.9.9:9")).is_some(),
             "inherit 应继承全局代理"
@@ -260,10 +333,16 @@ mod tests {
         // custom 合法 URL：带代理。
         fields.proxy_mode = Some("custom".into());
         fields.proxy_url = Some("socks5://user:pass@10.0.0.1:1080".into());
-        assert!(webdav_proxy(&fields, Some("socks5://9.9.9.9:9")).is_some(), "custom 合法 URL 应带代理");
+        assert!(
+            webdav_proxy(&fields, Some("socks5://9.9.9.9:9")).is_some(),
+            "custom 合法 URL 应带代理"
+        );
         // custom 非法 URL：忽略代理直连（保存时已被 validate 拦下）。
         fields.proxy_url = Some("ftp://127.0.0.1:21".into());
-        assert!(webdav_proxy(&fields, None).is_none(), "custom 非法 URL 应直连");
+        assert!(
+            webdav_proxy(&fields, None).is_none(),
+            "custom 非法 URL 应直连"
+        );
         // 客户端构建两条路径都不应 panic。
         fields.proxy_url = Some("socks5://10.0.0.1:1080".into());
         let _ = webdav_client(&fields, None);

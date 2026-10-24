@@ -14,15 +14,14 @@ pub mod targets;
 pub use deployer::Deployer;
 pub use error::{Error, Result};
 pub use registry::DeploymentRegistry;
-pub use ssh_host::{SshHostFields, SSH_HOST_TYPE_ID, ssh_host_fields_schema};
+pub use ssh_host::{SSH_HOST_TYPE_ID, SshHostFields, ssh_host_fields_schema};
 pub use state::{
     DatabaseDeploymentState, DeploymentEntry, DeploymentPage, DeploymentQuery,
     DeploymentStateStore, InMemoryDeploymentState, target_key_for, target_ref_of,
 };
 pub use target::{CertMaterials, DeployMode, DeployOutcome, DeploymentTarget, parse_input};
-pub use targets::{S3Target, WebdavTarget,
-    
-    BastionConfig, LocalInput, LocalTarget, ResolvedSshConfig, RusshConnector, SshAuth,
+pub use targets::{
+    BastionConfig, LocalInput, LocalTarget, ResolvedSshConfig, RusshConnector, S3Target, SshAuth,
     SshAuthSource, SshConnector, SshInput, SshTarget, SshTransport, TencentSslInput,
-    TencentSslTarget, probe_host,
+    TencentSslTarget, WebdavTarget, format_cert_label, probe_host, resolve_tencent_credentials,
 };

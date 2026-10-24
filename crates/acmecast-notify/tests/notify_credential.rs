@@ -106,14 +106,17 @@ fn valid_fields_pass_validation_for_all_types() {
 
 #[test]
 fn feishu_credential_maps_to_channel_config() {
-    let config = channel_config_from_credential(&credential(
-        FEISHU_TYPE_ID,
-        "生产飞书群",
-        json!({
-            "url": "https://open.feishu.cn/open-apis/bot/v2/hook/x",
-            "secret": "sign-key",
-        }),
-    ), None)
+    let config = channel_config_from_credential(
+        &credential(
+            FEISHU_TYPE_ID,
+            "生产飞书群",
+            json!({
+                "url": "https://open.feishu.cn/open-apis/bot/v2/hook/x",
+                "secret": "sign-key",
+            }),
+        ),
+        None,
+    )
     .expect("映射应成功");
 
     assert_eq!(config.name, "生产飞书群", "渠道名取凭据记录展示名");
@@ -128,11 +131,14 @@ fn feishu_credential_maps_to_channel_config() {
 
 #[test]
 fn feishu_without_secret_has_no_signature() {
-    let config = channel_config_from_credential(&credential(
-        FEISHU_TYPE_ID,
-        "无签名群",
-        json!({ "url": "https://open.feishu.cn/x", "secret": "  " }),
-    ), None)
+    let config = channel_config_from_credential(
+        &credential(
+            FEISHU_TYPE_ID,
+            "无签名群",
+            json!({ "url": "https://open.feishu.cn/x", "secret": "  " }),
+        ),
+        None,
+    )
     .expect("映射应成功");
     assert!(config.secret.is_none(), "空白 secret 应归一为无签名");
     assert!(config.sign.is_none());
@@ -140,14 +146,17 @@ fn feishu_without_secret_has_no_signature() {
 
 #[test]
 fn dingtalk_credential_maps_to_signed_channel() {
-    let config = channel_config_from_credential(&credential(
-        DINGTALK_TYPE_ID,
-        "钉钉群",
-        json!({
-            "url": "https://oapi.dingtalk.com/robot/send?access_token=x",
-            "secret": "SECxxxx",
-        }),
-    ), None)
+    let config = channel_config_from_credential(
+        &credential(
+            DINGTALK_TYPE_ID,
+            "钉钉群",
+            json!({
+                "url": "https://oapi.dingtalk.com/robot/send?access_token=x",
+                "secret": "SECxxxx",
+            }),
+        ),
+        None,
+    )
     .expect("映射应成功");
     assert_eq!(config.provider, "dingtalk");
     assert_eq!(config.sign, Some(SignKind::DingTalk));
@@ -155,16 +164,19 @@ fn dingtalk_credential_maps_to_signed_channel() {
 
 #[test]
 fn generic_credential_maps_method_headers_and_template() {
-    let config = channel_config_from_credential(&credential(
-        GENERIC_TYPE_ID,
-        "自建",
-        json!({
-            "url": "https://ops.example.com/hook",
-            "method": "put",
-            "headers": { "X-API-Key": "sk" },
-            "body_template": "{\"text\": \"{{title}}\"}",
-        }),
-    ), None)
+    let config = channel_config_from_credential(
+        &credential(
+            GENERIC_TYPE_ID,
+            "自建",
+            json!({
+                "url": "https://ops.example.com/hook",
+                "method": "put",
+                "headers": { "X-API-Key": "sk" },
+                "body_template": "{\"text\": \"{{title}}\"}",
+            }),
+        ),
+        None,
+    )
     .expect("映射应成功");
     assert_eq!(config.provider, "generic");
     assert_eq!(config.method, "PUT", "方法应归一为大写");
@@ -182,11 +194,14 @@ fn generic_credential_maps_method_headers_and_template() {
 
 #[test]
 fn generic_credential_defaults_method_to_post() {
-    let config = channel_config_from_credential(&credential(
-        GENERIC_TYPE_ID,
-        "自建",
-        json!({ "url": "https://ops.example.com/hook" }),
-    ), None)
+    let config = channel_config_from_credential(
+        &credential(
+            GENERIC_TYPE_ID,
+            "自建",
+            json!({ "url": "https://ops.example.com/hook" }),
+        ),
+        None,
+    )
     .expect("映射应成功");
     assert_eq!(config.method, "POST");
     assert!(config.headers.is_empty());
@@ -195,19 +210,22 @@ fn generic_credential_defaults_method_to_post() {
 
 #[test]
 fn email_credential_maps_smtp_settings() {
-    let config = channel_config_from_credential(&credential(
-        EMAIL_TYPE_ID,
-        "邮件群",
-        json!({
-            "host": "smtp.exmail.qq.com",
-            "port": 587,
-            "tls": "starttls",
-            "from": "no-reply@example.com",
-            "to": ["ops@example.com", " backup@example.com "],
-            "username": "no-reply@example.com",
-            "password": "x",
-        }),
-    ), None)
+    let config = channel_config_from_credential(
+        &credential(
+            EMAIL_TYPE_ID,
+            "邮件群",
+            json!({
+                "host": "smtp.exmail.qq.com",
+                "port": 587,
+                "tls": "starttls",
+                "from": "no-reply@example.com",
+                "to": ["ops@example.com", " backup@example.com "],
+                "username": "no-reply@example.com",
+                "password": "x",
+            }),
+        ),
+        None,
+    )
     .expect("映射应成功");
     assert_eq!(config.provider, "email");
     assert!(config.url.is_empty(), "邮件渠道无 webhook 地址");
@@ -228,15 +246,18 @@ fn email_credential_maps_smtp_settings() {
 
 #[test]
 fn email_credential_defaults_tls_to_implicit() {
-    let config = channel_config_from_credential(&credential(
-        EMAIL_TYPE_ID,
-        "邮件群",
-        json!({
-            "host": "smtp.example.com",
-            "from": "a@example.com",
-            "to": ["b@example.com"],
-        }),
-    ), None)
+    let config = channel_config_from_credential(
+        &credential(
+            EMAIL_TYPE_ID,
+            "邮件群",
+            json!({
+                "host": "smtp.example.com",
+                "from": "a@example.com",
+                "to": ["b@example.com"],
+            }),
+        ),
+        None,
+    )
     .expect("映射应成功");
     let smtp = config.smtp.expect("邮件渠道应带 SMTP 设置");
     assert_eq!(smtp.tls, TlsMode::Implicit);
@@ -245,16 +266,19 @@ fn email_credential_defaults_tls_to_implicit() {
 
 #[test]
 fn email_credential_with_unknown_tls_mode_fails_mapping() {
-    let error = channel_config_from_credential(&credential(
-        EMAIL_TYPE_ID,
-        "邮件群",
-        json!({
-            "host": "smtp.example.com",
-            "tls": "ssl3",
-            "from": "a@example.com",
-            "to": ["b@example.com"],
-        }),
-    ), None)
+    let error = channel_config_from_credential(
+        &credential(
+            EMAIL_TYPE_ID,
+            "邮件群",
+            json!({
+                "host": "smtp.example.com",
+                "tls": "ssl3",
+                "from": "a@example.com",
+                "to": ["b@example.com"],
+            }),
+        ),
+        None,
+    )
     .expect_err("未知 tls 模式应被拒绝");
     assert!(error.to_string().contains("tls"), "{error}");
 }
@@ -293,9 +317,18 @@ fn proxy_mode_custom_rejected_when_proxy_url_missing_or_invalid() {
     ] {
         let type_id = if fields.get("host").is_some() {
             EMAIL_TYPE_ID
-        } else if fields.get("headers").is_some() || fields.get("body_template").is_some() || fields.get("method").is_some() || fields["url"].as_str().is_some_and(|u| u.contains("ops.example")) {
+        } else if fields.get("headers").is_some()
+            || fields.get("body_template").is_some()
+            || fields.get("method").is_some()
+            || fields["url"]
+                .as_str()
+                .is_some_and(|u| u.contains("ops.example"))
+        {
             GENERIC_TYPE_ID
-        } else if fields["url"].as_str().is_some_and(|u| u.contains("dingtalk")) {
+        } else if fields["url"]
+            .as_str()
+            .is_some_and(|u| u.contains("dingtalk"))
+        {
             DINGTALK_TYPE_ID
         } else {
             FEISHU_TYPE_ID
@@ -332,24 +365,34 @@ fn proxy_mode_custom_rejected_when_proxy_url_missing_or_invalid() {
 #[test]
 fn channel_proxy_url_resolved_by_effective_proxy() {
     // direct → None
-    let config = channel_config_from_credential(&credential(
-        FEISHU_TYPE_ID,
-        "群",
-        json!({
-            "url": "https://open.feishu.cn/x",
-            "proxy_mode": "direct",
-            "proxy_url": "socks5://127.0.0.1:1",
-        }),
-    ), Some("http://global:8080"))
+    let config = channel_config_from_credential(
+        &credential(
+            FEISHU_TYPE_ID,
+            "群",
+            json!({
+                "url": "https://open.feishu.cn/x",
+                "proxy_mode": "direct",
+                "proxy_url": "socks5://127.0.0.1:1",
+            }),
+        ),
+        Some("http://global:8080"),
+    )
     .expect("映射应成功");
-    assert!(config.proxy_url.is_none(), "direct 忽略全局代理: {:?}", config.proxy_url);
+    assert!(
+        config.proxy_url.is_none(),
+        "direct 忽略全局代理: {:?}",
+        config.proxy_url
+    );
 
     // inherit → 全局值
-    let config = channel_config_from_credential(&credential(
-        GENERIC_TYPE_ID,
-        "自建",
-        json!({ "url": "https://ops.example.com/hook", "proxy_mode": "inherit" }),
-    ), Some("socks5://10.0.0.1:1080"))
+    let config = channel_config_from_credential(
+        &credential(
+            GENERIC_TYPE_ID,
+            "自建",
+            json!({ "url": "https://ops.example.com/hook", "proxy_mode": "inherit" }),
+        ),
+        Some("socks5://10.0.0.1:1080"),
+    )
     .expect("映射应成功");
     assert_eq!(
         config.proxy_url.as_deref(),
@@ -358,26 +401,32 @@ fn channel_proxy_url_resolved_by_effective_proxy() {
     );
 
     // inherit 但全局为空 → None（直连）
-    let config = channel_config_from_credential(&credential(
-        FEISHU_TYPE_ID,
-        "群",
-        json!({ "url": "https://open.feishu.cn/x", "proxy_mode": "inherit" }),
-    ), None)
+    let config = channel_config_from_credential(
+        &credential(
+            FEISHU_TYPE_ID,
+            "群",
+            json!({ "url": "https://open.feishu.cn/x", "proxy_mode": "inherit" }),
+        ),
+        None,
+    )
     .expect("映射应成功");
     assert!(config.proxy_url.is_none());
 
     // custom → 凭据值
-    let config = channel_config_from_credential(&credential(
-        EMAIL_TYPE_ID,
-        "邮件",
-        json!({
-            "host": "smtp.example.com",
-            "from": "a@example.com",
-            "to": ["b@example.com"],
-            "proxy_mode": "custom",
-            "proxy_url": "http://10.0.0.2:3128"
-        }),
-    ), Some("socks5://10.0.0.1:1080"))
+    let config = channel_config_from_credential(
+        &credential(
+            EMAIL_TYPE_ID,
+            "邮件",
+            json!({
+                "host": "smtp.example.com",
+                "from": "a@example.com",
+                "to": ["b@example.com"],
+                "proxy_mode": "custom",
+                "proxy_url": "http://10.0.0.2:3128"
+            }),
+        ),
+        Some("socks5://10.0.0.1:1080"),
+    )
     .expect("映射应成功");
     assert_eq!(
         config.proxy_url.as_deref(),
@@ -391,11 +440,14 @@ fn channel_proxy_url_resolved_by_effective_proxy() {
     );
 
     // 缺省 → None（直连）
-    let config = channel_config_from_credential(&credential(
-        DINGTALK_TYPE_ID,
-        "钉钉群",
-        json!({ "url": "https://oapi.dingtalk.com/x" }),
-    ), Some("http://global:8080"))
+    let config = channel_config_from_credential(
+        &credential(
+            DINGTALK_TYPE_ID,
+            "钉钉群",
+            json!({ "url": "https://oapi.dingtalk.com/x" }),
+        ),
+        Some("http://global:8080"),
+    )
     .expect("映射应成功");
     assert!(config.proxy_url.is_none(), "缺省视为 direct");
 }
@@ -403,10 +455,22 @@ fn channel_proxy_url_resolved_by_effective_proxy() {
 #[test]
 fn notify_credential_schema_injects_proxy_annotations() {
     for (type_id, schema_fn) in [
-        (FEISHU_TYPE_ID, acmecast_notify::notify_credential::feishu_fields_schema as fn() -> _),
-        (DINGTALK_TYPE_ID, acmecast_notify::notify_credential::dingtalk_fields_schema as fn() -> _),
-        (GENERIC_TYPE_ID, acmecast_notify::notify_credential::generic_fields_schema as fn() -> _),
-        (EMAIL_TYPE_ID, acmecast_notify::notify_credential::email_fields_schema as fn() -> _),
+        (
+            FEISHU_TYPE_ID,
+            acmecast_notify::notify_credential::feishu_fields_schema as fn() -> _,
+        ),
+        (
+            DINGTALK_TYPE_ID,
+            acmecast_notify::notify_credential::dingtalk_fields_schema as fn() -> _,
+        ),
+        (
+            GENERIC_TYPE_ID,
+            acmecast_notify::notify_credential::generic_fields_schema as fn() -> _,
+        ),
+        (
+            EMAIL_TYPE_ID,
+            acmecast_notify::notify_credential::email_fields_schema as fn() -> _,
+        ),
     ] {
         let rendered = serde_json::to_string(&schema_fn()).unwrap();
         assert!(
@@ -427,7 +491,8 @@ fn notify_credential_schema_injects_proxy_annotations() {
         );
     }
     // feishu 的 secret 是 proxy_mode 前驱——应带 x-end-row 使代理字段独占一行
-    let feishu = serde_json::to_value(acmecast_notify::notify_credential::feishu_fields_schema()).unwrap();
+    let feishu =
+        serde_json::to_value(acmecast_notify::notify_credential::feishu_fields_schema()).unwrap();
     assert_eq!(
         feishu["properties"]["secret"]["x-end-row"],
         serde_json::json!(true),

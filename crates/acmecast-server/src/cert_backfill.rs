@@ -8,8 +8,8 @@
 //! 失败策略：单条失败（文件丢失、私钥解析失败）只记日志跳过，不阻断启动——
 //! 列表页对空算法展示占位即可，不值得为此拒绝服务。
 
-use acmecast_store::repository::CertRepository;
 use acmecast_store::FileStore;
+use acmecast_store::repository::CertRepository;
 use sea_orm::DatabaseConnection;
 
 /// 回填所有缺失 `key_algorithm` 的证书记录，返回回填条数。
@@ -47,7 +47,11 @@ pub async fn backfill_key_algorithms(db: &DatabaseConnection, data_dir: &std::pa
             );
             continue;
         };
-        if repository.update_key_algorithm(row.id, &algorithm).await.is_ok() {
+        if repository
+            .update_key_algorithm(row.id, &algorithm)
+            .await
+            .is_ok()
+        {
             filled += 1;
         } else {
             tracing::warn!(cert_id = row.id, "证书算法回填写库失败，保留为空");

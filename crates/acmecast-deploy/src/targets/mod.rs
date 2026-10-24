@@ -3,18 +3,20 @@
 use crate::target::CertMaterials;
 
 pub mod local;
-pub mod ssh;
 pub mod s3;
+pub mod ssh;
 pub mod tencent;
 pub mod webdav;
 
 pub use local::{LocalInput, LocalTarget};
+pub use s3::{S3Input, S3Target};
 pub use ssh::{
     BastionConfig, ResolvedSshConfig, RusshConnector, SshAuth, SshAuthSource, SshConnector,
     SshInput, SshTarget, SshTransport, probe_host,
 };
-pub use s3::{S3Input, S3Target};
-pub use tencent::{TencentSslInput, TencentSslTarget};
+pub use tencent::{
+    TencentSslInput, TencentSslTarget, format_cert_label, resolve_tencent_credentials,
+};
 pub use webdav::{WebdavInput, WebdavTarget};
 
 /// 把「以 `/` 结尾视为目录」的字段补全为完整文件路径。

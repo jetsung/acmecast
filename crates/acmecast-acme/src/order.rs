@@ -294,7 +294,9 @@ impl PendingOrder {
                 OrderStatus::Valid => return Ok(()),
                 OrderStatus::Invalid => {
                     let reason = self.rejection_reason().await;
-                    return Err(AcmeError::Order(format!("CA 拒绝了本次验证（订单状态 invalid）: {reason}")));
+                    return Err(AcmeError::Order(format!(
+                        "CA 拒绝了本次验证（订单状态 invalid）: {reason}"
+                    )));
                 }
                 OrderStatus::Pending | OrderStatus::Processing | OrderStatus::Ready => {}
             }

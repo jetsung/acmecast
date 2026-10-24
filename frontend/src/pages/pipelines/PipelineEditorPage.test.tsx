@@ -11,6 +11,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { App } from "antd";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { describe, expect, it, vi } from "vitest";
+import { fetchTencentSslCertificates } from "@/api/client";
 import { PipelineEditorPage } from "./PipelineEditorPage";
 
 interface PostedStep {
@@ -38,6 +39,10 @@ const TASKS = [
 
 vi.mock("@/api/client", () => ({
   ApiError: class ApiError extends Error {},
+  fetchTencentSslCertificates: vi.fn(async (_credentialId: number) => [
+    { value: "CERTA", label: "CERTA (idev.top - idev)" },
+    { value: "CERTB", label: "CERTB (example.com)" },
+  ]),
   client: {
     GET: vi.fn(async (path: string, init?: { params?: { path?: { type_id?: string } } }) => {
       if (path === "/api/tasks") {
@@ -48,16 +53,16 @@ vi.mock("@/api/client", () => ({
           data: {
             data: {
               items: [
-                { id: 7, name: "le-prod", type_id: "acme.account", remark: "" },
-                { id: 8, name: "some-dns", type_id: "cloud.cloudflare", remark: "" },
-                { id: 9, name: "ali-dns", type_id: "cloud.aliyun", remark: "" },
-                { id: 10, name: "web-01", type_id: "deploy.ssh", remark: "" },
-                { id: 30, name: "腾讯云 SSL", type_id: "cloud.tencent", remark: "生产 DNS" },
-                { id: 31, name: "EdgeOne DNS", type_id: "dns.tencent-eo", remark: "" },
-                { id: 40, name: "SSH 主机", type_id: "deploy.ssh", remark: "" },
-                { id: 41, name: "jump-01", type_id: "deploy.ssh", remark: "" },
-                { id: 50, name: "ops-feishu", type_id: "notify.feishu", remark: "" },
-                { id: 51, name: "ops-mail", type_id: "notify.email", remark: "" },
+                { id: 7, name: "le-prod", type_id: "acme.account", remark: "", proxy_mode: "direct" },
+                { id: 8, name: "some-dns", type_id: "cloud.cloudflare", remark: "", proxy_mode: "direct" },
+                { id: 9, name: "ali-dns", type_id: "cloud.aliyun", remark: "", proxy_mode: "direct" },
+                { id: 10, name: "web-01", type_id: "deploy.ssh", remark: "", proxy_mode: "direct" },
+                { id: 30, name: "腾讯云 SSL", type_id: "cloud.tencent", remark: "生产 DNS", proxy_mode: "direct" },
+                { id: 31, name: "EdgeOne DNS", type_id: "dns.tencent-eo", remark: "", proxy_mode: "direct" },
+                { id: 40, name: "SSH 主机", type_id: "deploy.ssh", remark: "", proxy_mode: "direct" },
+                { id: 41, name: "jump-01", type_id: "deploy.ssh", remark: "", proxy_mode: "direct" },
+                { id: 50, name: "ops-feishu", type_id: "notify.feishu", remark: "", proxy_mode: "direct" },
+                { id: 51, name: "ops-mail", type_id: "notify.email", remark: "", proxy_mode: "direct" },
               ],
               total: 10,
               page: 1,
@@ -259,32 +264,20 @@ vi.mock("@/api/client", () => ({
                                   type: "string",
                                   description: "上传到云端的证书备注名。",
                                 },
+                                certificate_id: {
+                                  type: ["string", "null"],
+                                  description: "云端已存在证书 ID（可选），非空时直接写入该证书。",
+                                },
                                 repeatable: {
                                   type: "boolean",
                                   description: "允许重复上传同指纹证书。",
-                                },
-                                replace_existing: {
-                                  type: "boolean",
-                                  description: "替换同域名已有证书。",
-                                },
-                                resource_types: {
-                                  type: "array",
-                                  description: "需同步刷新的云资源类型。",
-                                  items: { type: "string" },
-                                },
-                                resource_regions: {
-                                  type: "array",
-                                  description: "云资源所在地域列表。",
-                                  items: { type: "string" },
                                 },
                               },
                               "x-field-order": [
                                 "credential_id",
                                 "alias",
+                                "certificate_id",
                                 "repeatable",
-                                "replace_existing",
-                                "resource_types",
-                                "resource_regions",
                               ],
                             },
                           },
@@ -881,7 +874,9 @@ describe("PipelineEditorPage", () => {
         expect(found).toBeTruthy();
         return found!;
       });
+      console.error("PANEL_CLASS:", panel.className, "| OPTION:", option.outerHTML.slice(0, 200), "| TRIGGER_ID:", trigger.id, trigger.getAttribute("aria-owns"));
       fireEvent.click(option);
+      console.error("AFTER_CLICK_SEL:", JSON.stringify(Array.from(document.querySelectorAll(".ant-select-selection-item")).map((item) => item.textContent)));
     };
 
     // 选 web-01（id=10）后跳板字段出现。
@@ -991,15 +986,12 @@ describe("PipelineEditorPage", () => {
     fireEvent.click(await screen.findByTitle("腾讯云 SSL 证书"));
 
     // 切换 target 清空存量 config 后，腾讯云变体渲染出自己的子表单：
-    // 子字段 label 用字段名（说明进 tooltip），备注是输入框，替换开关是 Switch；
-    // 新增字段 repeatable 同为 Switch。
+    // 子字段 label 用字段名（说明进 tooltip），备注是输入框；
+    // repeatable 是 Switch。
     fireEvent.change(await screen.findByLabelText("alias"), {
       target: { value: "acmecast example.com" },
     });
-    const replaceSwitch = screen.getByLabelText("replace_existing");
-    expect(replaceSwitch.getAttribute("role")).toBe("switch");
     expect(screen.getByLabelText("repeatable").getAttribute("role")).toBe("switch");
-    // resource_types 为 tags 模式（多选 16 种资源类型），resource_regions 为 tags 地域列表。
 
     // credential_id 按 x-credential-types 仅列 tencent 凭据：/mock 凭据列表里
     // tencent (id=30, name=腾讯云 SSL) 应出现，tencent-eo (id=31) 与 SSH 等不应出现。
@@ -1014,6 +1006,101 @@ describe("PipelineEditorPage", () => {
     expect(config["alias"]).toBe("acmecast example.com");
   });
 
+  it("tencent-ssl 选中证书 ID 后进入替换模式：repeatable 禁用且值固定，清空后恢复", async () => {
+    posted.length = 0;
+    const queryClient = renderPage();
+    await waitForTasks(queryClient);
+    await waitFor(() => expect(queryClient.getQueryState(["credentials"])?.status).toBe("success"));
+    fireEvent.change(screen.getByLabelText("名称"), { target: { value: "p" } });
+
+    await addStep("任务 F");
+    const target = await screen.findByLabelText("target");
+    fireEvent.mouseDown(target);
+    fireEvent.click(await screen.findByTitle("腾讯云 SSL 证书"));
+
+    // 「证书 ID」默认渲染为空的单选可清空下拉（x-options 初始为空），旁置「同步」按钮。
+    await screen.findByLabelText("certificate_id");
+    // antd Button 会在两字文本间自动插空格（渲染为「同 步」），按宽松正则取。
+    const syncButton = screen.getByRole("button", { name: /同\s*步/ });
+    // 按钮与下拉控件同处一行：二者最近的公共祖先是 flex 行容器，
+    // 按钮不换行掉到控件下方。
+    const select = screen.getByLabelText("certificate_id").closest(".ant-select");
+    expect(select).toBeTruthy();
+    expect(syncButton.closest('[style*="display: flex"]')).toBeTruthy();
+    expect(select!.closest('[style*="display: flex"]')).toBe(
+      syncButton.closest('[style*="display: flex"]'),
+    );
+
+    // 先把 repeatable 打开：选中证书 ID 后进入替换模式——开关禁用且值被
+    // 固定为 false（repeatable 仅作用于上传流程，替换不携带）。
+    fireEvent.click(await screen.findByLabelText("repeatable"));
+
+    /** 打开某个 Select 的下拉面板：用 combobox 的 aria-owns 找它自己的 listbox。 */
+    const openPanel = async (trigger: HTMLElement) => {
+      fireEvent.mouseDown(trigger);
+      return await waitFor(() => {
+        const listId = trigger.getAttribute("aria-owns");
+        expect(listId).toBeTruthy();
+        const list = document.getElementById(listId!);
+        expect(list).toBeTruthy();
+        const panel = list!.closest<HTMLElement>(".ant-select-dropdown");
+        expect(panel).toBeTruthy();
+        return panel!;
+      });
+    };
+
+    /** 打开 Select 并在它自己的面板里点选 option（选项由虚拟列表异步渲染，需重试）。 */
+    const chooseOption = async (trigger: HTMLElement, title: string) => {
+      const panel = await openPanel(trigger);
+      const option = await waitFor(() => {
+        const found = panel.querySelector<HTMLElement>(
+          `.ant-select-item-option[title="${title}"]`,
+        );
+        expect(found).toBeTruthy();
+        return found!;
+      });
+      fireEvent.click(option);
+    };
+
+    // 选定腾讯云凭据并等选中渲染落地（watch 传播是异步的），再点「同步」。
+    await chooseOption(screen.getByLabelText("credential_id"), "腾讯云 SSL（id=30）— 生产 DNS");
+    // 等凭据选中渲染落地（antd v6 的选中项 DOM 与 v5 不同，按选中 label 文本断言）。
+    await waitFor(() => {
+      expect(document.body.textContent?.includes("id=30")).toBe(true);
+    });
+    fireEvent.click(screen.getByRole("button", { name: /同\s*步/ }));
+    await waitFor(() => expect(vi.mocked(fetchTencentSslCertificates)).toHaveBeenCalled());
+
+    // 同步后下拉选项可用：选 CERTA。选中后 repeatable 禁用且值固定。
+    await chooseOption(screen.getByLabelText("certificate_id"), "CERTA (idev.top - idev)");
+    const repeatSwitch = await waitFor(() => {
+      const repeat = screen.getByLabelText("repeatable");
+      expect(
+        repeat.hasAttribute("disabled") || repeat.getAttribute("aria-disabled") === "true",
+      ).toBe(true);
+      return repeat;
+    });
+    expect(repeatSwitch.getAttribute("aria-checked")).toBe("false");
+
+    // 清空证书 ID：开关恢复可编辑。
+    const certTrigger = screen.getByLabelText("certificate_id").closest(".ant-select")!;
+    fireEvent.mouseEnter(certTrigger);
+    fireEvent.click(certTrigger.querySelector(".ant-select-clear")!);
+    await waitFor(() => {
+      expect(screen.getByLabelText("repeatable").hasAttribute("disabled")).toBe(false);
+    });
+
+    // 重新选中并保存：固定值随表单提交（后端另有硬编码兜底）。
+    await chooseOption(screen.getByLabelText("certificate_id"), "CERTB (example.com)");
+    await waitFor(() => {
+      expect(screen.getByLabelText("repeatable").hasAttribute("disabled")).toBe(true);
+    });
+
+    const body = await save();
+    const config = body.steps[0].input.config as Record<string, unknown>;
+    expect(config["certificate_id"]).toBe("CERTB");
+    expect(config["repeatable"]).toBe(false);
+  });
 
   /** cert.apply 步骤的 domains 填入两个域名，并等必填联动落地。 */
   async function fillTwoDomains() {

@@ -110,7 +110,11 @@ async fn an_unchanged_fingerprint_still_writes_for_file_targets() {
         .await
         .expect("重复部署应成功");
 
-    assert!(!second.skipped_write, "文件类目标每次都应写入: {:?}", second);
+    assert!(
+        !second.skipped_write,
+        "文件类目标每次都应写入: {:?}",
+        second
+    );
     assert_eq!(
         second.reload_output.as_deref(),
         Some("ran"),

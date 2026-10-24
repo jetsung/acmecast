@@ -52,3 +52,23 @@ const authMiddleware: Middleware = {
 };
 
 client.use(authMiddleware);
+
+/** 腾讯云 SSL 证书下拉项：value 为云端证书 ID，label 为显示文本。 */
+export interface TencentSslCertificateOption {
+  value: string;
+  label: string;
+}
+
+/** 按腾讯云凭据同步云端 SSL 证书列表（部署表单「证书 ID」下拉的选项来源）。 */
+export async function fetchTencentSslCertificates(
+  credentialId: number,
+): Promise<TencentSslCertificateOption[]> {
+  const result = await client.GET(`/api/credentials/${credentialId}/tencent-ssl-certificates`, {
+    params: { path: { id: credentialId } },
+  });
+  if (result.error !== undefined) {
+    const body = result.error as { error?: ApiErrorBody };
+    throw new ApiError(result.response.status, body?.error);
+  }
+  return (result.data as { data?: TencentSslCertificateOption[] })?.data ?? [];
+}

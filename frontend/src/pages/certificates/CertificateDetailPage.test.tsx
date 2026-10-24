@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { App } from "antd";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -37,13 +37,23 @@ vi.mock("@/api/helpers", async () => {
   return {
     ...actual,
     downloadFile: vi.fn().mockResolvedValue(undefined),
+    fetchText: vi.fn().mockResolvedValue(""),
   };
 });
 
-import { downloadFile } from "@/api/helpers";
+import { downloadFile, fetchText } from "@/api/helpers";
 
 const mockedGet = vi.mocked(client.GET);
 const mockedDownload = vi.mocked(downloadFile);
+const mockedFetchText = vi.mocked(fetchText);
+
+const PEM_TEXT = "-----BEGIN CERTIFICATE-----\nPEM\n-----END CERTIFICATE-----";
+
+/** 按 label 定位 Descriptions 行，返回该行元素。 */
+async function findRow(label: string): Promise<HTMLElement> {
+  const cell = await screen.findByText(label);
+  return cell.closest("tr") as HTMLElement;
+}
 
 function makeCert(overrides: Record<string, unknown> = {}) {
   return {
@@ -141,8 +151,8 @@ describe("CertificateDetailPage 下载私钥", () => {
 
     renderPage();
 
-    const btn = await screen.findByRole("button", { name: "下载私钥 (PEM)" });
-    fireEvent.click(btn);
+    const row = await findRow("私钥");
+    fireEvent.click(within(row).getByRole("button", { name: /下\s*载/ }));
 
     await waitFor(() => {
       expect(mockedDownload).toHaveBeenCalledWith("/api/certificates/1/download?format=key", null);
@@ -155,7 +165,90 @@ describe("CertificateDetailPage 下载私钥", () => {
     renderPage();
 
     expect(await screen.findByRole("button", { name: "PEM (证书链)" })).toBeTruthy();
-    expect(await screen.findByRole("button", { name: "下载私钥 (PEM)" })).toBeTruthy();
+    const keyRow = await findRow("私钥");
+    expect(within(keyRow).getByRole("button", { name: /下\s*载/ })).toBeTruthy();
+  });
+});
+
+describe("CertificateDetailPage 复制正文", () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedFetchText.mockResolvedValue(PEM_TEXT);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+  });
+
+  it("复制完整证书链触发 fetchText + clipboard.writeText", async () => {
+    mockedGet.mockResolvedValue(okCert(makeCert()) as never);
+
+    renderPage();
+
+    const row = await findRow("完整证书链");
+    fireEvent.click(within(row).getByRole("button", { name: /复\s*制/ }));
+
+    await waitFor(() => {
+      expect(mockedFetchText).toHaveBeenCalledWith("/api/certificates/1/download?format=fullchain", null);
+    });
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith(PEM_TEXT);
+    });
+    expect(await screen.findByText("已复制")).toBeTruthy();
+  });
+
+  it("复制私钥触发 format=key", async () => {
+    mockedGet.mockResolvedValue(okCert(makeCert()) as never);
+
+    renderPage();
+
+    const row = await findRow("私钥");
+    fireEvent.click(within(row).getByRole("button", { name: /复\s*制/ }));
+
+    await waitFor(() => {
+      expect(mockedFetchText).toHaveBeenCalledWith("/api/certificates/1/download?format=key", null);
+    });
+  });
+
+  it("复制 CA 证书触发 format=ca", async () => {
+    mockedGet.mockResolvedValue(okCert(makeCert({ ca_path: "certs/ssl/example.com.ca.pem" })) as never);
+
+    renderPage();
+
+    const row = await findRow("CA 证书");
+    expect(within(row).getByRole("button", { name: /复\s*制/ })).toBeTruthy();
+    fireEvent.click(within(row).getByRole("button", { name: /复\s*制/ }));
+
+    await waitFor(() => {
+      expect(mockedFetchText).toHaveBeenCalledWith("/api/certificates/1/download?format=ca", null);
+    });
+  });
+
+  it("CA 缺失时不渲染复制按钮", async () => {
+    mockedGet.mockResolvedValue(okCert(makeCert()) as never);
+
+    renderPage();
+
+    const row = await findRow("CA 证书");
+    expect(within(row).queryByRole("button", { name: /复\s*制/ })).toBeNull();
+    expect(within(row).queryByRole("button", { name: /下\s*载/ })).toBeNull();
+  });
+
+  it("复制失败提示复制失败", async () => {
+    mockedGet.mockResolvedValue(okCert(makeCert()) as never);
+    mockedFetchText.mockRejectedValueOnce("网络错误");
+
+    renderPage();
+
+    const row = await findRow("完整证书链");
+    fireEvent.click(within(row).getByRole("button", { name: /复\s*制/ }));
+
+    expect(await screen.findByText("复制失败")).toBeTruthy();
+    await waitFor(() => {
+      expect(writeText).not.toHaveBeenCalled();
+    });
   });
 });
 
@@ -167,7 +260,8 @@ describe("CertificateDetailPage 归档", () => {
     renderPage();
     expect(await screen.findByRole("button", { name: /归\s*档/ })).toBeTruthy();
     expect(await screen.findByRole("button", { name: /吊\s*销/ })).toBeTruthy();
-    expect(await screen.findByRole("button", { name: "下载私钥 (PEM)" })).toBeTruthy();
+    const keyRow = await findRow("私钥");
+    expect(within(keyRow).getByRole("button", { name: /下\s*载/ })).toBeTruthy();
   });
 
   it("点击归档二次确认后调用 POST /api/certificates/{id}/archive", async () => {

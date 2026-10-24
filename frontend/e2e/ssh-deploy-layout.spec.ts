@@ -65,8 +65,8 @@ const DEPLOY_SCHEMA = {
 };
 
 const SSH_HOSTS = [
-  { id: 10, name: "web-01", type_id: "deploy.ssh" },
-  { id: 41, name: "jump-01", type_id: "deploy.ssh" },
+  { id: 10, name: "web-01", type_id: "deploy.ssh", proxy_mode: "direct" },
+  { id: 41, name: "jump-01", type_id: "deploy.ssh", proxy_mode: "direct" },
 ];
 
 test.beforeEach(async ({ page }) => {

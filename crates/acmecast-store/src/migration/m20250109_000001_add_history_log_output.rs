@@ -33,11 +33,7 @@ impl MigrationTrait for Migration {
             .alter_table(
                 Table::alter()
                     .table(history_log::Entity)
-                    .add_column(
-                        ColumnDef::new(history_log::Column::Output)
-                            .json()
-                            .null(),
-                    )
+                    .add_column(ColumnDef::new(history_log::Column::Output).json().null())
                     .to_owned(),
             )
             .await

@@ -84,6 +84,10 @@ pub(crate) fn routes() -> Router<HttpState> {
                 .delete(delete_credential),
         )
         .route("/api/credentials/{id}/test", post(test_credential))
+        .route(
+            "/api/credentials/{id}/tencent-ssl-certificates",
+            get(list_tencent_ssl_certificates),
+        )
         .route("/api/credential-types", get(list_credential_types))
         .route("/api/schedules", get(list_schedules).post(create_schedule))
         .route("/api/schedules/{pipeline_id}", delete(delete_schedule))
@@ -1023,7 +1027,8 @@ pub(crate) struct CredentialQuery {
     pub page_size: Option<u64>,
 }
 
-/// 凭据列表项响应。不返回加密字段。
+/// 凭据列表项响应。不返回加密字段值；`proxy_mode` 是从加密字段提取的
+/// 非敏感枚举冗余列（与 `capabilities` 同口径），不是加密字段值。
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub(crate) struct CredentialResponse {
     /// 主键。
@@ -1036,6 +1041,8 @@ pub(crate) struct CredentialResponse {
     pub remark: String,
     /// 能力标记（`dns` / `deploy`）；非受控类型为空数组。
     pub capabilities: Vec<String>,
+    /// 出网代理模式：`direct` / `inherit` / `custom`。
+    pub proxy_mode: String,
     /// 创建时间。
     pub created_at: DateTime<Utc>,
     /// 更新时间。
@@ -1061,6 +1068,8 @@ pub(crate) struct CredentialDetailResponse {
     pub remark: String,
     /// 能力标记（`dns` / `deploy`）；非受控类型为空数组。
     pub capabilities: Vec<String>,
+    /// 出网代理模式：`direct` / `inherit` / `custom`（明文冗余列）。
+    pub proxy_mode: String,
     /// 创建时间。
     pub created_at: DateTime<Utc>,
     /// 更新时间。
@@ -1160,6 +1169,71 @@ pub(crate) struct ConnectivityResponse {
     /// 不可用时的脱敏原因。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+}
+
+/// 腾讯云 SSL 证书下拉项（同步端点的响应元素）。
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub(crate) struct TencentSslCertificateOption {
+    /// 云端证书 ID，选中后作为部署输入的 `certificate_id` 原样提交。
+    pub value: String,
+    /// 显示文本：无别名 `证书ID (域名)`，有别名 `证书ID (域名 - 别名)`。
+    pub label: String,
+}
+
+/// 按腾讯云凭据拉取云端 SSL 证书列表（部署表单「证书 ID」下拉的同步来源）。
+///
+/// 复用部署侧的凭据校验（类型白名单 + deploy 能力）：非 `cloud.tencent`
+/// 或缺部署能力的凭据在任何云端调用之前以可读输入错误失败。证书列表由
+/// `DescribeCertificates` 遍历全部分页取回（`tencent_http` 覆盖传输层仅供
+/// 测试注入替身），`value` 为证书 ID，`label` 与 spec 示例同一口径。
+async fn list_tencent_ssl_certificates(
+    State(state): State<HttpState>,
+    Path(id): Path<i64>,
+) -> Result<ApiResponse<Vec<TencentSslCertificateOption>>, ApiError> {
+    // 解析凭据要解密字段：未配置加密密钥时凭据体系读不出任何值。
+    let cipher = state.runtime.cipher.as_ref().ok_or_else(|| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "configuration_error",
+            "未配置凭据加密密钥，无法读取凭据",
+        )
+    })?;
+    let store = CredentialStore::new(
+        &state.app.db,
+        Arc::clone(&state.runtime.credential_registry),
+        Arc::clone(cipher),
+    );
+    // 校验（类型白名单 + deploy 能力）与部署路径同一实现：错误口径一致，
+    // 且失败发生在任何云端调用之前。
+    let credentials = acmecast_deploy::resolve_tencent_credentials(id, &store)
+        .await
+        .map_err(ApiError::from)?;
+
+    let target = match state.runtime.tencent_http.clone() {
+        Some(transport) => acmecast_deploy::TencentSslTarget::with_transport(transport),
+        None => acmecast_deploy::TencentSslTarget::new(),
+    };
+    let certificates = target
+        .describe_certificates(&credentials, None)
+        .await
+        .map_err(ApiError::from)?;
+
+    let options = certificates
+        .iter()
+        .filter_map(|cert| {
+            let value = cert["CertificateId"].as_str()?;
+            let label = acmecast_deploy::format_cert_label(
+                value,
+                cert["Domain"].as_str().unwrap_or(""),
+                cert["Alias"].as_str(),
+            );
+            Some(TencentSslCertificateOption {
+                value: value.to_owned(),
+                label,
+            })
+        })
+        .collect();
+    Ok(ApiResponse::new(options))
 }
 
 async fn list_pipelines(
@@ -1811,6 +1885,8 @@ async fn get_credential(
         type_id: row.type_id,
         fields,
         remark: row.remark,
+        // 详情已解密 `fields`，但 `proxy_mode` 读明文列即可，不重复解析。
+        proxy_mode: row.proxy_mode,
         created_at: row.created_at,
         updated_at: row.updated_at,
     }))
@@ -1855,6 +1931,12 @@ async fn save_credential(
     // 保存前统一去掉字符串字段的首尾空白：凭据通常从剪贴板粘贴，带上的
     // 换行/空格会让厂商 API 回「认证失败」，而且存进去就一直是脏的。
     let fields = trim_credential_strings(&request.fields);
+    // 出网代理模式明文冗余列：从归一化后的 `fields` 提取，口径与运行时
+    // `transport_for_credentials` 一致（旧 `proxy_url` 有值视为 custom）。
+    // 仅供列表展示，运行时行为仍读加密字段。
+    let proxy_mode = acmecast_core::ProxyMode::from_credentials(&fields)
+        .as_str()
+        .to_owned();
     let cipher = state.runtime.cipher.as_ref().ok_or_else(|| {
         ApiError::new(
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -1903,6 +1985,7 @@ async fn save_credential(
                 encrypted_fields: Set(encrypted_fields),
                 remark: Set(remark),
                 capabilities: Set(capabilities),
+                proxy_mode: Set(proxy_mode),
                 updated_at: Set(now),
                 ..Default::default()
             }
@@ -1916,6 +1999,7 @@ async fn save_credential(
             encrypted_fields: Set(encrypted_fields),
             remark: Set(remark),
             capabilities: Set(capabilities),
+            proxy_mode: Set(proxy_mode),
             created_at: Set(now),
             updated_at: Set(now),
             ..Default::default()
@@ -2021,7 +2105,11 @@ async fn test_credential(
         .credential_registry
         .require(&resolved.type_id)
         .map_err(ApiError::from)?;
-    let outcome = kind.test_connectivity(&resolved.fields).await;
+    // 探测接口与凭据声明的用途匹配：把能力标签一并交给类型，
+    // 腾讯云凭据据此在 DNSPod / SSL 探测接口间分派。
+    let outcome = kind
+        .test_connectivity(&resolved.fields, &resolved.capabilities)
+        .await;
     let response = match outcome {
         ConnectivityOutcome::Ok => ConnectivityResponse {
             status: "ok",
@@ -2612,6 +2700,7 @@ impl From<acmecast_store::entity::credential::Model> for CredentialResponse {
             type_id: model.type_id,
             remark: model.remark,
             capabilities,
+            proxy_mode: model.proxy_mode,
             created_at: model.created_at,
             updated_at: model.updated_at,
         }

@@ -23,7 +23,9 @@ pub fn http_client() -> reqwest::Client {
 /// `proxy_url` 为 `Some(socks5://…/http://…/https://…)` 时注入代理；
 /// `None` 时直连。若代理 URL 非法则返回错误，调用方应把错误呈现为
 /// 投递失败（原因含代理主机）。
-pub fn http_client_with_proxy(proxy_url: Option<&str>) -> std::result::Result<reqwest::Client, String> {
+pub fn http_client_with_proxy(
+    proxy_url: Option<&str>,
+) -> std::result::Result<reqwest::Client, String> {
     let mut builder = reqwest::Client::builder().timeout(DEFAULT_TIMEOUT);
     if let Some(url) = proxy_url {
         let proxy = reqwest::Proxy::all(url).map_err(|error| {

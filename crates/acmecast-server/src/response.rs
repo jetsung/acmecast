@@ -360,6 +360,32 @@ impl From<acmecast_pipeline::Error> for ApiError {
     }
 }
 
+impl From<acmecast_deploy::Error> for ApiError {
+    fn from(error: acmecast_deploy::Error) -> Self {
+        match error {
+            // 输入不合法（凭据类型/能力校验等）：与流水线侧同口径回字段校验错误。
+            acmecast_deploy::Error::InvalidInput { field, reason } => {
+                Self::validation(field, reason)
+            }
+            // 云服务调用失败：厂商错误在 reason 里，作为网关侧错误透出。
+            acmecast_deploy::Error::Cloud { reason, .. } => {
+                Self::new(StatusCode::BAD_GATEWAY, "external_service_error", reason)
+            }
+            // 远端（探针等）失败：同网关侧错误。
+            acmecast_deploy::Error::Remote(reason) => {
+                Self::new(StatusCode::BAD_GATEWAY, "external_service_error", reason)
+            }
+            acmecast_deploy::Error::Access(error) => error.into(),
+            acmecast_deploy::Error::Core(error) => error.into(),
+            _ => Self::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal_error",
+                "发生未识别的内部错误",
+            ),
+        }
+    }
+}
+
 impl From<acmecast_cert::Error> for ApiError {
     fn from(error: acmecast_cert::Error) -> Self {
         Self::new(

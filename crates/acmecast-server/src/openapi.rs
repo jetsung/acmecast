@@ -45,6 +45,7 @@ use crate::response::ApiResponse;
         update_credential,
         delete_credential,
         test_credential,
+        list_tencent_ssl_certificates,
         list_credential_types,
         list_tasks,
         task_schema,
@@ -89,6 +90,7 @@ use crate::response::ApiResponse;
             crate::handlers::HistoryResponse,
             crate::handlers::HistoryLogResponse,
             crate::handlers::ConnectivityResponse,
+            crate::handlers::TencentSslCertificateOption,
             PageResponse<crate::handlers::PipelineSummaryResponse>,
             PageResponse<crate::handlers::CertificateResponse>,
             PageResponse<crate::handlers::CredentialResponse>,
@@ -179,6 +181,9 @@ fn delete_credential() {}
 #[utoipa::path(post, path = "/api/credentials/{id}/test", params(("id" = i64, Path, description = "凭据标识")), responses((status = 200, body = ApiResponse<crate::handlers::ConnectivityResponse>, description = "连通性结果"), (status = 404, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
 fn test_credential() {}
 
+/// 同步腾讯云 SSL 证书列表端点的文档占位函数。
+#[utoipa::path(get, path = "/api/credentials/{id}/tencent-ssl-certificates", params(("id" = i64, Path, description = "腾讯云凭据标识")), responses((status = 200, body = ApiResponse<Vec<crate::handlers::TencentSslCertificateOption>>, description = "云端服务器证书选项（value=证书 ID，label=显示文本）"), (status = 400, body = crate::response::ApiErrorBody, description = "凭据不是 cloud.tencent 类型或缺少 deploy 能力"), (status = 404, body = crate::response::ApiErrorBody), (status = 502, body = crate::response::ApiErrorBody, description = "云端调用失败")), security(("bearerAuth" = [])))]
+fn list_tencent_ssl_certificates() {}
 #[utoipa::path(get, path = "/api/credential-types", responses((status = 200, description = "凭据类型与字段 Schema")), security(("bearerAuth" = [])))]
 fn list_credential_types() {}
 

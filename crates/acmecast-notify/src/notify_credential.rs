@@ -266,7 +266,14 @@ pub fn generic_fields_schema() -> RootSchema {
     let mut schema = schema_for!(GenericFields);
     schema.schema.extensions.insert(
         "x-field-order".to_owned(),
-        serde_json::json!(["url", "method", "headers", "body_template", "proxy_mode", "proxy_url"]),
+        serde_json::json!([
+            "url",
+            "method",
+            "headers",
+            "body_template",
+            "proxy_mode",
+            "proxy_url"
+        ]),
     );
     set_enum(&mut schema, "method", &ALLOWED_METHODS);
     set_extension(
@@ -304,7 +311,14 @@ pub fn email_fields_schema() -> RootSchema {
     schema.schema.extensions.insert(
         "x-field-order".to_owned(),
         serde_json::json!([
-            "host", "port", "from", "tls", "to", "username", "password", "proxy_mode",
+            "host",
+            "port",
+            "from",
+            "tls",
+            "to",
+            "username",
+            "password",
+            "proxy_mode",
             "proxy_url"
         ]),
     );
@@ -363,7 +377,11 @@ impl CredentialType for FeishuCredentialType {
         acmecast_core::validate_proxy_field(fields)
     }
 
-    async fn test_connectivity(&self, fields: &serde_json::Value) -> ConnectivityOutcome {
+    async fn test_connectivity(
+        &self,
+        fields: &serde_json::Value,
+        _capabilities: &[String],
+    ) -> ConnectivityOutcome {
         let parsed: std::result::Result<FeishuFields, _> = serde_json::from_value(fields.clone());
         let Ok(parsed) = parsed else {
             return ConnectivityOutcome::Unavailable {
@@ -421,7 +439,11 @@ impl CredentialType for DingtalkCredentialType {
         acmecast_core::validate_proxy_field(fields)
     }
 
-    async fn test_connectivity(&self, fields: &serde_json::Value) -> ConnectivityOutcome {
+    async fn test_connectivity(
+        &self,
+        fields: &serde_json::Value,
+        _capabilities: &[String],
+    ) -> ConnectivityOutcome {
         let parsed: std::result::Result<DingtalkFields, _> = serde_json::from_value(fields.clone());
         let Ok(parsed) = parsed else {
             return ConnectivityOutcome::Unavailable {
@@ -516,7 +538,11 @@ impl CredentialType for GenericCredentialType {
         acmecast_core::validate_proxy_field(fields)
     }
 
-    async fn test_connectivity(&self, fields: &serde_json::Value) -> ConnectivityOutcome {
+    async fn test_connectivity(
+        &self,
+        fields: &serde_json::Value,
+        _capabilities: &[String],
+    ) -> ConnectivityOutcome {
         let parsed: std::result::Result<GenericFields, _> = serde_json::from_value(fields.clone());
         let Ok(parsed) = parsed else {
             return ConnectivityOutcome::Unavailable {
@@ -583,7 +609,11 @@ impl CredentialType for EmailCredentialType {
         acmecast_core::validate_proxy_field(fields)
     }
 
-    async fn test_connectivity(&self, fields: &serde_json::Value) -> ConnectivityOutcome {
+    async fn test_connectivity(
+        &self,
+        fields: &serde_json::Value,
+        _capabilities: &[String],
+    ) -> ConnectivityOutcome {
         let parsed: std::result::Result<EmailFields, _> = serde_json::from_value(fields.clone());
         let Ok(parsed) = parsed else {
             return ConnectivityOutcome::Unavailable {
@@ -629,7 +659,12 @@ pub fn channel_config_from_credential(
 pub fn channel_config_from_credential_no_proxy(
     credential: &ResolvedCredential,
 ) -> Result<ChannelConfig> {
-    channel_config_from_parts(&credential.type_id, &credential.name, &credential.fields, None)
+    channel_config_from_parts(
+        &credential.type_id,
+        &credential.name,
+        &credential.fields,
+        None,
+    )
 }
 
 /// 字段 JSON → 渠道配置的映射本体。
@@ -698,11 +733,13 @@ fn channel_config_from_parts(
         }
         EMAIL_TYPE_ID => {
             let parsed = parse_fields::<EmailFields>(type_id, fields)?;
-            let mut smtp =
-                smtp_settings_from(parsed, acmecast_core::effective_proxy_url(fields, global_proxy_url))
-                    .map_err(|reason| Error::InvalidConfig {
-                        reason: format!("{EMAIL_TYPE_ID} {reason}"),
-                    })?;
+            let mut smtp = smtp_settings_from(
+                parsed,
+                acmecast_core::effective_proxy_url(fields, global_proxy_url),
+            )
+            .map_err(|reason| Error::InvalidConfig {
+                reason: format!("{EMAIL_TYPE_ID} {reason}"),
+            })?;
             // 存量邮件凭据缺 proxy_mode 时 effective_proxy_url 为 None（直连），
             // 与本次变更前行为一致。
             smtp.proxy_url = smtp.proxy_url.clone();
@@ -882,14 +919,20 @@ mod tests {
             .expect("合法字段应通过");
 
         let bad_url = serde_json::json!({ "url": "ftp://a.example.com" });
-        let error = FeishuCredentialType::default().validate(&bad_url).unwrap_err();
+        let error = FeishuCredentialType::default()
+            .validate(&bad_url)
+            .unwrap_err();
         assert!(
             matches!(&error, acmecast_core::Error::Validation { field, .. } if field == "url"),
             "{error:?}"
         );
 
         let empty_url = serde_json::json!({ "url": "" });
-        assert!(FeishuCredentialType::default().validate(&empty_url).is_err());
+        assert!(
+            FeishuCredentialType::default()
+                .validate(&empty_url)
+                .is_err()
+        );
     }
 
     #[test]
@@ -912,7 +955,11 @@ mod tests {
             .validate(&fields)
             .expect("合法字段应通过");
         let missing_url = serde_json::json!({ "url": "" });
-        assert!(DingtalkCredentialType::default().validate(&missing_url).is_err());
+        assert!(
+            DingtalkCredentialType::default()
+                .validate(&missing_url)
+                .is_err()
+        );
     }
 
     #[test]
@@ -931,7 +978,9 @@ mod tests {
             "url": "https://ops.example.com/hook",
             "method": "GET",
         });
-        let error = GenericCredentialType::default().validate(&bad_method).unwrap_err();
+        let error = GenericCredentialType::default()
+            .validate(&bad_method)
+            .unwrap_err();
         assert!(
             matches!(&error, acmecast_core::Error::Validation { field, .. } if field == "method"),
             "{error:?}"
@@ -945,7 +994,9 @@ mod tests {
             "url": "https://ops.example.com/hook",
             "headers": { "bad header\nname": "v" },
         });
-        let error = GenericCredentialType::default().validate(&bad_header).unwrap_err();
+        let error = GenericCredentialType::default()
+            .validate(&bad_header)
+            .unwrap_err();
         assert!(
             matches!(&error, acmecast_core::Error::Validation { field, .. } if field == "headers"),
             "{error:?}"
@@ -956,7 +1007,9 @@ mod tests {
             "url": "https://ops.example.com/hook",
             "body_template": "{\"x\": \"{{nope}}\"}",
         });
-        let error = GenericCredentialType::default().validate(&bad_template).unwrap_err();
+        let error = GenericCredentialType::default()
+            .validate(&bad_template)
+            .unwrap_err();
         assert!(
             matches!(&error, acmecast_core::Error::Validation { field, .. } if field == "body_template"),
             "{error:?}"
@@ -980,7 +1033,9 @@ mod tests {
             "from": "no-reply@example.com",
             "to": [],
         });
-        let error = EmailCredentialType::default().validate(&no_recipients).unwrap_err();
+        let error = EmailCredentialType::default()
+            .validate(&no_recipients)
+            .unwrap_err();
         assert!(
             matches!(&error, acmecast_core::Error::Validation { field, .. } if field == "to"),
             "{error:?}"
@@ -1002,7 +1057,9 @@ mod tests {
             "from": "no-reply@example.com",
             "to": ["ops@example.com"],
         });
-        let error = EmailCredentialType::default().validate(&fields).unwrap_err();
+        let error = EmailCredentialType::default()
+            .validate(&fields)
+            .unwrap_err();
         assert!(
             matches!(&error, acmecast_core::Error::Validation { field, .. } if field == "tls"),
             "{error:?}"
@@ -1018,8 +1075,14 @@ mod tests {
             "{rendered}"
         );
         let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
-        assert_eq!(value["properties"]["url"]["x-full-width"], serde_json::json!(true));
-        assert_eq!(value["properties"]["secret"]["x-end-row"], serde_json::json!(true));
+        assert_eq!(
+            value["properties"]["url"]["x-full-width"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            value["properties"]["secret"]["x-end-row"],
+            serde_json::json!(true)
+        );
         assert_eq!(
             value["properties"]["proxy_mode"]["enum"],
             serde_json::json!(["direct", "inherit", "custom"])
@@ -1055,8 +1118,14 @@ mod tests {
             "method 应注入枚举候选: {rendered}"
         );
         let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
-        assert_eq!(value["properties"]["url"]["x-full-width"], serde_json::json!(true));
-        assert_eq!(value["properties"]["method"]["x-end-row"], serde_json::json!(true));
+        assert_eq!(
+            value["properties"]["url"]["x-full-width"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            value["properties"]["method"]["x-end-row"],
+            serde_json::json!(true)
+        );
         assert_eq!(
             value["properties"]["headers"]["x-multiline"],
             serde_json::json!(true)
@@ -1077,8 +1146,14 @@ mod tests {
             "tls 应注入枚举候选: {rendered}"
         );
         let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
-        assert_eq!(value["properties"]["to"]["x-multiline"], serde_json::json!(true));
-        assert_eq!(value["properties"]["to"]["x-full-width"], serde_json::json!(true));
+        assert_eq!(
+            value["properties"]["to"]["x-multiline"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            value["properties"]["to"]["x-full-width"],
+            serde_json::json!(true)
+        );
         // name 已移除，不应再有 x-end-row 在 name 上
         assert!(
             value["properties"].get("name").is_none(),

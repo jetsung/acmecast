@@ -93,7 +93,8 @@ CDN / WAF 等云资源引用。**国内站与国际站同构**：凭据的 `acco
 |---|---|---|---|
 | `credential_id` | 是 | — | 引用 `cloud.tencent` 类型凭据（`dns.tencent-eo` 仅服务 DNS，无 SSL 部署能力，不接受） |
 | `alias` | 否 | — | 上传到云端的证书备注名；空白不提交 |
-| `repeatable` | 否 | `false` | 上传请求的 `Repeatable`：`false` 时同指纹已存在返回已有证书 ID、不产生重复；`true` 时允许重复上传 |
+| `certificate_id` | 否 | — | 云端已存在证书 ID（可选）：非空时跳过同域名匹配，直接把本次证书内容写入该证书（原证书 ID 不变），此时 `Repeatable` 固定为 `false`、`repeatable` 不再生效；空白按未提供处理。部署表单可点「同步」拉取云端证书列表后下拉选择 |
+| `repeatable` | 否 | `false` | 上传请求的 `Repeatable`：`false` 时同指纹已存在返回已有证书 ID、不产生重复；`true` 时允许重复上传。选中 `certificate_id` 时固定为 `false`，本字段被忽略 |
 | `replace_existing` | 否 | `true` | 云端已有同域名证书时是否替换 |
 | `resource_types` | 否 | `[]` | 替换时需同步刷新的云资源类型（`ResourceTypes`），空时仅更新云端证书本身；多选，可选：`clb`、`cdn`、`waf`、`live`、`ddos`、`teo`、`apigateway`、`vod`、`tke`、`tcb`、`tse`、`cos`、`mqtt`、`scf`、`tdmq`、`gaap` |
 | `resource_regions` | 否 | `[]` | `resource_types` 指定的云资源的地域列表，构造 `ResourceTypesRegions`（`{ Region, Type }`） |
@@ -102,6 +103,7 @@ CDN / WAF 等云资源引用。**国内站与国际站同构**：凭据的 `acco
 
 - **`CertificateType` 固定为 `SVR`**：服务器证书，不暴露为可配置字段。
 - **上传幂等**：`Repeatable=false`（默认）时同指纹重复上传天然幂等、不产生重复证书；`Repeatable=true` 时允许同指纹重复上传（用于需要多张同指纹证书的场景）。
+- **选中证书 ID 直写**：`certificate_id` 非空时跳过「同域名存在性判断 / 自动匹配」，直接以该 ID 调 `UploadUpdateCertificateInstance` 写入本次证书链与私钥，云端证书 ID 不变、不发起上传新证书调用；更新请求的 `Repeatable` 固定为 `false`（写入既有证书与重复上传语义互斥），输入 `repeatable` 不产生任何影响。`certificate_id` 为空（或空白）时行为与未引入该字段前完全一致。
 
 替换语义（`replace_existing` 开启时）：
 

@@ -34,13 +34,11 @@ impl MigrationTrait for Migration {
         for (old, new) in TYPE_ID_REWRITES {
             // SeaQuery 把同一份 UPDATE 翻译到 SQLite / MySQL / PostgreSQL；
             // 参数绑定避免旧值里的 `-` 之外还可能引入的引号问题。
-            db.execute(
-                Statement::from_sql_and_values(
-                    db.get_database_backend(),
-                    "UPDATE acmecast_credential SET type_id = ? WHERE type_id = ?",
-                    [new.into(), old.into()],
-                ),
-            )
+            db.execute(Statement::from_sql_and_values(
+                db.get_database_backend(),
+                "UPDATE acmecast_credential SET type_id = ? WHERE type_id = ?",
+                [new.into(), old.into()],
+            ))
             .await?;
         }
         Ok(())
@@ -49,13 +47,11 @@ impl MigrationTrait for Migration {
     async fn down(&self, manager: &SchemaManager) -> Result<(), DbErr> {
         let db = manager.get_connection();
         for (old, new) in TYPE_ID_REWRITES {
-            db.execute(
-                Statement::from_sql_and_values(
-                    db.get_database_backend(),
-                    "UPDATE acmecast_credential SET type_id = ? WHERE type_id = ?",
-                    [old.into(), new.into()],
-                ),
-            )
+            db.execute(Statement::from_sql_and_values(
+                db.get_database_backend(),
+                "UPDATE acmecast_credential SET type_id = ? WHERE type_id = ?",
+                [old.into(), new.into()],
+            ))
             .await?;
         }
         Ok(())

@@ -70,12 +70,21 @@ pub trait CredentialType: Send + Sync + std::fmt::Debug + 'static {
 
     /// 用一份已解密的凭据对外部服务发起一次**轻量**调用，判定它是否可用。
     ///
+    /// `capabilities` 是该凭据声明的能力标记（`dns` / `deploy` 的归一化
+    /// 子集；非受控类型为空数组）。同一对密钥可能服务多种用途，而各用途
+    /// 的业务权限彼此独立——探测接口应与用途匹配，才能真实反映「这份凭据
+    /// 在它声明的用途上是否可用」。
+    ///
     /// 失败原因必须先用 [`Self::redact`] 处理再放进 [`ConnectivityOutcome::Unavailable`]——
     /// 外部服务的报错常常原样回显请求里携带的密钥，直接透出就等于把凭据打印给用户。
     ///
     /// 默认返回 [`ConnectivityOutcome::NotTestable`]：没有对外探测动作的类型
     /// 应当如实说「无从测试」，而不是谎报可用。
-    async fn test_connectivity(&self, _fields: &serde_json::Value) -> ConnectivityOutcome {
+    async fn test_connectivity(
+        &self,
+        _fields: &serde_json::Value,
+        _capabilities: &[String],
+    ) -> ConnectivityOutcome {
         ConnectivityOutcome::NotTestable
     }
 
@@ -156,7 +165,7 @@ mod tests {
     #[tokio::test]
     async fn the_default_says_it_cannot_be_tested() {
         let outcome = UntestableType
-            .test_connectivity(&serde_json::json!({}))
+            .test_connectivity(&serde_json::json!({}), &[])
             .await;
 
         assert!(matches!(outcome, ConnectivityOutcome::NotTestable));

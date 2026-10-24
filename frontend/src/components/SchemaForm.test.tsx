@@ -247,6 +247,45 @@ describe("SchemaForm", () => {
     });
   });
 
+  it("x-disabled-when：条件命中时控件禁用，不命中时保持可编辑", async () => {
+    // tencent-ssl 变体的诉求：certificate_id 非空时锁定 repeatable 开关。
+    // 条件由调用方注入（Not(Empty(certificate_id))），仅叠加 disabled，
+    // 不改显隐与必填语义。
+    render(
+      <Harness
+        onFinish={vi.fn()}
+        schema={objectSchema({
+          certificate_id: { type: ["string", "null"], description: "云端证书 ID。" },
+          repeatable: {
+            type: "boolean",
+            description: "允许重复上传。",
+            "x-disabled-when": { Not: { Empty: "certificate_id" } },
+          },
+        })}
+      />,
+    );
+
+    // 初始 certificate_id 为空：开关可编辑，点开后为 true。
+    const repeatable = screen.getByLabelText("repeatable");
+    expect(repeatable.hasAttribute("disabled")).toBe(false);
+    fireEvent.click(repeatable);
+    expect(screen.getByLabelText("repeatable").getAttribute("aria-checked")).toBe("true");
+
+    // 填入证书 ID：开关被禁用（用户无法改回），值保持联动前的状态。
+    fireEvent.change(screen.getByLabelText("certificate_id"), {
+      target: { value: "CERTA" },
+    });
+    await waitFor(() => {
+      expect(screen.getByLabelText("repeatable").hasAttribute("disabled")).toBe(true);
+    });
+
+    // 清空证书 ID：开关恢复可编辑。
+    fireEvent.change(screen.getByLabelText("certificate_id"), { target: { value: "" } });
+    await waitFor(() => {
+      expect(screen.getByLabelText("repeatable").hasAttribute("disabled")).toBe(false);
+    });
+  });
+
   it("x-required-when MinItems：数组字段达标时转必填，不达标时可留空", async () => {
     // cert.apply 的诉求：domains 配置多个域名时 dns_zone 必填（多域名下
     // 静默推导 zone 容易踩错），单域名时保持可选。条件由后端 schema 以

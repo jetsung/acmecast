@@ -622,7 +622,10 @@ mod tests {
         assert_eq!(input["fullchain_path"], "/data/certs/ssl/fullchain.cer");
         assert_eq!(input["ca_path"], "/data/certs/ssl/ca.cer");
         assert_eq!(input["key_path"], "/data/certs/ssl/key");
-        assert_eq!(input["reload_command"], "nginx -s reload", "非路径字段不受影响");
+        assert_eq!(
+            input["reload_command"], "nginx -s reload",
+            "非路径字段不受影响"
+        );
     }
 
     #[test]
@@ -635,7 +638,10 @@ mod tests {
 
         normalize_local_config(&mut input, Some("_wildcard.example.com"));
 
-        assert_eq!(input["fullchain_path"], "/tmp/t1/_wildcard.example.com.fullchain.cer");
+        assert_eq!(
+            input["fullchain_path"],
+            "/tmp/t1/_wildcard.example.com.fullchain.cer"
+        );
         assert_eq!(input["ca_path"], "/tmp/t1/_wildcard.example.com.ca.cer");
         assert_eq!(input["key_path"], "/tmp/t1/_wildcard.example.com.key");
     }

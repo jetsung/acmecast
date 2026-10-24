@@ -27,7 +27,9 @@ use sea_orm::{Database, DatabaseConnection};
 use support::*;
 
 /// 装配一个带可选 Redis 连接的测试路由。
-async fn app_with_redis(redis_manager: Option<Arc<redis::aio::ConnectionManager>>) -> (Router, DatabaseConnection) {
+async fn app_with_redis(
+    redis_manager: Option<Arc<redis::aio::ConnectionManager>>,
+) -> (Router, DatabaseConnection) {
     let db = Database::connect("sqlite::memory:")
         .await
         .expect("应能连接内存数据库");
@@ -186,7 +188,10 @@ async fn cache_hit_miss_and_backfill_with_live_redis() {
 
     // 验证缓存已被回填
     let cached_meta = cache.get_meta(history_id).await;
-    assert!(cached_meta.is_some(), "Running 状态的 get_history 应当回填缓存");
+    assert!(
+        cached_meta.is_some(),
+        "Running 状态的 get_history 应当回填缓存"
+    );
     let cached_meta = cached_meta.unwrap();
     assert_eq!(cached_meta.id, history_id);
     assert_eq!(cached_meta.status, RunStatus::Running);
@@ -263,7 +268,10 @@ async fn cache_hit_miss_and_backfill_with_live_redis() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = json(resp).await;
     let items = body["data"]["items"].as_array().expect("应为数组");
-    let item = items.iter().find(|i| i["id"] == history_id).expect("应找到该历史");
+    let item = items
+        .iter()
+        .find(|i| i["id"] == history_id)
+        .expect("应找到该历史");
     assert_eq!(item["error_message"], "cache updated message");
 
     // 清理测试缓存键

@@ -13,8 +13,7 @@ pub mod resolvers;
 
 pub use authoritative::{AuthoritativeResolver, Authority, HickoryAuthority};
 pub use challenge::{
-    ChallengeKind, challenge_record_name, challenge_write_name, ensure_kind_covers,
-    with_txt_record,
+    ChallengeKind, challenge_record_name, challenge_write_name, ensure_kind_covers, with_txt_record,
 };
 pub use error::{Error, Result};
 pub use http::{
@@ -23,8 +22,8 @@ pub use http::{
 };
 pub use http01::Http01Answer;
 pub use propagation::{
-    prioritize_for_provider, DnsResolver, DohResolver, PropagationPolicy, default_resolvers,
-    doh_resolvers_for_provider, resolvers_for_provider, resolvers_for_zone, wait_until_visible,
+    DnsResolver, DohResolver, PropagationPolicy, default_resolvers, doh_resolvers_for_provider,
+    prioritize_for_provider, resolvers_for_provider, resolvers_for_zone, wait_until_visible,
     wait_until_visible_phased,
 };
 pub use provider::{DnsProvider, TxtRecord, parse_credentials};

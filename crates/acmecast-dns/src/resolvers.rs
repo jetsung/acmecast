@@ -182,9 +182,9 @@ pub const PROXY_URL_ENV: &str = "ACMECAST_PROXY_URL";
 /// 不会读到这里的配置，未配 `proxy_url` 的凭据始终保持直连。
 pub fn doh_transport_from(proxy_url: Option<&str>) -> crate::Result<Arc<dyn HttpTransport>> {
     let Some(url) = proxy_url.map(str::trim).filter(|v| !v.is_empty()) else {
-        return Ok(Arc::new(
-            crate::ReqwestTransport::new(acmecast_core::NETWORK_TIMEOUT)?,
-        ));
+        return Ok(Arc::new(crate::ReqwestTransport::new(
+            acmecast_core::NETWORK_TIMEOUT,
+        )?));
     };
     crate::validate_proxy_url(url)?;
     Ok(Arc::new(crate::ReqwestTransport::with_proxy(
@@ -219,7 +219,11 @@ mod tests {
 
     #[test]
     fn a_doh_transport_with_a_valid_proxy_is_built() {
-        for url in ["socks5://127.0.0.1:7890", "http://proxy.local:8080", "https://p.example.com"] {
+        for url in [
+            "socks5://127.0.0.1:7890",
+            "http://proxy.local:8080",
+            "https://p.example.com",
+        ] {
             doh_transport_from(Some(url))
                 .unwrap_or_else(|e| panic!("{url} 应能构建 DoH 传输层: {e}"));
         }
@@ -229,7 +233,10 @@ mod tests {
     fn an_invalid_doh_proxy_is_rejected_with_scheme_hint() {
         for url in ["ftp://127.0.0.1:21", "not-a-url"] {
             let err = doh_transport_from(Some(url)).expect_err("非法代理应被拒绝");
-            assert!(err.to_string().contains("socks5"), "应提示支持的 scheme: {err}");
+            assert!(
+                err.to_string().contains("socks5"),
+                "应提示支持的 scheme: {err}"
+            );
         }
     }
 

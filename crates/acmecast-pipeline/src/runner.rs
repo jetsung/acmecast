@@ -227,10 +227,7 @@ impl<'a> PipelineRunner<'a> {
             if let Some(step) = ordered.iter().copied().find(|step| step.enabled) {
                 return Ok(self
                     .abort(
-                        RunState {
-                            steps,
-                            artifacts,
-                        },
+                        RunState { steps, artifacts },
                         scope,
                         step,
                         CANCEL_REASON.to_owned(),
@@ -404,7 +401,8 @@ impl<'a> PipelineRunner<'a> {
                         pipeline_id: pipeline.id,
                         run_id,
                         log: log_record,
-                    }).await;
+                    })
+                    .await;
                 }
                 (result, ctx.take_logs())
             };
@@ -422,7 +420,8 @@ impl<'a> PipelineRunner<'a> {
                                 created_at: extra.created_at,
                                 output: extra.output.clone(),
                             },
-                        }).await;
+                        })
+                        .await;
                     }
                     artifacts.merge(step.order_index, &step.type_id, output.artifacts.clone());
                     logs.extend(output.logs);

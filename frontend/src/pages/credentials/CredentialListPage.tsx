@@ -157,6 +157,20 @@ export function CredentialListPage() {
       },
     },
     {
+      title: "代理",
+      dataIndex: "proxy_mode",
+      width: 120,
+      render: (value: string) => {
+        // 代理模式中文标签（列表即可辨认出网代理方式，不必逐条打开编辑弹窗）；
+        // 与「可用权限」列一致用纯文本左对齐，不用 Tag。
+        const label = value === "inherit" ? "继承全局" : value === "custom" ? "自定义" : value === "direct" ? "直连" : null;
+        if (label === null) {
+          return <Typography.Text type="secondary">—</Typography.Text>;
+        }
+        return <Typography.Text>{label}</Typography.Text>;
+      },
+    },
+    {
       title: "备注",
       dataIndex: "remark",
       render: (value: string | null | undefined) =>

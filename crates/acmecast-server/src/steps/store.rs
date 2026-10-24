@@ -120,12 +120,9 @@ impl PipelineStep for CertStoreStep {
             if old.fingerprint != fingerprint {
                 // 防御性守卫：查询到的旧记录若已位于归档/吊销目录下，说明它不是
                 // 当前活跃证书（正常流程不应触发），跳过归档避免错误移动文件。
-                let stale = ["certs/archived/", "certs/revoked/"]
-                    .iter()
-                    .any(|prefix| {
-                        old.cert_pem_path.starts_with(prefix)
-                            || old.key_pem_path.starts_with(prefix)
-                    });
+                let stale = ["certs/archived/", "certs/revoked/"].iter().any(|prefix| {
+                    old.cert_pem_path.starts_with(prefix) || old.key_pem_path.starts_with(prefix)
+                });
                 if stale {
                     tracing::warn!(
                         old_fingerprint = %old.fingerprint,
@@ -136,44 +133,45 @@ impl PipelineStep for CertStoreStep {
                 } else {
                     should_archive = true;
                     old_fingerprint = Some(old.fingerprint.clone());
-                match store
-                    .archive_replaced_certificate(
-                        &old.cert_pem_path,
-                        &old.key_pem_path,
-                        &old.fingerprint,
-                    )
-                    .await
-                {
-                    Ok(Some(archived_paths)) => {
-                        // 归档成功需同步更新旧记录路径与 archived_at，否则旧记录仍指向活跃目录。
-                        if let Err(error) =
-                            repository.set_archived_paths(old.id, &archived_paths, chrono::Utc::now()).await
-                        {
+                    match store
+                        .archive_replaced_certificate(
+                            &old.cert_pem_path,
+                            &old.key_pem_path,
+                            &old.fingerprint,
+                        )
+                        .await
+                    {
+                        Ok(Some(archived_paths)) => {
+                            // 归档成功需同步更新旧记录路径与 archived_at，否则旧记录仍指向活跃目录。
+                            if let Err(error) = repository
+                                .set_archived_paths(old.id, &archived_paths, chrono::Utc::now())
+                                .await
+                            {
+                                tracing::warn!(
+                                    old_fingerprint = %old.fingerprint,
+                                    %error,
+                                    "旧证书归档后更新库路径失败，文件已归档但库路径未同步"
+                                );
+                            }
+                            ctx.log_info(format!(
+                                "旧证书已归档到 archived/{}（主域名 {}）",
+                                old.fingerprint, primary_domain
+                            ));
+                        }
+                        Ok(None) => {
+                            tracing::warn!(
+                                old_fingerprint = %old.fingerprint,
+                                "旧证书材料缺失，跳过归档，直接写入新证书"
+                            );
+                        }
+                        Err(error) => {
                             tracing::warn!(
                                 old_fingerprint = %old.fingerprint,
                                 %error,
-                                "旧证书归档后更新库路径失败，文件已归档但库路径未同步"
+                                "旧证书归档失败，仍继续写入新证书"
                             );
                         }
-                        ctx.log_info(format!(
-                            "旧证书已归档到 archived/{}（主域名 {}）",
-                            old.fingerprint, primary_domain
-                        ));
                     }
-                    Ok(None) => {
-                        tracing::warn!(
-                            old_fingerprint = %old.fingerprint,
-                            "旧证书材料缺失，跳过归档，直接写入新证书"
-                        );
-                    }
-                    Err(error) => {
-                        tracing::warn!(
-                            old_fingerprint = %old.fingerprint,
-                            %error,
-                            "旧证书归档失败，仍继续写入新证书"
-                        );
-                    }
-                }
                 }
             }
         }

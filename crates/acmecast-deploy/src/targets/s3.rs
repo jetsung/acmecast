@@ -8,8 +8,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::error::{Error, Result};
-use acmecast_cert::{ca_pem_of, parse_pem_leaf};
 use crate::target::{CertMaterials, DeployMode, DeployOutcome, DeploymentTarget, parse_input};
+use acmecast_cert::{ca_pem_of, parse_pem_leaf};
 
 /// S3 凭据可接受的类型。
 const ACCEPTED_CREDENTIAL_TYPES: [&str; 1] = ["deploy.s3"];
@@ -54,7 +54,12 @@ pub struct S3Input {
 }
 
 fn normalize_prefix(raw: &Option<String>) -> String {
-    let p = raw.as_deref().unwrap_or("").trim().trim_matches('/').to_owned();
+    let p = raw
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .trim_matches('/')
+        .to_owned();
     if p.is_empty() {
         String::new()
     } else {
@@ -160,7 +165,11 @@ fn domain_file_prefix(domain: &str) -> String {
             _ => '_',
         })
         .collect();
-    if cleaned.is_empty() { "certificate".to_owned() } else { cleaned }
+    if cleaned.is_empty() {
+        "certificate".to_owned()
+    } else {
+        cleaned
+    }
 }
 
 #[async_trait]
@@ -234,19 +243,41 @@ impl DeploymentTarget for S3Target {
         if !ACCEPTED_CREDENTIAL_TYPES.contains(&resolved.type_id.as_str()) {
             return Err(Error::invalid_input(
                 "credential_id",
-                format!("凭据 `{}`（{}）不是 deploy.s3 类型", input.credential_id, resolved.type_id),
+                format!(
+                    "凭据 `{}`（{}）不是 deploy.s3 类型",
+                    input.credential_id, resolved.type_id
+                ),
             ));
         }
         let fields: serde_json::Value = resolved.fields.clone();
-        let domain = primary_domain_of(materials)
-            .unwrap_or_else(|_| "certificate".to_owned());
-        let resolved_prefix = input.prefix.clone().or_else(|| fields.get("prefix").and_then(|v| v.as_str()).map(str::to_owned));
+        let domain = primary_domain_of(materials).unwrap_or_else(|_| "certificate".to_owned());
+        let resolved_prefix = input.prefix.clone().or_else(|| {
+            fields
+                .get("prefix")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned)
+        });
         let prefix = normalize_prefix(&resolved_prefix);
-        let endpoint = fields.get("endpoint").and_then(|v| v.as_str()).unwrap_or("").to_owned();
-        let region = fields.get("region").and_then(|v| v.as_str()).unwrap_or("").to_owned();
-        let bucket = fields.get("bucket").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+        let endpoint = fields
+            .get("endpoint")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let region = fields
+            .get("region")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let bucket = fields
+            .get("bucket")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_owned();
         if endpoint.trim().is_empty() || region.trim().is_empty() || bucket.trim().is_empty() {
-            return Err(Error::invalid_input("credential_id", "凭据缺少 endpoint/region/bucket"));
+            return Err(Error::invalid_input(
+                "credential_id",
+                "凭据缺少 endpoint/region/bucket",
+            ));
         }
         // `prefix` 的尾部 `/` 与对象键的头部 `/` 由 `join_path` 统一归一：
         // 衔接处只有且仅有一个 `/`，协议部分（`s3://`）在下方单独组装。
@@ -254,10 +285,14 @@ impl DeploymentTarget for S3Target {
             &prefix,
             &render_filename(&input.fullchain_filename, &domain, "fullchain.cer"),
         );
-        let ca_key =
-            super::join_path(&prefix, &render_filename(&input.ca_filename, &domain, "ca.cer"));
-        let key_key =
-            super::join_path(&prefix, &render_filename(&input.key_filename, &domain, "key"));
+        let ca_key = super::join_path(
+            &prefix,
+            &render_filename(&input.ca_filename, &domain, "ca.cer"),
+        );
+        let key_key = super::join_path(
+            &prefix,
+            &render_filename(&input.key_filename, &domain, "key"),
+        );
         let paths = vec![
             format!("s3://{bucket}/{fullchain_key}"),
             format!("s3://{bucket}/{ca_key}"),
@@ -266,10 +301,21 @@ impl DeploymentTarget for S3Target {
         if mode == DeployMode::SkipWrite {
             return Ok(DeployOutcome::skipped(paths));
         }
-        let ak = fields.get("access_key").and_then(|v| v.as_str()).unwrap_or("").to_owned();
-        let sk = fields.get("secret_key").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+        let ak = fields
+            .get("access_key")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let sk = fields
+            .get("secret_key")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_owned();
         if ak.is_empty() || sk.is_empty() {
-            return Err(Error::invalid_input("credential_id", "凭据缺少 access_key/secret_key"));
+            return Err(Error::invalid_input(
+                "credential_id",
+                "凭据缺少 access_key/secret_key",
+            ));
         }
 
         // 真实 S3 PUT，失败时由上层标记 pipeline 失败。单张链没有中间链可写：
@@ -284,24 +330,55 @@ impl DeploymentTarget for S3Target {
 }
 
 fn primary_domain_of(materials: &CertMaterials) -> Result<String> {
-    let leaf = parse_pem_leaf(&materials.chain_pem).map_err(|e| Error::invalid_input("materials", format!("证书链解析失败: {e}")))?;
-    leaf.primary_domain().map(str::to_owned).ok_or_else(|| Error::invalid_input("materials", "证书没有主域名"))
+    let leaf = parse_pem_leaf(&materials.chain_pem)
+        .map_err(|e| Error::invalid_input("materials", format!("证书链解析失败: {e}")))?;
+    leaf.primary_domain()
+        .map(str::to_owned)
+        .ok_or_else(|| Error::invalid_input("materials", "证书没有主域名"))
 }
 
-async fn s3_put(fields: &serde_json::Value, bucket: &str, key: &str, content: &str) -> std::result::Result<(), String> {
+async fn s3_put(
+    fields: &serde_json::Value,
+    bucket: &str,
+    key: &str,
+    content: &str,
+) -> std::result::Result<(), String> {
     use aws_config::Region;
     use aws_credential_types::Credentials;
-    use aws_sdk_s3::config::Builder as S3ConfigBuilder;
     use aws_sdk_s3::Client;
+    use aws_sdk_s3::config::Builder as S3ConfigBuilder;
     use aws_smithy_types::body::SdkBody;
-    let endpoint = fields.get("endpoint").and_then(|v| v.as_str()).unwrap_or("").trim().to_owned();
-    let region = fields.get("region").and_then(|v| v.as_str()).unwrap_or("auto").to_owned();
-    let ak = fields.get("access_key").and_then(|v| v.as_str()).unwrap_or("").to_owned();
-    let sk = fields.get("secret_key").and_then(|v| v.as_str()).unwrap_or("").to_owned();
-    let session = fields.get("session_token").and_then(|v| v.as_str()).map(str::to_owned);
+    let endpoint = fields
+        .get("endpoint")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_owned();
+    let region = fields
+        .get("region")
+        .and_then(|v| v.as_str())
+        .unwrap_or("auto")
+        .to_owned();
+    let ak = fields
+        .get("access_key")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_owned();
+    let sk = fields
+        .get("secret_key")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_owned();
+    let session = fields
+        .get("session_token")
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
     let region = Region::new(region);
     let creds = Credentials::new(ak, sk, session, None, "acmecast-deploy");
-    let mut builder = S3ConfigBuilder::new().region(region).credentials_provider(creds).behavior_version_latest();
+    let mut builder = S3ConfigBuilder::new()
+        .region(region)
+        .credentials_provider(creds)
+        .behavior_version_latest();
     if !endpoint.is_empty() {
         builder = builder.endpoint_url(endpoint).force_path_style(true);
     }
@@ -489,4 +566,3 @@ mod tests {
         assert!(rendered.contains("以 `/` 结尾视为目录"), "{rendered}");
     }
 }
-

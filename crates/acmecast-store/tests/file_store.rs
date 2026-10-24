@@ -202,8 +202,16 @@ async fn cert_file_names_follow_the_primary_domain() {
     ] {
         let paths = FileStore::cert_paths("fp-1", primary_domain);
         // 新布局 4 文件
-        assert_eq!(paths.cert, format!("certs/ssl/{expected_prefix}.cer"), "域名 {primary_domain} 的叶子证书文件名");
-        assert_eq!(paths.key, format!("certs/ssl/{expected_prefix}.key"), "域名 {primary_domain} 的私钥文件名（新布局）");
+        assert_eq!(
+            paths.cert,
+            format!("certs/ssl/{expected_prefix}.cer"),
+            "域名 {primary_domain} 的叶子证书文件名"
+        );
+        assert_eq!(
+            paths.key,
+            format!("certs/ssl/{expected_prefix}.key"),
+            "域名 {primary_domain} 的私钥文件名（新布局）"
+        );
         // 兼容旧布局仍存在
         assert_eq!(
             paths.cert_pem,
@@ -712,10 +720,16 @@ async fn fallback_reads_the_legacy_layout_when_the_recorded_path_is_missing() {
         "fp-legacy",
         &["key", "key.pem"],
     );
-    let (chain_pem, chain_hit) = store.read_with_fallback(&chain).await.expect("旧布局链应命中");
+    let (chain_pem, chain_hit) = store
+        .read_with_fallback(&chain)
+        .await
+        .expect("旧布局链应命中");
     assert_eq!(chain_pem, "旧证书链");
     assert_eq!(chain_hit, "certs/ssl/_.example.com.cert.pem");
-    let (key_pem, key_hit) = store.read_with_fallback(&key).await.expect("旧布局私钥应命中");
+    let (key_pem, key_hit) = store
+        .read_with_fallback(&key)
+        .await
+        .expect("旧布局私钥应命中");
     assert_eq!(key_pem, "旧私钥");
     assert_eq!(key_hit, "certs/ssl/_.example.com.key.pem");
 }
@@ -739,9 +753,15 @@ async fn fallback_reads_the_archived_copy_when_active_paths_are_missing() {
         "fp-archived",
         &["fullchain.cer"],
     );
-    let (chain_pem, chain_hit) = store.read_with_fallback(&chain).await.expect("归档副本应命中");
+    let (chain_pem, chain_hit) = store
+        .read_with_fallback(&chain)
+        .await
+        .expect("归档副本应命中");
     assert_eq!(chain_pem, "归档证书链");
-    assert_eq!(chain_hit, "certs/archived/fp-archived/sub.example.com.fullchain.cer");
+    assert_eq!(
+        chain_hit,
+        "certs/archived/fp-archived/sub.example.com.fullchain.cer"
+    );
 }
 
 #[tokio::test]

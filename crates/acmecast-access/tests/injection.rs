@@ -70,6 +70,7 @@ async fn insert_credential(
     credential::ActiveModel {
         name: Set("测试凭据".to_owned()),
         type_id: Set(type_id.to_owned()),
+        proxy_mode: Set("direct".to_owned()),
         encrypted_fields: Set(sealed),
         remark: Set(String::new()),
         created_at: Set(now),
@@ -137,6 +138,7 @@ async fn resolve_carries_the_remark_field() {
     let with_remark = credential::ActiveModel {
         name: Set("生产 DNS".to_owned()),
         type_id: Set("acme.account".to_owned()),
+        proxy_mode: Set("direct".to_owned()),
         encrypted_fields: Set(sealed),
         remark: Set("生产环境主密钥".to_owned()),
         created_at: Set(now),
@@ -151,11 +153,10 @@ async fn resolve_carries_the_remark_field() {
     let empty_remark = credential::ActiveModel {
         name: Set("测试 DNS".to_owned()),
         type_id: Set("acme.account".to_owned()),
-        encrypted_fields: Set(
-            cipher
-                .encrypt_string(&serde_json::to_value(&account).unwrap().to_string())
-                .unwrap(),
-        ),
+        proxy_mode: Set("direct".to_owned()),
+        encrypted_fields: Set(cipher
+            .encrypt_string(&serde_json::to_value(&account).unwrap().to_string())
+            .unwrap()),
         remark: Set(String::new()),
         created_at: Set(now),
         updated_at: Set(now),

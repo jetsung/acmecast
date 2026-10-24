@@ -134,6 +134,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    [path: `/api/credentials/${number}/tencent-ssl-certificates`]: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 同步腾讯云 SSL 证书列表端点的文档占位函数。 */
+        get: operations["list_tencent_ssl_certificates"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     [path: `/api/credentials/${number}/test`]: {
         parameters: {
             query?: never;
@@ -552,6 +569,8 @@ export interface components {
                 id: number;
                 /** @description 展示名称。 */
                 name: string;
+                /** @description 出网代理模式：`direct` / `inherit` / `custom`（明文冗余列）。 */
+                proxy_mode: string;
                 /** @description 人类可读的备注，可为空。 */
                 remark: string;
                 /** @description 凭据类型。 */
@@ -565,7 +584,10 @@ export interface components {
         };
         /** @description 统一成功响应。 */
         ApiResponse_CredentialResponse: {
-            /** @description 凭据列表项响应。不返回加密字段。 */
+            /**
+             * @description 凭据列表项响应。不返回加密字段值；`proxy_mode` 是从加密字段提取的
+             *     非敏感枚举冗余列（与 `capabilities` 同口径），不是加密字段值。
+             */
             data: {
                 /** @description 能力标记（`dns` / `deploy`）；非受控类型为空数组。 */
                 capabilities: string[];
@@ -581,6 +603,8 @@ export interface components {
                 id: number;
                 /** @description 展示名称。 */
                 name: string;
+                /** @description 出网代理模式：`direct` / `inherit` / `custom`。 */
+                proxy_mode: string;
                 /** @description 人类可读的备注，可为空。 */
                 remark: string;
                 /** @description 凭据类型。 */
@@ -745,6 +769,8 @@ export interface components {
                     id: number;
                     /** @description 展示名称。 */
                     name: string;
+                    /** @description 出网代理模式：`direct` / `inherit` / `custom`。 */
+                    proxy_mode: string;
                     /** @description 人类可读的备注，可为空。 */
                     remark: string;
                     /** @description 凭据类型。 */
@@ -1082,6 +1108,15 @@ export interface components {
                 updated_at: string;
             }[];
         };
+        /** @description 统一成功响应。 */
+        ApiResponse_Vec_TencentSslCertificateOption: {
+            data: {
+                /** @description 显示文本：无别名 `证书ID (域名)`，有别名 `证书ID (域名 - 别名)`。 */
+                label: string;
+                /** @description 云端证书 ID，选中后作为部署输入的 `certificate_id` 原样提交。 */
+                value: string;
+            }[];
+        };
         /** @description 手动归档结果。 */
         ArchiveResponse: {
             /** @description 是否本次调用完成了文件移动（`false` 表示已在归档/吊销目录或源缺失的幂等返回）。 */
@@ -1236,6 +1271,8 @@ export interface components {
             id: number;
             /** @description 展示名称。 */
             name: string;
+            /** @description 出网代理模式：`direct` / `inherit` / `custom`（明文冗余列）。 */
+            proxy_mode: string;
             /** @description 人类可读的备注，可为空。 */
             remark: string;
             /** @description 凭据类型。 */
@@ -1262,7 +1299,10 @@ export interface components {
             /** @description 已注册的凭据类型。 */
             type_id: string;
         };
-        /** @description 凭据列表项响应。不返回加密字段。 */
+        /**
+         * @description 凭据列表项响应。不返回加密字段值；`proxy_mode` 是从加密字段提取的
+         *     非敏感枚举冗余列（与 `capabilities` 同口径），不是加密字段值。
+         */
         CredentialResponse: {
             /** @description 能力标记（`dns` / `deploy`）；非受控类型为空数组。 */
             capabilities: string[];
@@ -1278,6 +1318,8 @@ export interface components {
             id: number;
             /** @description 展示名称。 */
             name: string;
+            /** @description 出网代理模式：`direct` / `inherit` / `custom`。 */
+            proxy_mode: string;
             /** @description 人类可读的备注，可为空。 */
             remark: string;
             /** @description 凭据类型。 */
@@ -1470,6 +1512,8 @@ export interface components {
                 id: number;
                 /** @description 展示名称。 */
                 name: string;
+                /** @description 出网代理模式：`direct` / `inherit` / `custom`。 */
+                proxy_mode: string;
                 /** @description 人类可读的备注，可为空。 */
                 remark: string;
                 /** @description 凭据类型。 */
@@ -1818,6 +1862,13 @@ export interface components {
             schema?: unknown;
             /** @description 类型标识。 */
             type_id: string;
+        };
+        /** @description 腾讯云 SSL 证书下拉项（同步端点的响应元素）。 */
+        TencentSslCertificateOption: {
+            /** @description 显示文本：无别名 `证书ID (域名)`，有别名 `证书ID (域名 - 别名)`。 */
+            label: string;
+            /** @description 云端证书 ID，选中后作为部署输入的 `certificate_id` 原样提交。 */
+            value: string;
         };
         /** @description 触发记录查询参数。 */
         TriggerLogQueryParams: {
@@ -2288,6 +2339,55 @@ export interface operations {
                 content?: never;
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    list_tencent_ssl_certificates: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description 腾讯云凭据标识 */
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 云端服务器证书选项（value=证书 ID，label=显示文本） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_Vec_TencentSslCertificateOption"];
+                };
+            };
+            /** @description 凭据不是 cloud.tencent 类型或缺少 deploy 能力 */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+            /** @description 云端调用失败 */
+            502: {
                 headers: {
                     [name: string]: unknown;
                 };

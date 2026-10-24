@@ -147,14 +147,22 @@ impl AcmeAccountFields {
         }
 
         // credentials 若已填，需为可用形态；但失败不应阻塞编辑，申请阶段会再次校验
-        if let Some(raw) = self.credentials.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-            if serde_json::from_str::<serde_json::Value>(raw).is_err() && AccountCredentials::from_json(raw).is_err() {
+        if let Some(raw) = self
+            .credentials
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            if serde_json::from_str::<serde_json::Value>(raw).is_err()
+                && AccountCredentials::from_json(raw).is_err()
+            {
                 // 视为未注册，允许保存，申请时再探测
             }
         }
         // 代理字段与其他凭据类型同一口径：custom 必须给出合法 proxy_url。
         acmecast_core::validate_proxy_field(
-            &serde_json::to_value(self).map_err(|e| acmecast_core::Error::Internal(e.to_string()))?,
+            &serde_json::to_value(self)
+                .map_err(|e| acmecast_core::Error::Internal(e.to_string()))?,
         )
     }
 
@@ -253,9 +261,10 @@ impl AcmeAccountType {
         fields: &AcmeAccountFields,
         global_proxy_url: Option<&str>,
     ) -> acmecast_acme::ProxyConfig {
-        let Some(url) =
-            acmecast_core::effective_proxy_url(&serde_json::to_value(fields).unwrap_or_default(), global_proxy_url)
-        else {
+        let Some(url) = acmecast_core::effective_proxy_url(
+            &serde_json::to_value(fields).unwrap_or_default(),
+            global_proxy_url,
+        ) else {
             return acmecast_acme::ProxyConfig::default();
         };
         if acmecast_core::validate_proxy_url(&url).is_err() {
@@ -307,7 +316,15 @@ impl CredentialType for AcmeAccountType {
         // 渲染顺序——两个 EAB 字段相邻且 kid 在前，都是半宽标量，流式排成一行。
         schema.schema.extensions.insert(
             "x-field-order".to_owned(),
-            serde_json::json!(["ca", "directory_url", "eab_kid", "eab_hmac_key", "credentials", "proxy_mode", "proxy_url"]),
+            serde_json::json!([
+                "ca",
+                "directory_url",
+                "eab_kid",
+                "eab_hmac_key",
+                "credentials",
+                "proxy_mode",
+                "proxy_url"
+            ]),
         );
 
         // schemars 只认类型不认语义：`ca: String` 出来是自由文本框。
@@ -338,9 +355,13 @@ impl CredentialType for AcmeAccountType {
             labels.insert("google-test", "Google Trust Services (测试)");
             labels.insert("freessl", "FreeSSL");
             labels.insert("custom", "自定义");
-            ca.extensions.insert("x-enum-labels".to_owned(), serde_json::to_value(labels).unwrap());
+            ca.extensions.insert(
+                "x-enum-labels".to_owned(),
+                serde_json::to_value(labels).unwrap(),
+            );
             // 半宽 + 行尾空占位：CA 下拉半列，右侧 help-links 在同一行右侧
-            ca.extensions.insert("x-end-row".to_owned(), serde_json::Value::Bool(true));
+            ca.extensions
+                .insert("x-end-row".to_owned(), serde_json::Value::Bool(true));
         }
         if let Some(schemars::schema::Schema::Object(url)) =
             object.properties.get_mut("directory_url")
@@ -374,7 +395,11 @@ impl CredentialType for AcmeAccountType {
         parsed.check()
     }
 
-    async fn test_connectivity(&self, fields: &serde_json::Value) -> ConnectivityOutcome {
+    async fn test_connectivity(
+        &self,
+        fields: &serde_json::Value,
+        _capabilities: &[String],
+    ) -> ConnectivityOutcome {
         let parsed = match serde_json::from_value::<AcmeAccountFields>(fields.clone()) {
             Ok(fields) => fields,
             Err(e) => {
@@ -571,8 +596,13 @@ mod tests {
             ..letsencrypt_fields()
         };
 
-        fields.check().expect("非法的 credentials 应视为未注册而非校验失败");
-        assert!(fields.credentials().is_err(), "credentials() 仍应报错以便调用方感知形态问题");
+        fields
+            .check()
+            .expect("非法的 credentials 应视为未注册而非校验失败");
+        assert!(
+            fields.credentials().is_err(),
+            "credentials() 仍应报错以便调用方感知形态问题"
+        );
     }
 
     #[test]
@@ -722,13 +752,15 @@ mod tests {
             ca.extensions
         );
         assert!(
-            !ca.extensions.contains_key("x-full-width") && !ca.extensions.contains_key("x-multiline"),
+            !ca.extensions.contains_key("x-full-width")
+                && !ca.extensions.contains_key("x-multiline"),
             "ca 不应被标成整行: {:?}",
             ca.extensions
         );
 
         // credentials 是含私钥的 JSON：渲染成多行文本域。
-        let schemars::schema::Schema::Object(credentials) = &object.properties["credentials"] else {
+        let schemars::schema::Schema::Object(credentials) = &object.properties["credentials"]
+        else {
             panic!("credentials 应是对象型 schema");
         };
         assert_eq!(
@@ -773,7 +805,7 @@ mod tests {
         };
         let json = serde_json::to_value(&fields).unwrap();
 
-        let outcome = AcmeAccountType::new().test_connectivity(&json).await;
+        let outcome = AcmeAccountType::new().test_connectivity(&json, &[]).await;
 
         assert!(!outcome.is_ok());
         let reason = outcome.reason().expect("不可用时应给出原因");
@@ -868,10 +900,15 @@ mod tests {
             "proxy_mode 应注入枚举候选: {rendered}"
         );
         for label in ["直连", "继承全局", "自定义"] {
-            assert!(rendered.contains(label), "应含中文展示名 {label}: {rendered}");
+            assert!(
+                rendered.contains(label),
+                "应含中文展示名 {label}: {rendered}"
+            );
         }
         assert!(
-            rendered.contains(r#""x-visible-when":{"Equals":{"field":"proxy_mode","values":["custom"]}}"#),
+            rendered.contains(
+                r#""x-visible-when":{"Equals":{"field":"proxy_mode","values":["custom"]}}"#
+            ),
             "proxy_url 应联动 custom: {rendered}"
         );
         let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
@@ -891,7 +928,7 @@ mod tests {
     async fn probing_a_reachable_ca_succeeds() {
         let fields = account_registered_at(acmecast_acme::testing::BASE);
         let outcome = probe_through_mock()
-            .test_connectivity(&serde_json::to_value(&fields).unwrap())
+            .test_connectivity(&serde_json::to_value(&fields).unwrap(), &[])
             .await;
 
         assert!(
@@ -905,7 +942,7 @@ mod tests {
         // mock 不认识这条路径，取 Directory 会失败。
         let fields = account_registered_at("https://ca.test/no-such-ca");
         let outcome = probe_through_mock()
-            .test_connectivity(&serde_json::to_value(&fields).unwrap())
+            .test_connectivity(&serde_json::to_value(&fields).unwrap(), &[])
             .await;
 
         assert!(!outcome.is_ok(), "取不到 Directory 时不应判定可用");
@@ -920,7 +957,7 @@ mod tests {
     #[tokio::test]
     async fn probing_malformed_fields_reports_why() {
         let outcome = AcmeAccountType::new()
-            .test_connectivity(&serde_json::json!({ "ca": 42 }))
+            .test_connectivity(&serde_json::json!({ "ca": 42 }), &[])
             .await;
 
         assert!(!outcome.is_ok());

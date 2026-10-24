@@ -32,9 +32,9 @@ test.beforeEach(async ({ page }) => {
       json: {
         data: {
           items: [
-            { id: 7, name: "le-prod", type_id: "acme.account" },
-            { id: 8, name: "some-dns", type_id: "cloud.cloudflare" },
-            { id: 9, name: "ali-dns", type_id: "cloud.aliyun" },
+            { id: 7, name: "le-prod", type_id: "acme.account", proxy_mode: "direct" },
+            { id: 8, name: "some-dns", type_id: "cloud.cloudflare", proxy_mode: "direct" },
+            { id: 9, name: "ali-dns", type_id: "cloud.aliyun", proxy_mode: "direct" },
           ],
           total: 3,
           page: 1,

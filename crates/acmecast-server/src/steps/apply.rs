@@ -338,9 +338,16 @@ impl PipelineStep for CertApplyStep {
             schema.schema.extensions.insert(
                 "x-field-order".to_owned(),
                 serde_json::json!([
-                    "account_credential_id", "challenge", "contacts",
-                    "dns_credential_id", "dns_alias", "domains", "dns_zone",
-                    "key_algorithm", "wait_propagation", "insecure_skip_verify",
+                    "account_credential_id",
+                    "challenge",
+                    "contacts",
+                    "dns_credential_id",
+                    "dns_alias",
+                    "domains",
+                    "dns_zone",
+                    "key_algorithm",
+                    "wait_propagation",
+                    "insecure_skip_verify",
                     "renew_before_days",
                 ]),
             );
@@ -351,7 +358,9 @@ impl PipelineStep for CertApplyStep {
             .as_mut()
             .and_then(|object| object.properties.get_mut("domains"))
         {
-            domains.extensions.insert("x-half-width".to_owned(), serde_json::json!(true));
+            domains
+                .extensions
+                .insert("x-half-width".to_owned(), serde_json::json!(true));
         }
         // `domains` 配置多个域名时 `dns_zone` 必填：条件由前端 SchemaForm
         // 求值（与 ACME 账号凭据 `directory_url` 的 Equals 同通道）。`dns_zone`
@@ -397,8 +406,9 @@ impl PipelineStep for CertApplyStep {
 
     fn validate_input(&self, input: &serde_json::Value) -> Result<()> {
         if let Some(schema) = self.input_schema() {
-            let schema = serde_json::to_value(schema)
-                .map_err(|e| acmecast_pipeline::Error::Core(acmecast_core::Error::Serialization(e.to_string())))?;
+            let schema = serde_json::to_value(schema).map_err(|e| {
+                acmecast_pipeline::Error::Core(acmecast_core::Error::Serialization(e.to_string()))
+            })?;
             acmecast_pipeline::input::validate(&schema, input)?;
         }
         if let Some(obj) = input.as_object() {
@@ -409,10 +419,16 @@ impl PipelineStep for CertApplyStep {
                         if let Some(base) = s.strip_prefix("*.") {
                             // 一级域名的通配 *.xx 是非法的（xx 无点，顶级域无泛解析）
                             let base = base.trim();
-                            if base.is_empty() || !base.contains('.') || base.starts_with('.') || base.ends_with('.') {
+                            if base.is_empty()
+                                || !base.contains('.')
+                                || base.starts_with('.')
+                                || base.ends_with('.')
+                            {
                                 return Err(acmecast_pipeline::Error::InvalidInput {
                                     field: format!("domains[{idx}]"),
-                                    reason: "一级域名的通配 *.xx 是非法的，需至少二级域如 *.example.com".to_owned(),
+                                    reason:
+                                        "一级域名的通配 *.xx 是非法的，需至少二级域如 *.example.com"
+                                            .to_owned(),
                                 });
                             }
                         }
@@ -426,10 +442,12 @@ impl PipelineStep for CertApplyStep {
                         reason: "必须为大于等于 0 的整数".to_owned(),
                     });
                 }
-                let days = raw.as_i64().ok_or_else(|| acmecast_pipeline::Error::InvalidInput {
-                    field: "renew_before_days".to_owned(),
-                    reason: "必须为大于等于 0 的整数".to_owned(),
-                })?;
+                let days = raw
+                    .as_i64()
+                    .ok_or_else(|| acmecast_pipeline::Error::InvalidInput {
+                        field: "renew_before_days".to_owned(),
+                        reason: "必须为大于等于 0 的整数".to_owned(),
+                    })?;
                 if days < 0 {
                     return Err(acmecast_pipeline::Error::InvalidInput {
                         field: "renew_before_days".to_owned(),
@@ -473,7 +491,9 @@ impl PipelineStep for CertApplyStep {
                     })?;
                 let candidate = existing.filter(|c| c.revoked_at.is_none());
                 if let Some(cert) = candidate {
-                    if cert.not_after > chrono::Utc::now() + chrono::Duration::days(i64::from(threshold_days)) {
+                    if cert.not_after
+                        > chrono::Utc::now() + chrono::Duration::days(i64::from(threshold_days))
+                    {
                         let remaining = (cert.not_after - chrono::Utc::now()).num_days();
                         ctx.log_info(format!(
                             "跳过 cert.apply：证书距到期 {remaining} 天，阈值 {threshold_days} 天，不在续期窗口"
@@ -488,7 +508,8 @@ impl PipelineStep for CertApplyStep {
                             .await
                             .map_err(|e| domain_error("打开数据目录", e))?;
                         let domains_value = {
-                            let decoded = acmecast_store::entity::cert::decode_domains(&cert.domains);
+                            let decoded =
+                                acmecast_store::entity::cert::decode_domains(&cert.domains);
                             if decoded.is_empty() {
                                 input.domains.clone()
                             } else {
@@ -511,13 +532,11 @@ impl PipelineStep for CertApplyStep {
                         .into_iter()
                         .flatten()
                         .collect();
-                        let key_record: Vec<&str> = [
-                            Some(cert.key_pem_path.as_str()),
-                            cert.key_path.as_deref(),
-                        ]
-                        .into_iter()
-                        .flatten()
-                        .collect();
+                        let key_record: Vec<&str> =
+                            [Some(cert.key_pem_path.as_str()), cert.key_path.as_deref()]
+                                .into_iter()
+                                .flatten()
+                                .collect();
                         let chain_candidates = FileStore::cert_read_candidates(
                             &chain_record,
                             &primary_domain,
@@ -655,7 +674,10 @@ impl PipelineStep for CertApplyStep {
         }
 
         // 密钥与 CSR 在本次运行中生成；私钥不落盘、不进日志，只随产物交给入库步骤。
-        ctx.log_info(format!("生成本次申请的密钥：{}", input.key_algorithm.as_str()));
+        ctx.log_info(format!(
+            "生成本次申请的密钥：{}",
+            input.key_algorithm.as_str()
+        ));
         let (key_pem, csr_der) = generate_key_and_csr(&input.domains, input.key_algorithm)?;
         wait_for_ready(&mut order).await?;
         ctx.log_info("订单就绪（order ready），可以提交 CSR");
@@ -753,7 +775,10 @@ impl CertApplyStep {
             .credentials()
             .map_err(|e| domain_error("账号凭据字段", e))?
         {
-            ctx.log_info(format!("ACME 账号（account）：复用已有账号（KID {:?}，reused=true）", stored.kid()));
+            ctx.log_info(format!(
+                "ACME 账号（account）：复用已有账号（KID {:?}，reused=true）",
+                stored.kid()
+            ));
             return AcmeService::from_credentials(&stored, Some(&transport))
                 .await
                 .map_err(|e| {
@@ -765,11 +790,30 @@ impl CertApplyStep {
                 });
         }
 
-        ctx.log_info(format!("ACME 账号（account）：首次使用，注册新账号（directory_url={directory_url}）"));
-        let external_account = match (fields.eab_kid.as_deref().map(str::trim).filter(|s| !s.is_empty()), fields.eab_hmac_key.as_deref().map(str::trim).filter(|s| !s.is_empty())) {
-            (Some(kid), Some(hmac)) => Some(acmecast_acme::ExternalAccountBinding { kid: kid.to_owned(), hmac_key: hmac.to_owned() }),
+        ctx.log_info(format!(
+            "ACME 账号（account）：首次使用，注册新账号（directory_url={directory_url}）"
+        ));
+        let external_account = match (
+            fields
+                .eab_kid
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty()),
+            fields
+                .eab_hmac_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty()),
+        ) {
+            (Some(kid), Some(hmac)) => Some(acmecast_acme::ExternalAccountBinding {
+                kid: kid.to_owned(),
+                hmac_key: hmac.to_owned(),
+            }),
             (Some(_), None) | (None, Some(_)) => {
-                return Err(domain_error("ACME EAB", "eab_kid 与 eab_hmac_key 需成对填写"));
+                return Err(domain_error(
+                    "ACME EAB",
+                    "eab_kid 与 eab_hmac_key 需成对填写",
+                ));
             }
             _ => None,
         };
@@ -783,7 +827,9 @@ impl CertApplyStep {
             },
             external_account: external_account.as_ref(),
         };
-        let (service, credentials) = match AcmeService::establish(&established, Some(&transport)).await {
+        let (service, credentials) = match AcmeService::establish(&established, Some(&transport))
+            .await
+        {
             Ok(pair) => pair,
             Err(e) => {
                 let (kind, retryable, hint) = classify_acme_error(&e);
@@ -913,9 +959,7 @@ impl CertApplyStep {
         // 凭据代理真实触发出网（inherit 继承全局且全局非空 / custom 自带
         // URL）时明示一行；直连不新增。展示形态经 proxy_log_target 剥掉
         // userinfo——认证材料不进运行历史。
-        if let Some(proxy) =
-            credential_effective_proxy(&credentials, self.proxy_url.as_deref())
-        {
+        if let Some(proxy) = credential_effective_proxy(&credentials, self.proxy_url.as_deref()) {
             ctx.log_info(format!("proxy: via {}", proxy_log_target(&proxy)));
         }
 
@@ -1118,18 +1162,22 @@ fn dns_alias_of(input: &AcmeApplyInput) -> Result<Option<String>> {
         .map(str::to_owned);
     if let Some(alias) = &alias {
         if alias.starts_with("_acme-challenge.") {
-            return Err(acmecast_pipeline::Error::Core(acmecast_core::Error::Internal(
-                format!(
+            return Err(acmecast_pipeline::Error::Core(
+                acmecast_core::Error::Internal(format!(
                     "dns_alias `{alias}` 不应带 _acme-challenge. 前缀：challenge-alias 模式请改用 dns_zone 表达"
-                ),
-            )));
+                )),
+            ));
         }
-        if input.dns_zone.as_deref().map_or(true, |z| z.trim().is_empty()) {
-            return Err(acmecast_pipeline::Error::Core(acmecast_core::Error::Internal(
-                format!(
+        if input
+            .dns_zone
+            .as_deref()
+            .map_or(true, |z| z.trim().is_empty())
+        {
+            return Err(acmecast_pipeline::Error::Core(
+                acmecast_core::Error::Internal(format!(
                     "dns_alias `{alias}` 为 domain-alias 模式，必须显式配置 dns_zone（记录所属 zone 无法从 alias 推导）"
-                ),
-            )));
+                )),
+            ));
         }
     }
     Ok(alias)
@@ -1154,7 +1202,12 @@ fn dns_alias_of(input: &AcmeApplyInput) -> Result<Option<String>> {
 /// 写入名直接取 `dns_alias` 原值，不再拼接 `_acme-challenge.` 前缀；
 /// `zone` 仍由 `complete_challenge` 保证来自显式 `dns_zone`。留空时写入名
 /// 为 `_acme-challenge.<zone>`，既有 challenge-alias / 同 zone 行为不变。
-fn challenge_record(zone: &str, identifier: &str, dns_alias: Option<&str>, value: &str) -> TxtRecord {
+fn challenge_record(
+    zone: &str,
+    identifier: &str,
+    dns_alias: Option<&str>,
+    value: &str,
+) -> TxtRecord {
     let ca_name = challenge_record_name(identifier);
     let write_name = match dns_alias.map(str::trim).filter(|s| !s.is_empty()) {
         Some(alias) => alias.to_owned(),
@@ -1191,7 +1244,10 @@ fn zone_of(domain: &str) -> Option<String> {
     let dot_count = trimmed.matches('.').count();
     if dot_count == 1 {
         // SEPC R3：本身二级域即 zone（xx → xxx.xx 不再剥离）
-        if trimmed.starts_with('.') || trimmed.ends_with('.') || trimmed.split('.').any(|s| s.is_empty()) {
+        if trimmed.starts_with('.')
+            || trimmed.ends_with('.')
+            || trimmed.split('.').any(|s| s.is_empty())
+        {
             return None;
         }
         return Some(trimmed.to_owned());
@@ -1238,7 +1294,8 @@ async fn resolve_wildcard_zone(
     // 逐级尝试，首个不报“不存在”即命中。
     let mut last_not_found: Option<String> = None;
     for zone in &candidates {
-        let probe = acmecast_dns::TxtRecord::new(zone, format!("_acme-challenge.{zone}"), "probe", 60);
+        let probe =
+            acmecast_dns::TxtRecord::new(zone, format!("_acme-challenge.{zone}"), "probe", 60);
         match provider.find_txt(credentials, &probe).await {
             Ok(_) => return Ok(zone.clone()),
             Err(e) => {
@@ -1255,9 +1312,9 @@ async fn resolve_wildcard_zone(
                     continue;
                 }
                 // 其他错误（鉴权、限流等）直接上抛，避免静默选错父域
-                return Err(acmecast_pipeline::Error::Core(acmecast_core::Error::Internal(
-                    format!("探测 DNS zone `{zone}` 失败: {msg}"),
-                )));
+                return Err(acmecast_pipeline::Error::Core(
+                    acmecast_core::Error::Internal(format!("探测 DNS zone `{zone}` 失败: {msg}")),
+                ));
             }
         }
     }
@@ -1301,9 +1358,17 @@ fn classify_acme_error(e: &acmecast_acme::AcmeError) -> (&'static str, bool, &'s
             if *is_bad_nonce {
                 ("bad_nonce", true, "CA 随机数失效，可安全重试")
             } else if *requires_external_account {
-                ("external_account_required", false, "CA 要求提供 EAB 凭据，请配置 eab_kid 与 eab_hmac_key")
+                (
+                    "external_account_required",
+                    false,
+                    "CA 要求提供 EAB 凭据，请配置 eab_kid 与 eab_hmac_key",
+                )
             } else if kind.contains("rateLimited") {
-                ("rate_limited", true, "请求达到 CA 频率限制，请等待一段时间后重试")
+                (
+                    "rate_limited",
+                    true,
+                    "请求达到 CA 频率限制，请等待一段时间后重试",
+                )
             } else {
                 ("ca_problem", false, "CA 校验或请求被拒绝")
             }
@@ -1354,7 +1419,8 @@ fn classify_dns_error(err: &acmecast_dns::Error) -> &'static str {
 mod tests {
     use super::{
         AcmeApplyInput, CertKeyAlgorithm, DnsChallengeKind, challenge_record,
-        credential_effective_proxy, dns_alias_of, generate_key_and_csr, normalize_contacts, zone_of,
+        credential_effective_proxy, dns_alias_of, generate_key_and_csr, normalize_contacts,
+        zone_of,
     };
 
     #[test]
@@ -1428,9 +1494,18 @@ mod tests {
     fn each_algorithm_generates_matching_key_and_csr() {
         // RSA 位数由 rcgen（aws-lc-rs 后端）的 Rsa2048 档固定，不再重复断言。
         for (algorithm, expected) in [
-            (CertKeyAlgorithm::EcdsaP256, acmecast_cert::KeyAlgorithm::EcdsaP256),
-            (CertKeyAlgorithm::EcdsaP384, acmecast_cert::KeyAlgorithm::EcdsaP384),
-            (CertKeyAlgorithm::Ed25519, acmecast_cert::KeyAlgorithm::Ed25519),
+            (
+                CertKeyAlgorithm::EcdsaP256,
+                acmecast_cert::KeyAlgorithm::EcdsaP256,
+            ),
+            (
+                CertKeyAlgorithm::EcdsaP384,
+                acmecast_cert::KeyAlgorithm::EcdsaP384,
+            ),
+            (
+                CertKeyAlgorithm::Ed25519,
+                acmecast_cert::KeyAlgorithm::Ed25519,
+            ),
             (CertKeyAlgorithm::Rsa2048, acmecast_cert::KeyAlgorithm::Rsa),
         ] {
             let (key_pem, csr_der) = generate_key_and_csr(&["example.com".to_owned()], algorithm)
@@ -1473,10 +1548,7 @@ mod tests {
     fn zone_of_only_trusts_multi_label_remainders() {
         // 三级以上域名剥第一段后剩余部分仍是合法 zone，推导可信。
         assert_eq!(zone_of("a.example.com").as_deref(), Some("example.com"));
-        assert_eq!(
-            zone_of("a.b.example.com").as_deref(),
-            Some("b.example.com")
-        );
+        assert_eq!(zone_of("a.b.example.com").as_deref(), Some("b.example.com"));
 
         // 通配符的两级域名：zone 即 base domain（`*.gcli.cn` → `gcli.cn`、`*.skiy.net` → `skiy.net`）。
         assert_eq!(zone_of("*.gcli.cn").as_deref(), Some("gcli.cn"));
@@ -1496,13 +1568,11 @@ mod tests {
         let record = challenge_record("666517.xyz", "skiy.net", None, "value");
 
         assert_eq!(
-            record.name,
-            "_acme-challenge.666517.xyz",
+            record.name, "_acme-challenge.666517.xyz",
             "写入名应在 dns_zone 下"
         );
         assert_eq!(
-            record.ca_name,
-            "_acme-challenge.skiy.net",
+            record.ca_name, "_acme-challenge.skiy.net",
             "CA 查询名应按授权域名"
         );
         assert!(record.is_delegated());
@@ -1589,7 +1659,10 @@ mod tests {
         let error = dns_alias_of(&input).expect_err("带前缀的 dns_alias 应被拒绝");
         let message = error.to_string();
         assert!(message.contains("_acme-challenge.b.com"), "{message}");
-        assert!(message.contains("dns_zone"), "应提示改用 dns_zone: {message}");
+        assert!(
+            message.contains("dns_zone"),
+            "应提示改用 dns_zone: {message}"
+        );
     }
 
     #[test]
@@ -1630,7 +1703,10 @@ mod tests {
             };
             let error = dns_alias_of(&input).expect_err("dns_zone 留空/纯空白应失败");
             let message = error.to_string();
-            assert!(message.contains("myalias.b.com"), "错误应含 alias 值: {message}");
+            assert!(
+                message.contains("myalias.b.com"),
+                "错误应含 alias 值: {message}"
+            );
             assert!(
                 message.contains("dns_zone"),
                 "应提示显式配置 dns_zone: {message}"
@@ -1668,7 +1744,9 @@ mod tests {
                 .expect("dns_alias 应在 properties 里"),
         )
         .expect("dns_alias schema 应能序列化");
-        let description = rendered["description"].as_str().expect("dns_alias 应有说明");
+        let description = rendered["description"]
+            .as_str()
+            .expect("dns_alias 应有说明");
         assert!(
             description.contains("domain-alias"),
             "说明应提到 domain-alias 模式：{description}"
@@ -1693,16 +1771,24 @@ mod tests {
         assert_eq!(
             rendered["x-field-order"],
             serde_json::json!([
-                "account_credential_id", "challenge", "contacts",
-                "dns_credential_id", "dns_alias", "domains", "dns_zone",
-                "key_algorithm", "wait_propagation", "insecure_skip_verify",
+                "account_credential_id",
+                "challenge",
+                "contacts",
+                "dns_credential_id",
+                "dns_alias",
+                "domains",
+                "dns_zone",
+                "key_algorithm",
+                "wait_propagation",
+                "insecure_skip_verify",
                 "renew_before_days",
             ]),
             "布局：账号 | 挑战一行，联系人独占一行，凭据 | alias 一行，域名 | zone 一行：{rendered}"
         );
         let domains = rendered["properties"]["domains"].clone();
         assert_eq!(
-            domains["x-half-width"], serde_json::json!(true),
+            domains["x-half-width"],
+            serde_json::json!(true),
             "domains 应压成半宽与 dns_zone 同行：{domains}"
         );
     }
@@ -1801,11 +1887,19 @@ mod tests {
             Err(acmecast_dns::Error::provider("zone not exist".to_owned()))
         }
 
-        async fn create_txt(&self, _: &serde_json::Value, _: &acmecast_dns::TxtRecord) -> acmecast_dns::Result<()> {
+        async fn create_txt(
+            &self,
+            _: &serde_json::Value,
+            _: &acmecast_dns::TxtRecord,
+        ) -> acmecast_dns::Result<()> {
             Ok(())
         }
 
-        async fn delete_txt(&self, _: &serde_json::Value, _: &acmecast_dns::TxtRecord) -> acmecast_dns::Result<()> {
+        async fn delete_txt(
+            &self,
+            _: &serde_json::Value,
+            _: &acmecast_dns::TxtRecord,
+        ) -> acmecast_dns::Result<()> {
             Ok(())
         }
     }
@@ -1828,9 +1922,10 @@ mod tests {
         // 回退到最具体候选 `x.idev.top`，而非原始 identifier `*.x.idev.top`。
         use super::resolve_wildcard_zone;
 
-        let zone = resolve_wildcard_zone(&AllNotFoundProvider, &serde_json::json!({}), "*.x.idev.top")
-            .await
-            .expect("探测全未命中应回退而非报错");
+        let zone =
+            resolve_wildcard_zone(&AllNotFoundProvider, &serde_json::json!({}), "*.x.idev.top")
+                .await
+                .expect("探测全未命中应回退而非报错");
         assert_eq!(zone, "x.idev.top");
     }
 
@@ -1840,10 +1935,14 @@ mod tests {
         use super::resolve_wildcard_zone;
 
         for identifier in ["*.asfd.cn", "*.x.idev.top", "*.gcli.cn"] {
-            let zone = resolve_wildcard_zone(&AllNotFoundProvider, &serde_json::json!({}), identifier)
-                .await
-                .unwrap_or_else(|e| panic!("{identifier} 回退应成功: {e}"));
-            assert!(!zone.contains('*'), "{identifier} 回退值 `{zone}` 不应含 `*`");
+            let zone =
+                resolve_wildcard_zone(&AllNotFoundProvider, &serde_json::json!({}), identifier)
+                    .await
+                    .unwrap_or_else(|e| panic!("{identifier} 回退应成功: {e}"));
+            assert!(
+                !zone.contains('*'),
+                "{identifier} 回退值 `{zone}` 不应含 `*`"
+            );
         }
     }
 

@@ -239,17 +239,14 @@ impl HttpTransport for ReqwestTransport {
             builder = builder.json(body);
         }
 
-        let response = builder
-            .send()
-            .await
-            .map_err(|e| {
-                let via = self
-                    .proxy_host
-                    .as_ref()
-                    .map(|host| format!("（经代理 {host}）"))
-                    .unwrap_or_default();
-                Error::provider(format!("请求 {} 失败{via}: {e}", request.url))
-            })?;
+        let response = builder.send().await.map_err(|e| {
+            let via = self
+                .proxy_host
+                .as_ref()
+                .map(|host| format!("（经代理 {host}）"))
+                .unwrap_or_default();
+            Error::provider(format!("请求 {} 失败{via}: {e}", request.url))
+        })?;
 
         let status = response.status().as_u16();
         let body = response
@@ -272,14 +269,18 @@ mod tests {
             "http://127.0.0.1:8080",
             "https://proxy.example.com:443",
         ] {
-            ReqwestTransport::with_proxy(url, acmecast_core::NETWORK_TIMEOUT).unwrap_or_else(|e| panic!("{url} 应能构建: {e}"));
+            ReqwestTransport::with_proxy(url, acmecast_core::NETWORK_TIMEOUT)
+                .unwrap_or_else(|e| panic!("{url} 应能构建: {e}"));
         }
     }
 
     #[test]
     fn an_invalid_proxy_url_is_rejected() {
         assert!(ReqwestTransport::with_proxy("not-a-url", acmecast_core::NETWORK_TIMEOUT).is_err());
-        assert!(ReqwestTransport::with_proxy("ftp://127.0.0.1:21", acmecast_core::NETWORK_TIMEOUT).is_err());
+        assert!(
+            ReqwestTransport::with_proxy("ftp://127.0.0.1:21", acmecast_core::NETWORK_TIMEOUT)
+                .is_err()
+        );
     }
 
     #[test]
@@ -291,20 +292,32 @@ mod tests {
         );
         // 构建成功即选择了代理路径（非法 URL 会在构建时报错）。
         let fallback: Arc<dyn HttpTransport> = Arc::new(ReqwestTransport::default());
-        transport_for_credentials(&credentials, &fallback, None, acmecast_core::NETWORK_TIMEOUT).expect("带代理应能构建 transport");
+        transport_for_credentials(
+            &credentials,
+            &fallback,
+            None,
+            acmecast_core::NETWORK_TIMEOUT,
+        )
+        .expect("带代理应能构建 transport");
     }
 
     #[test]
     fn credentials_without_a_proxy_field_resolve_to_direct_connection() {
         let fallback: Arc<dyn HttpTransport> = Arc::new(ReqwestTransport::default());
         for credentials in [
-            serde_json::json!({}),                 // 存量凭据缺字段
+            serde_json::json!({}),                  // 存量凭据缺字段
             serde_json::json!({ "proxy_url": "" }), // 留空
             serde_json::json!({ "proxy_url": "  " }),
         ] {
             assert_eq!(proxy_url_from_credentials(&credentials), None);
             // 返回的是 fallback 本身（直连），且不会因代理构建失败报错。
-            transport_for_credentials(&credentials, &fallback, None, acmecast_core::NETWORK_TIMEOUT).expect("直连应直接复用注入层");
+            transport_for_credentials(
+                &credentials,
+                &fallback,
+                None,
+                acmecast_core::NETWORK_TIMEOUT,
+            )
+            .expect("直连应直接复用注入层");
         }
     }
 

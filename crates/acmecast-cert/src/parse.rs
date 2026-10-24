@@ -106,9 +106,7 @@ pub fn organization_from_dn(dn: &str) -> Option<String> {
     let mut found: Option<String> = None;
 
     let mut flush = |key: &Option<String>, value: &mut String, found: &mut Option<String>| {
-        if found.is_none()
-            && key.as_deref().is_some_and(|k| k.eq_ignore_ascii_case("O"))
-        {
+        if found.is_none() && key.as_deref().is_some_and(|k| k.eq_ignore_ascii_case("O")) {
             let trimmed = value.trim();
             if !trimmed.is_empty() {
                 *found = Some(trimmed.to_owned());

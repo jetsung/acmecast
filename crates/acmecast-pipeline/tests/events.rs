@@ -334,12 +334,7 @@ async fn a_run_emits_step_logs_as_streamed_events() {
     reg.register(LoggingStep).unwrap();
     let sink = RecordingSink::default();
 
-    let outcome = run_with_events(
-        &reg,
-        &sink,
-        &pipeline(10, vec![step(0, "test.logging")]),
-    )
-    .await;
+    let outcome = run_with_events(&reg, &sink, &pipeline(10, vec![step(0, "test.logging")])).await;
     assert!(outcome.is_success());
 
     let log_messages: Vec<String> = sink
@@ -351,7 +346,19 @@ async fn a_run_emits_step_logs_as_streamed_events() {
         })
         .collect();
 
-    assert!(log_messages.iter().any(|m| m.contains("progress milestone 1")));
-    assert!(log_messages.iter().any(|m| m.contains("progress milestone 2")));
-    assert!(sink.events().iter().any(|e| matches!(e, PipelineEvent::Succeeded { .. })));
+    assert!(
+        log_messages
+            .iter()
+            .any(|m| m.contains("progress milestone 1"))
+    );
+    assert!(
+        log_messages
+            .iter()
+            .any(|m| m.contains("progress milestone 2"))
+    );
+    assert!(
+        sink.events()
+            .iter()
+            .any(|e| matches!(e, PipelineEvent::Succeeded { .. }))
+    );
 }

@@ -65,11 +65,7 @@ pub async fn migrate_archived_certs(
         }
 
         // 最新者保留：not_after 降序，相等时 id 降序
-        members.sort_by(|a, b| {
-            b.not_after
-                .cmp(&a.not_after)
-                .then_with(|| b.id.cmp(&a.id))
-        });
+        members.sort_by(|a, b| b.not_after.cmp(&a.not_after).then_with(|| b.id.cmp(&a.id)));
         let winner = members.remove(0);
         match ensure_flat_paths(&store, &repository, &winner).await {
             Ok(true) => archived += 1, // winner 也可能从旧布局扁平到 ssl，算作归档动作
@@ -90,11 +86,19 @@ pub async fn migrate_archived_certs(
             // 活跃路径已在新扁平位置的旧记录：直接归档到 archived/<指纹>/
             // 旧布局路径（certs/<指纹>/...）也会被 archive 搬到 archived/<指纹>/
             let result = store
-                .archive_replaced_certificate(&old.cert_pem_path, &old.key_pem_path, &old.fingerprint)
+                .archive_replaced_certificate(
+                    &old.cert_pem_path,
+                    &old.key_pem_path,
+                    &old.fingerprint,
+                )
                 .await;
             match result {
                 Ok(Some(paths)) => {
-                    if repository.set_archived_paths(old.id, &paths, chrono::Utc::now()).await.is_ok() {
+                    if repository
+                        .set_archived_paths(old.id, &paths, chrono::Utc::now())
+                        .await
+                        .is_ok()
+                    {
                         archived += 1;
                         tracing::info!(
                             cert_id = old.id,
@@ -107,10 +111,19 @@ pub async fn migrate_archived_certs(
                         tracing::warn!(cert_id = old.id, "存量证书归档后更新路径失败");
                         // 回退文件
                         let original = acmecast_store::CertFilePaths {
-                            cert: old.cert_path.clone().unwrap_or_else(|| old.cert_pem_path.clone()),
+                            cert: old
+                                .cert_path
+                                .clone()
+                                .unwrap_or_else(|| old.cert_pem_path.clone()),
                             ca: old.ca_path.clone().unwrap_or_default(),
-                            fullchain: old.fullchain_path.clone().unwrap_or_else(|| old.cert_pem_path.clone()),
-                            key: old.key_path.clone().unwrap_or_else(|| old.key_pem_path.clone()),
+                            fullchain: old
+                                .fullchain_path
+                                .clone()
+                                .unwrap_or_else(|| old.cert_pem_path.clone()),
+                            key: old
+                                .key_path
+                                .clone()
+                                .unwrap_or_else(|| old.key_pem_path.clone()),
                             cert_pem: old.cert_pem_path.clone(),
                             key_pem: old.key_pem_path.clone(),
                         };
@@ -123,14 +136,54 @@ pub async fn migrate_archived_certs(
                     // 文件缺失：仍把 DB 路径指向 archived/<指纹>/ 的预期位置，
                     // 保证「活跃扁平」与数据库一致，不阻断
                     let expected = acmecast_store::CertFilePaths {
-                        cert: format!("certs/archived/{}/{}", old.fingerprint, basename(&old.cert_path.clone().unwrap_or_else(|| old.cert_pem_path.clone()))),
-                        ca: format!("certs/archived/{}/{}", old.fingerprint, basename(&old.ca_path.clone().unwrap_or_else(|| "ca.cer".to_owned()))),
-                        fullchain: format!("certs/archived/{}/{}", old.fingerprint, basename(&old.fullchain_path.clone().unwrap_or_else(|| old.cert_pem_path.clone()))),
-                        key: format!("certs/archived/{}/{}", old.fingerprint, basename(&old.key_path.clone().unwrap_or_else(|| old.key_pem_path.clone()))),
-                        cert_pem: format!("certs/archived/{}/{}", old.fingerprint, basename(&old.cert_pem_path)),
-                        key_pem: format!("certs/archived/{}/{}", old.fingerprint, basename(&old.key_pem_path)),
+                        cert: format!(
+                            "certs/archived/{}/{}",
+                            old.fingerprint,
+                            basename(
+                                &old.cert_path
+                                    .clone()
+                                    .unwrap_or_else(|| old.cert_pem_path.clone())
+                            )
+                        ),
+                        ca: format!(
+                            "certs/archived/{}/{}",
+                            old.fingerprint,
+                            basename(&old.ca_path.clone().unwrap_or_else(|| "ca.cer".to_owned()))
+                        ),
+                        fullchain: format!(
+                            "certs/archived/{}/{}",
+                            old.fingerprint,
+                            basename(
+                                &old.fullchain_path
+                                    .clone()
+                                    .unwrap_or_else(|| old.cert_pem_path.clone())
+                            )
+                        ),
+                        key: format!(
+                            "certs/archived/{}/{}",
+                            old.fingerprint,
+                            basename(
+                                &old.key_path
+                                    .clone()
+                                    .unwrap_or_else(|| old.key_pem_path.clone())
+                            )
+                        ),
+                        cert_pem: format!(
+                            "certs/archived/{}/{}",
+                            old.fingerprint,
+                            basename(&old.cert_pem_path)
+                        ),
+                        key_pem: format!(
+                            "certs/archived/{}/{}",
+                            old.fingerprint,
+                            basename(&old.key_pem_path)
+                        ),
                     };
-                    if repository.set_archived_paths(old.id, &expected, chrono::Utc::now()).await.is_ok() {
+                    if repository
+                        .set_archived_paths(old.id, &expected, chrono::Utc::now())
+                        .await
+                        .is_ok()
+                    {
                         archived += 1;
                         tracing::warn!(
                             cert_id = old.id,
@@ -185,10 +238,26 @@ async fn ensure_flat_paths(
         let base_cert = basename(&row.cert_pem_path);
         let base_key = basename(&row.key_pem_path);
         acmecast_store::CertFilePaths {
-            cert: format!("certs/archived/{}/{}", row.fingerprint, base_cert.replace(".cert.pem", ".cer")),
-            ca: format!("certs/archived/{}/{}", row.fingerprint, base_cert.replace(".cert.pem", ".ca.cer")),
-            fullchain: format!("certs/archived/{}/{}", row.fingerprint, base_cert.replace(".cert.pem", ".fullchain.cer")),
-            key: format!("certs/archived/{}/{}", row.fingerprint, base_key.replace(".key.pem", ".key")),
+            cert: format!(
+                "certs/archived/{}/{}",
+                row.fingerprint,
+                base_cert.replace(".cert.pem", ".cer")
+            ),
+            ca: format!(
+                "certs/archived/{}/{}",
+                row.fingerprint,
+                base_cert.replace(".cert.pem", ".ca.cer")
+            ),
+            fullchain: format!(
+                "certs/archived/{}/{}",
+                row.fingerprint,
+                base_cert.replace(".cert.pem", ".fullchain.cer")
+            ),
+            key: format!(
+                "certs/archived/{}/{}",
+                row.fingerprint,
+                base_key.replace(".key.pem", ".key")
+            ),
             cert_pem: format!("certs/archived/{}/{}", row.fingerprint, base_cert),
             key_pem: format!("certs/archived/{}/{}", row.fingerprint, base_key),
         }

@@ -83,17 +83,17 @@ impl PipelineRunLauncher {
 
     /// 设置运行控制注册表（与 HTTP 层共用同一实例）。
     #[must_use]
-    pub fn with_run_control(
-        mut self,
-        run_control: Arc<crate::run_control::RunControl>,
-    ) -> Self {
+    pub fn with_run_control(mut self, run_control: Arc<crate::run_control::RunControl>) -> Self {
         self.run_control = Some(run_control);
         self
     }
 
     /// 设置 SSE 广播器。
     #[must_use]
-    pub fn with_broadcaster(mut self, broadcaster: Arc<crate::history_stream::SseBroadcaster>) -> Self {
+    pub fn with_broadcaster(
+        mut self,
+        broadcaster: Arc<crate::history_stream::SseBroadcaster>,
+    ) -> Self {
         self.broadcaster = Some(broadcaster);
         self
     }

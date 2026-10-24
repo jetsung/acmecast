@@ -125,6 +125,7 @@ async fn run_suite(db: DatabaseConnection) {
     let account = acmecast_store::entity::credential::ActiveModel {
         name: Set("测试账号".to_owned()),
         type_id: Set("acme.account".to_owned()),
+        proxy_mode: Set("direct".to_owned()),
         encrypted_fields: Set("encrypted-blob".to_owned()),
         created_at: Set(now),
         updated_at: Set(now),

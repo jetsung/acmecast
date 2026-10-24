@@ -7,7 +7,7 @@
 # clippy / rustfmt / rust-analyzer 随工具链一起安装。
 # rustup 安装时会读取 .env 的 RUSTUP_DIST_SERVER（由 _.file 加载，在工具安装前生效），
 # 国内开发者复制 .env.example 为 .env 后自动走腾讯云镜像。
-rust = { version = "1.98.0", components = ["clippy", "rustfmt", "rust-analyzer"] }
+rust = { version = "1.99.0", components = ["clippy", "rustfmt", "rust-analyzer"] }
 
 # 前端：Node 24 + pnpm 11.20.0（对应 frontend/package.json 的 packageManager）。
 node = "24"

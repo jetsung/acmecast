@@ -55,6 +55,7 @@ async fn insert_credential(db: &DatabaseConnection, url: &str) -> i64 {
         id: Default::default(),
         name: Set("it".to_owned()),
         type_id: Set("notify.generic".to_owned()),
+        proxy_mode: Set("direct".to_owned()),
         encrypted_fields: Set(encrypted),
         remark: Set(String::new()),
         capabilities: Set("[]".to_owned()),
@@ -138,7 +139,13 @@ async fn insert_history(db: &DatabaseConnection, pipeline_id: i64, source: &str)
 }
 
 fn sink(db: DatabaseConnection) -> WebhookEventSink {
-    WebhookEventSink::new(db, registry(), Some(cipher()), DeliveryOptions::default(), None::<String>)
+    WebhookEventSink::new(
+        db,
+        registry(),
+        Some(cipher()),
+        DeliveryOptions::default(),
+        None::<String>,
+    )
 }
 
 fn succeeded_event(pipeline_id: i64, run_id: i64) -> PipelineEvent {

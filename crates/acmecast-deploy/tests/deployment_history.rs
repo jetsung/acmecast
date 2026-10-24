@@ -13,9 +13,9 @@ use acmecast_deploy::{
     DeploymentStateStore, DeploymentTarget, LocalTarget,
 };
 use acmecast_store::migrate;
-use sea_orm::Database;
-use serde_json::{json, Value};
 use schemars::schema::RootSchema;
+use sea_orm::Database;
+use serde_json::{Value, json};
 
 /// 临时目录，Drop 时清理。
 struct TempDir(PathBuf);

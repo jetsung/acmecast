@@ -43,7 +43,10 @@ impl std::fmt::Debug for S3Fields {
         f.debug_struct("S3Fields")
             .field("access_key", &self.access_key)
             .field("secret_key", &acmecast_core::REDACTED)
-            .field("session_token", &acmecast_core::redact_presence(&self.session_token))
+            .field(
+                "session_token",
+                &acmecast_core::redact_presence(&self.session_token),
+            )
             .finish()
     }
 }
@@ -79,21 +82,39 @@ impl CredentialType for S3CredentialType {
         s3_fields_schema()
     }
 
-    async fn test_connectivity(&self, fields: &serde_json::Value) -> ConnectivityOutcome {
+    async fn test_connectivity(
+        &self,
+        fields: &serde_json::Value,
+        _capabilities: &[String],
+    ) -> ConnectivityOutcome {
         let raw = fields.clone();
         let parsed: Result<S3Fields, _> = serde_json::from_value(fields.clone());
         let parsed_fields = match parsed {
-            Ok(f) if !f.access_key.trim().is_empty() && !f.secret_key.trim().is_empty() && !f.endpoint.trim().is_empty() && !f.region.trim().is_empty() && !f.bucket.trim().is_empty() => f,
+            Ok(f)
+                if !f.access_key.trim().is_empty()
+                    && !f.secret_key.trim().is_empty()
+                    && !f.endpoint.trim().is_empty()
+                    && !f.region.trim().is_empty()
+                    && !f.bucket.trim().is_empty() =>
+            {
+                f
+            }
             Ok(_) => {
                 return ConnectivityOutcome::Unavailable {
                     reason: "access_key/secret_key/endpoint/region/bucket 均不能为空".to_owned(),
-                }
+                };
             }
-            Err(e) => return ConnectivityOutcome::Unavailable { reason: e.to_string() },
+            Err(e) => {
+                return ConnectivityOutcome::Unavailable {
+                    reason: e.to_string(),
+                };
+            }
         };
         match s3_probe(&parsed_fields, self.global_proxy_url.as_deref()).await {
             Ok(()) => ConnectivityOutcome::Ok,
-            Err(e) => ConnectivityOutcome::Unavailable { reason: self.redact(&raw, &e) },
+            Err(e) => ConnectivityOutcome::Unavailable {
+                reason: self.redact(&raw, &e),
+            },
         }
     }
 
@@ -157,10 +178,7 @@ mod tests {
             .get("x-field-order")
             .and_then(|v| v.as_array())
             .expect("应注入 x-field-order");
-        let names: Vec<&str> = order
-            .iter()
-            .filter_map(|v| v.as_str())
-            .collect();
+        let names: Vec<&str> = order.iter().filter_map(|v| v.as_str()).collect();
         assert_eq!(
             names,
             [
@@ -192,7 +210,10 @@ mod tests {
             "proxy_mode 应注入枚举候选: {rendered}"
         );
         for label in ["直连", "继承全局", "自定义"] {
-            assert!(rendered.contains(label), "应含中文展示名 {label}: {rendered}");
+            assert!(
+                rendered.contains(label),
+                "应含中文展示名 {label}: {rendered}"
+            );
         }
         let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
         assert_eq!(
@@ -206,8 +227,8 @@ mod tests {
 async fn s3_probe(fields: &S3Fields, global_proxy_url: Option<&str>) -> Result<(), String> {
     use aws_config::Region;
     use aws_credential_types::Credentials;
-    use aws_sdk_s3::config::Builder as S3ConfigBuilder;
     use aws_sdk_s3::Client;
+    use aws_sdk_s3::config::Builder as S3ConfigBuilder;
     use aws_smithy_types::body::SdkBody;
 
     let region = Region::new(fields.region.clone());
@@ -238,7 +259,13 @@ async fn s3_probe(fields: &S3Fields, global_proxy_url: Option<&str>) -> Result<(
     let config = s3_config.build();
     let client = Client::from_conf(config);
 
-    let prefix = fields.prefix.as_deref().unwrap_or("").trim().trim_matches('/').to_owned();
+    let prefix = fields
+        .prefix
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .trim_matches('/')
+        .to_owned();
     let key = if prefix.is_empty() {
         ".acmecast-probe/healthcheck.txt".to_owned()
     } else {
@@ -255,9 +282,14 @@ async fn s3_probe(fields: &S3Fields, global_proxy_url: Option<&str>) -> Result<(
     {
         return Err(format!("S3 上传探测失败: {e:?}"));
     }
-    if let Err(e) = client.delete_object().bucket(fields.bucket.clone()).key(key).send().await {
+    if let Err(e) = client
+        .delete_object()
+        .bucket(fields.bucket.clone())
+        .key(key)
+        .send()
+        .await
+    {
         return Err(format!("S3 删除探测文件失败: {e:?}"));
     }
     Ok(())
 }
-

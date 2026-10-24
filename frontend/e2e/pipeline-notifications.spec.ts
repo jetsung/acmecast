@@ -13,10 +13,10 @@ import { expect, test } from "@playwright/test";
 const TASK_TYPE = "e2e.json";
 
 const CREDENTIALS = [
-  { id: 7, name: "le-prod", type_id: "acme.account", remark: "" },
-  { id: 8, name: "some-dns", type_id: "cloud.cloudflare", remark: "" },
-  { id: 50, name: "ops-feishu", type_id: "notify.feishu", remark: "" },
-  { id: 51, name: "ops-mail", type_id: "notify.email", remark: "" },
+  { id: 7, name: "le-prod", type_id: "acme.account", remark: "", proxy_mode: "direct" },
+  { id: 8, name: "some-dns", type_id: "cloud.cloudflare", remark: "", proxy_mode: "direct" },
+  { id: 50, name: "ops-feishu", type_id: "notify.feishu", remark: "", proxy_mode: "direct" },
+  { id: 51, name: "ops-mail", type_id: "notify.email", remark: "", proxy_mode: "direct" },
 ];
 
 const CREDENTIAL_TYPES = [

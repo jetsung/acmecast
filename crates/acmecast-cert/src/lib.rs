@@ -21,9 +21,7 @@ pub use keys::{
     verify_matches_pem,
 };
 pub use parse::{CertificateInfo, organization_from_dn, parse_der, parse_pem, parse_pem_leaf};
-pub use pem::{
-    ca_pem_of, chain_to_pem, der_to_pem, first_der, pem_to_der_blocks, split_chain,
-};
+pub use pem::{ca_pem_of, chain_to_pem, der_to_pem, first_der, pem_to_der_blocks, split_chain};
 
 /// 主域名 → 文件名前缀，供部署目标与主存储共用同一派生规则。
 ///
@@ -45,7 +43,11 @@ pub fn domain_file_prefix(domain: &str) -> String {
             _ => '_',
         })
         .collect();
-    if cleaned.is_empty() { "certificate".to_owned() } else { cleaned }
+    if cleaned.is_empty() {
+        "certificate".to_owned()
+    } else {
+        cleaned
+    }
 }
 
 #[cfg(test)]
@@ -62,7 +64,10 @@ mod tests {
     fn plain_domain_keeps_legal_chars_and_replaces_others() {
         assert_eq!(domain_file_prefix("sub.example.com"), "sub.example.com");
         assert_eq!(domain_file_prefix("a b.example.com"), "a_b.example.com");
-        assert_eq!(domain_file_prefix("*.hello.example.com"), "_wildcard.hello.example.com");
+        assert_eq!(
+            domain_file_prefix("*.hello.example.com"),
+            "_wildcard.hello.example.com"
+        );
     }
 
     #[test]

@@ -3,9 +3,9 @@ import { App, Button, Card, Form, Input, Select, Space, Switch, Typography } fro
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router";
 import type { components } from "@/api/schema";
-import { client } from "@/api/client";
+import { client, fetchTencentSslCertificates } from "@/api/client";
 import { unwrapData } from "@/api/helpers";
-import { SchemaForm } from "@/components/SchemaForm";
+import { FieldExtraContext, SchemaForm } from "@/components/SchemaForm";
 import { PageHeader } from "@/components/PageHeader";
 
 /** `account_credential_id` 一类字段只接受这类凭据。 */
@@ -572,6 +572,7 @@ function TaskSchemaFields({
   fieldOptions: FieldOptions;
   rawCredentials: components["schemas"]["CredentialResponse"][];
 }) {
+  const { message } = App.useApp();
   const { data: schema } = useQuery({
     queryKey: ["task-schema", typeId],
     queryFn: async () => {
@@ -589,17 +590,90 @@ function TaskSchemaFields({
     ["inputs", stepId, "config", "credential_id"],
     form,
   );
+  const selectedCertificateId = Form.useWatch(
+    ["inputs", stepId, "config", "certificate_id"],
+    form,
+  );
+
+  // tencent-ssl 变体「证书 ID」下拉的同步选项（组件 state，不持久化）：
+  // 每次进表单按需同步，离开页面即丢；cert.deploy 步骤各实例互不串值。
+  const [certOptions, setCertOptions] = useState<FieldOption[]>([]);
+  const [syncingCerts, setSyncingCerts] = useState(false);
+
+  // 选中证书 ID = 替换模式（替换该证书绑定的云资源）：repeatable 固定为
+  // false 并禁用开关（禁用由 x-disabled-when 实现，这里把表单值对齐语义）；
+  // 清空证书 ID 后开关恢复可编辑。后端 deploy 的替换分支不携带 Repeatable，
+  // 这里只是让表单状态不误导。
+  useEffect(() => {
+    if (selectedCertificateId !== undefined && selectedCertificateId !== null && selectedCertificateId !== "") {
+      form.setFieldValue(["inputs", stepId, "config", "repeatable"], false);
+    }
+  }, [selectedCertificateId, form, stepId]);
+
+  // 后端在 tencent-ssl 变体的 credential_id 上注入了 x-credential-types
+  // 白名单：同步按钮据此判断当前凭据能否拉证书（schema 未加载时为空）。
+  const certSyncAllowlist = useMemo<string[]>(() => {
+    const root = schema as
+      | { properties?: Record<string, Record<string, unknown>> }
+      | undefined;
+    const variants = root?.properties?.config?.["x-target-schemas"] as
+      | Record<string, { schema?: { properties?: Record<string, Record<string, unknown>> } }>
+      | undefined;
+    const allowlist = variants?.["tencent-ssl"]?.schema?.properties?.credential_id?.[
+      "x-credential-types"
+    ];
+    return Array.isArray(allowlist) ? (allowlist as string[]) : [];
+  }, [schema]);
 
   const decorated = useMemo(
-    () => withFieldOptions(schema, fieldOptions, rawCredentials, selectedHostCredentialId),
-    [schema, fieldOptions, rawCredentials, selectedHostCredentialId],
+    () => withFieldOptions(schema, fieldOptions, rawCredentials, selectedHostCredentialId, certOptions),
+    [schema, fieldOptions, rawCredentials, selectedHostCredentialId, certOptions],
   );
+
+  // 点「同步」：按当前所选凭据拉云端证书列表填充下拉。未选凭据或凭据类型
+  // 不在 x-credential-types 白名单内时提示并不发请求。
+  const syncCertificates = async () => {
+    if (selectedHostCredentialId === undefined || selectedHostCredentialId === null || selectedHostCredentialId === "") {
+      message.warning("请先选择腾讯云凭据，再同步证书列表");
+      return;
+    }
+    const credential = rawCredentials.find((item) => item.id === selectedHostCredentialId);
+    if (!credential || !certSyncAllowlist.includes(credential.type_id)) {
+      message.warning("当前凭据不是可同步证书列表的腾讯云凭据");
+      return;
+    }
+    setSyncingCerts(true);
+    try {
+      const options = await fetchTencentSslCertificates(Number(selectedHostCredentialId));
+      setCertOptions(options.map((item) => ({ value: item.value, label: item.label })));
+      message.success(`已同步 ${options.length} 张证书`);
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "同步证书列表失败");
+    } finally {
+      setSyncingCerts(false);
+    }
+  };
 
   if (!schema) {
     return <Typography.Text type="secondary">（无输入定义）</Typography.Text>;
   }
   // 输入值挂在 ["inputs", stepId] 路径下：用稳定 id 而非下标，步骤排序/删除后不会串值。
-  return <SchemaFormBridge schema={decorated} prefix={["inputs", stepId]} />;
+  return (
+    <FieldExtraContext.Provider
+      value={({ name }) => {
+        // 插槽只服务 tencent-ssl 变体的「证书 ID」字段（其余字段返回空，
+        // SchemaForm 不占位）。
+        if (name !== "certificate_id") return null;
+        return (
+          <Button size="small" loading={syncingCerts} onClick={() => void syncCertificates()}>
+            同步
+          </Button>
+        );
+      }}
+    >
+      <SchemaFormBridge schema={decorated} prefix={["inputs", stepId]} />
+    </FieldExtraContext.Provider>
+  );
 }
 
 /**
@@ -707,12 +781,16 @@ function sshHostOptions(
  * 目标 schema 是后端动态给的，注入必须在这里递归进行。SSH 变体额外注入
  * `x-field-order`，保证 host/port 等成对字段相邻，不依赖后端 schema 键序；
  * 跳板下拉还要按 `selectedHostCredentialId`（当前目标档案）动态排除。
+ *
+ * `certOptions` 是 tencent-ssl 变体「证书 ID」下拉的同步选项（组件 state，
+ * 不持久化）：初始为空数组渲染可清空的单选 Select，点「同步」后填充。
  */
 function withFieldOptions(
   schema: unknown,
   options: FieldOptions,
   rawCredentials: components["schemas"]["CredentialResponse"][],
   selectedHostCredentialId?: unknown,
+  certOptions?: FieldOption[],
 ): unknown {
   const root = schema as
     | { properties?: Record<string, Record<string, unknown>> }
@@ -740,7 +818,7 @@ function withFieldOptions(
     if (!variants) continue;
     const injectedVariants: typeof variants = {};
     for (const [targetId, variant] of Object.entries(variants)) {
-      const injected = withFieldOptions(variant.schema, options, rawCredentials) as Record<
+      const injected = withFieldOptions(variant.schema, options, rawCredentials, undefined, certOptions) as Record<
         string,
         unknown
       >;
@@ -798,15 +876,35 @@ function withFieldOptions(
               ? `${credential.name}（id=${credential.id}）— ${credential.remark}`
               : `${credential.name}（id=${credential.id}）`,
           }));
+        const nextProps: Record<string, Record<string, unknown>> = {
+          ...props,
+          credential_id: {
+            ...credentialNode,
+            "x-options": filtered,
+          },
+        };
+        // 「证书 ID」下拉走同步选项（初始空数组即单选可清空 Select），点
+        // 「同步」后由调用方把拉到的证书列表传回来填充；独占一行但只占半列、
+        // 右侧留空（x-end-row，与 target 同款布局），「同步」按钮在半宽内右侧。
+        if (nextProps.certificate_id) {
+          nextProps.certificate_id = {
+            ...nextProps.certificate_id,
+            "x-end-row": true,
+            "x-options": certOptions ?? [],
+          };
+        }
+        // 选中证书 ID = 替换模式：repeatable 固定 false 并在选中期间禁用
+        // （值的固定在上方 watch 里做；这里的禁用只是 UX）。清空后表达式
+        // 为假恢复。
+        if (nextProps.repeatable) {
+          nextProps.repeatable = {
+            ...nextProps.repeatable,
+            "x-disabled-when": { Not: { Empty: "certificate_id" } },
+          };
+        }
         tightened = {
           ...tightened,
-          properties: {
-            ...props,
-            credential_id: {
-              ...credentialNode,
-              "x-options": filtered,
-            },
-          },
+          properties: nextProps,
         };
       }
       injectedVariants[targetId] = { ...variant, schema: tightened };

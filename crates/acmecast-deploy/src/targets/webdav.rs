@@ -7,8 +7,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::error::{Error, Result};
-use acmecast_cert::{ca_pem_of, parse_pem_leaf};
 use crate::target::{CertMaterials, DeployMode, DeployOutcome, DeploymentTarget, parse_input};
+use acmecast_cert::{ca_pem_of, parse_pem_leaf};
 
 const ACCEPTED_CREDENTIAL_TYPES: [&str; 1] = ["deploy.webdav"];
 #[derive(Debug, Default)]
@@ -46,7 +46,12 @@ pub struct WebdavInput {
 }
 
 fn normalize_base(raw: &Option<String>) -> String {
-    let s = raw.as_deref().unwrap_or("").trim().trim_matches('/').to_owned();
+    let s = raw
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .trim_matches('/')
+        .to_owned();
     if s.is_empty() {
         String::new()
     } else {
@@ -118,17 +123,15 @@ fn without_legacy_alias(input: &Value) -> Value {
 ///
 /// `base` 的尾部 `/` 与渲染后路径的头部 `/` 由 `join_path` 统一归一：
 /// 衔接处只有且仅有一个 `/`，协议部分（`base_url` 里的 `https://`）不受影响。
-fn webdav_paths(
-    input: &WebdavInput,
-    domain: &str,
-    base: &str,
-    base_url: &str,
-) -> [String; 3] {
+fn webdav_paths(input: &WebdavInput, domain: &str, base: &str, base_url: &str) -> [String; 3] {
     let join = |template: &Option<String>, suffix: &str| {
         super::join_path(base, &render_path(template, domain, suffix))
     };
     [
-        format!("{base_url}/{}", join(&input.fullchain_path, "fullchain.cer")),
+        format!(
+            "{base_url}/{}",
+            join(&input.fullchain_path, "fullchain.cer")
+        ),
         format!("{base_url}/{}", join(&input.ca_path, "ca.cer")),
         format!("{base_url}/{}", join(&input.key_path, "key")),
     ]
@@ -167,7 +170,11 @@ fn domain_file_prefix(domain: &str) -> String {
             _ => '_',
         })
         .collect();
-    if cleaned.is_empty() { "certificate".to_owned() } else { cleaned }
+    if cleaned.is_empty() {
+        "certificate".to_owned()
+    } else {
+        cleaned
+    }
 }
 
 #[async_trait]
@@ -239,37 +246,68 @@ impl DeploymentTarget for WebdavTarget {
         if !ACCEPTED_CREDENTIAL_TYPES.contains(&resolved.type_id.as_str()) {
             return Err(Error::invalid_input(
                 "credential_id",
-                format!("凭据 `{}`（{}）不是 deploy.webdav 类型", input.credential_id, resolved.type_id),
+                format!(
+                    "凭据 `{}`（{}）不是 deploy.webdav 类型",
+                    input.credential_id, resolved.type_id
+                ),
             ));
         }
         let fields = resolved.fields.clone();
-        let vault_url = fields.get("url").and_then(|v| v.as_str()).unwrap_or("").to_owned();
-        let vault_base = fields.get("base_path").and_then(|v| v.as_str()).map(str::to_owned);
+        let vault_url = fields
+            .get("url")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let vault_base = fields
+            .get("base_path")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned);
         let base = normalize_base(&input.base_path.clone().or(vault_base));
-        let url = if vault_url.trim().is_empty() { return Err(Error::invalid_input("credential_id", "凭据缺少 url")); } else { vault_url };
-        let domain = primary_domain_of(materials)
-            .unwrap_or_else(|_| "certificate".to_owned());
+        let url = if vault_url.trim().is_empty() {
+            return Err(Error::invalid_input("credential_id", "凭据缺少 url"));
+        } else {
+            vault_url
+        };
+        let domain = primary_domain_of(materials).unwrap_or_else(|_| "certificate".to_owned());
         let base_url = url.trim_end_matches('/');
         let paths = webdav_paths(&input, &domain, &base, base_url).to_vec();
         if mode == DeployMode::SkipWrite {
             return Ok(DeployOutcome::skipped(paths));
         }
-        let username = fields.get("username").and_then(|v| v.as_str()).unwrap_or("").to_owned();
-        let password = fields.get("password").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+        let username = fields
+            .get("username")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_owned();
+        let password = fields
+            .get("password")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_owned();
         if username.is_empty() || password.is_empty() {
-            return Err(Error::invalid_input("credential_id", "凭据缺少 username/password"));
+            return Err(Error::invalid_input(
+                "credential_id",
+                "凭据缺少 username/password",
+            ));
         }
 
         // 真实 WebDAV PUT：凭据 proxy_mode=custom 时经代理出网（deploy 链路
         // 无全局代理来源，inherit 在此处等同直连）。
         let proxy_url = credential_proxy(&fields);
         for (url, content) in webdav_writes(&input, materials, &domain, &base, base_url) {
-            webdav_put(&url, &username, &password, &content, input.insecure_skip_verify, proxy_url.as_deref()).await?;
+            webdav_put(
+                &url,
+                &username,
+                &password,
+                &content,
+                input.insecure_skip_verify,
+                proxy_url.as_deref(),
+            )
+            .await?;
         }
         Ok(DeployOutcome::written(paths))
     }
 }
-
 
 /// 从部署凭据字段取真实生效的代理 URL：`custom` 自带 URL 生效；
 /// `direct`/`inherit`（deploy 链路无全局代理来源）返回 `None` 直连。
@@ -280,7 +318,14 @@ fn credential_proxy(fields: &Value) -> Option<String> {
     acmecast_core::proxy_url_from_credentials(fields)
 }
 
-async fn webdav_put(url: &str, username: &str, password: &str, content: &str, _insecure_skip_verify: bool, proxy_url: Option<&str>) -> Result<()> {
+async fn webdav_put(
+    url: &str,
+    username: &str,
+    password: &str,
+    content: &str,
+    _insecure_skip_verify: bool,
+    proxy_url: Option<&str>,
+) -> Result<()> {
     let mut builder = reqwest::Client::builder();
     if let Some(proxy_url) = proxy_url {
         // 统一口径校验 scheme（reqwest 的 Proxy::all 不查 scheme 支持度）。
@@ -297,7 +342,8 @@ async fn webdav_put(url: &str, username: &str, password: &str, content: &str, _i
     // Ensure parent collection exists (MKCOL)
     if let Some(slash) = url.rfind('/') {
         let parent = &url[..slash];
-        let mkcol = client.request(reqwest::Method::from_bytes(b"MKCOL").unwrap(), parent)
+        let mkcol = client
+            .request(reqwest::Method::from_bytes(b"MKCOL").unwrap(), parent)
             .basic_auth(username, Some(password))
             .send()
             .await;
@@ -315,14 +361,20 @@ async fn webdav_put(url: &str, username: &str, password: &str, content: &str, _i
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        return Err(Error::Remote(format!("WebDAV PUT {url} 返回 {status}: {}", body.chars().take(300).collect::<String>())));
+        return Err(Error::Remote(format!(
+            "WebDAV PUT {url} 返回 {status}: {}",
+            body.chars().take(300).collect::<String>()
+        )));
     }
     Ok(())
 }
 
 fn primary_domain_of(materials: &CertMaterials) -> Result<String> {
-    let leaf = parse_pem_leaf(&materials.chain_pem).map_err(|e| Error::invalid_input("materials", format!("证书链解析失败: {e}")))?;
-    leaf.primary_domain().map(str::to_owned).ok_or_else(|| Error::invalid_input("materials", "证书没有主域名"))
+    let leaf = parse_pem_leaf(&materials.chain_pem)
+        .map_err(|e| Error::invalid_input("materials", format!("证书链解析失败: {e}")))?;
+    leaf.primary_domain()
+        .map(str::to_owned)
+        .ok_or_else(|| Error::invalid_input("materials", "证书没有主域名"))
 }
 
 #[cfg(test)]
@@ -395,7 +447,12 @@ mod tests {
         assert_eq!(raw["key_path"], "live/{domain}.key");
 
         let input = input(raw);
-        let paths = webdav_paths(&input, "example.com", "dav/certs/", "https://dav.example.com");
+        let paths = webdav_paths(
+            &input,
+            "example.com",
+            "dav/certs/",
+            "https://dav.example.com",
+        );
         assert_eq!(
             paths,
             [
@@ -417,12 +474,19 @@ mod tests {
             "key_path": "/tmp/t3/_wildcard.w.idev.top.key"
         }));
 
-        let paths = webdav_paths(&input, "*.w.idev.top", "dav/acmecast/", "https://dav.asfd.cn/dav");
+        let paths = webdav_paths(
+            &input,
+            "*.w.idev.top",
+            "dav/acmecast/",
+            "https://dav.asfd.cn/dav",
+        );
         assert_eq!(
             paths,
             [
-                "https://dav.asfd.cn/dav/dav/acmecast/tmp/t3/_wildcard.w.idev.top.fullchain.cer".to_owned(),
-                "https://dav.asfd.cn/dav/dav/acmecast/tmp/t3/_wildcard.w.idev.top.ca.cer".to_owned(),
+                "https://dav.asfd.cn/dav/dav/acmecast/tmp/t3/_wildcard.w.idev.top.fullchain.cer"
+                    .to_owned(),
+                "https://dav.asfd.cn/dav/dav/acmecast/tmp/t3/_wildcard.w.idev.top.ca.cer"
+                    .to_owned(),
                 "https://dav.asfd.cn/dav/dav/acmecast/tmp/t3/_wildcard.w.idev.top.key".to_owned(),
             ]
         );
@@ -441,7 +505,10 @@ mod tests {
         normalize_webdav_config(&mut raw, Some("_wildcard.example.com"));
 
         assert_eq!(raw["base_path"], "dav/certs/");
-        assert_eq!(raw["fullchain_path"], "/tmp/t1/_wildcard.example.com.fullchain.cer");
+        assert_eq!(
+            raw["fullchain_path"],
+            "/tmp/t1/_wildcard.example.com.fullchain.cer"
+        );
         assert_eq!(raw["ca_path"], "/tmp/t1/_wildcard.example.com.ca.cer");
         assert_eq!(raw["key_path"], "/tmp/t1/_wildcard.example.com.key");
     }
@@ -449,7 +516,13 @@ mod tests {
     #[test]
     fn a_single_cert_chain_puts_only_two_files() {
         let input = input(json!({ "credential_id": 1 }));
-        let writes = webdav_writes(&input, &single_cert_materials(), "example.com", "", "https://dav.example.com");
+        let writes = webdav_writes(
+            &input,
+            &single_cert_materials(),
+            "example.com",
+            "",
+            "https://dav.example.com",
+        );
 
         assert_eq!(writes.len(), 2, "单张链不应 PUT ca 文件");
         assert!(writes[0].0.ends_with("example.com.fullchain.cer"));
@@ -459,7 +532,13 @@ mod tests {
     #[test]
     fn a_chained_chain_puts_three_files() {
         let input = input(json!({ "credential_id": 1 }));
-        let writes = webdav_writes(&input, &chained_materials(), "example.com", "", "https://dav.example.com");
+        let writes = webdav_writes(
+            &input,
+            &chained_materials(),
+            "example.com",
+            "",
+            "https://dav.example.com",
+        );
 
         assert_eq!(writes.len(), 3);
         assert!(writes[1].1.contains("中间"), "ca 文件应是拆链剩余");
@@ -498,7 +577,12 @@ mod tests {
             credential_proxy(&custom).as_deref(),
             Some("socks5://10.0.0.1:1080")
         );
-        assert_eq!(credential_proxy(&json!({"proxy_mode": "direct", "proxy_url": "socks5://1.2.3.4:7890"})), None);
+        assert_eq!(
+            credential_proxy(
+                &json!({"proxy_mode": "direct", "proxy_url": "socks5://1.2.3.4:7890"})
+            ),
+            None
+        );
         assert_eq!(credential_proxy(&json!({"proxy_mode": "inherit"})), None);
         // 存量兼容：无 proxy_mode 但旧 proxy_url 有值 → custom。
         assert_eq!(

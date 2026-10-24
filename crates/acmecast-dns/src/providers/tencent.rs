@@ -38,9 +38,9 @@ type HmacSha256 = Hmac<Sha256>;
 pub(crate) const DNSPOD_SERVICE: &str = "dnspod";
 pub(crate) const DNSPOD_VERSION: &str = "2021-03-23";
 
-/// STS（凭据探测的 `GetCallerIdentity`）的服务名与版本。
-pub(crate) const STS_SERVICE: &str = "sts";
-pub(crate) const STS_VERSION: &str = "2018-08-13";
+/// SSL 证书 API 3.0 的服务名与版本（凭据部署用途的探测接口）。
+const SSL_SERVICE: &str = "ssl";
+const SSL_VERSION: &str = "2019-12-05";
 
 /// DNSPod 的 `CreateRecord`/`DeleteRecord` 接受的 TTL 区间（秒）。
 ///
@@ -139,9 +139,8 @@ pub fn tc3_authorization(
         "content-type:application/json; charset=utf-8\nhost:{host}\nx-tc-action:{}\n",
         action.to_lowercase()
     );
-    let canonical_request = format!(
-        "POST\n/\n\n{canonical_headers}\ncontent-type;host;x-tc-action\n{payload_hash}"
-    );
+    let canonical_request =
+        format!("POST\n/\n\n{canonical_headers}\ncontent-type;host;x-tc-action\n{payload_hash}");
 
     let date = chrono::DateTime::from_timestamp(timestamp, 0)
         .expect("时间戳应在 DateTime 表示范围内")
@@ -224,6 +223,29 @@ impl TencentApiClient {
     }
 }
 
+/// 腾讯云常见业务错误码的定位提示。
+///
+/// 探测失败的提示要让人「一眼知道去哪修」：凭据页的原因文本按错误码
+/// 给出一句可操作的中文，而不是透传服务端的英文长句。未收录的错误码
+/// 走通用格式透传原始 message。
+fn error_hint(code: &str) -> Option<&'static str> {
+    match code {
+        "AuthFailure.UnauthorizedOperation" => {
+            Some("密钥未被授权该接口，请在腾讯云 CAM 为此密钥补授权")
+        }
+        "AuthFailure.SecretIdNotFound" => Some("SecretId 不存在，请核对密钥与账号站点是否匹配"),
+        "AuthFailure.SignatureFailure" => Some("签名不匹配，请核对 SecretKey 与账号站点"),
+        "AuthFailure.TokenFailure" => Some("临时密钥已失效，请改用长期密钥"),
+        _ if code.starts_with("UnauthorizedOperation") => {
+            Some("密钥未被授权该接口，请在腾讯云 CAM 为此密钥补授权")
+        }
+        _ if code.starts_with("OperationDenied") => {
+            Some("操作被拒绝（多为权限不足），请核对该密钥的 CAM 授权")
+        }
+        _ => None,
+    }
+}
+
 /// 校验响应成功，并取回 `Response` 节点。
 ///
 /// 腾讯云 API 3.0 的业务错误也回 HTTP 200——错误藏在 `Response.Error` 里，
@@ -236,9 +258,13 @@ pub fn ensure_success(response: HttpResponse, action: &str) -> Result<Value> {
 
     if let Some(code) = body["Response"]["Error"]["Code"].as_str() {
         let message = body["Response"]["Error"]["Message"].as_str().unwrap_or("");
-        return Err(Error::provider(format!(
-            "腾讯云 {action} 失败：{code}: {message}"
-        )));
+        let request_id = body["Response"]["RequestId"].as_str().unwrap_or("");
+        // 常见错误码给一句可操作的中文提示；未收录的透传原始 message。
+        // request id 统一放尾部，供提工单定位。
+        return Err(Error::provider(match error_hint(code) {
+            Some(hint) => format!("腾讯云 {action} 被拒绝（{code}）：{hint} [request id: {request_id}]"),
+            None => format!("腾讯云 {action} 失败：{code}: {message} [request id: {request_id}]"),
+        }));
     }
 
     if response.is_success() {
@@ -314,10 +340,12 @@ impl TencentProvider {
         )
     }
 
-    /// 探测凭据是否可用：调 STS 的 `GetCallerIdentity`。
+    /// 探测凭据的 DNS 用途是否可用：调 DNSPod 的 `DescribeDomainList`。
     ///
-    /// 这是凭据页「测试」按钮的探测动作——只做身份辨识，不依赖任何
-    /// DNS 业务权限；端点随凭据的 `account_site` 切换（国内/国际站）。
+    /// 这是凭据页「测试」按钮在凭据声明了 DNS 能力时的探测动作——直接
+    /// 探测 DNS 业务所需的最轻只读接口（域名列表单页，`Limit=1`）：密钥
+    /// 有效且已授权 DNSPod 只读权限即返回可用。端点随凭据的
+    /// `account_site` 切换（国内/国际站）。
     pub async fn verify_credentials(&self, credentials: &Value) -> Result<()> {
         let http = self.http_for(credentials, self.global_proxy_url())?;
         let credentials: TencentCredentials = parse_credentials(credentials)?;
@@ -325,10 +353,31 @@ impl TencentProvider {
             .call_with(
                 &http,
                 &credentials,
-                STS_SERVICE,
-                STS_VERSION,
-                "GetCallerIdentity",
-                json!({}),
+                DNSPOD_SERVICE,
+                DNSPOD_VERSION,
+                "DescribeDomainList",
+                json!({ "Limit": 1 }),
+            )
+            .await
+            .map(|_| ())
+    }
+
+    /// 探测凭据的部署用途是否可用：调 SSL 的 `DescribeCertificates`。
+    ///
+    /// 这是凭据页「测试」按钮在凭据仅声明部署能力时的探测动作——探测
+    /// SSL 部署业务所需的最轻只读接口（证书列表单页，`Limit=1`），与
+    /// 部署路径共用同一服务与签名。端点随凭据的 `account_site` 切换。
+    pub async fn verify_credentials_for_deploy(&self, credentials: &Value) -> Result<()> {
+        let http = self.http_for(credentials, self.global_proxy_url())?;
+        let credentials: TencentCredentials = parse_credentials(credentials)?;
+        self.client
+            .call_with(
+                &http,
+                &credentials,
+                SSL_SERVICE,
+                SSL_VERSION,
+                "DescribeCertificates",
+                json!({ "Limit": 1 }),
             )
             .await
             .map(|_| ())
@@ -489,7 +538,13 @@ pub fn tencent_credentials_schema() -> RootSchema {
     let mut schema = schema_for!(TencentCredentials);
     schema.schema.extensions.insert(
         "x-field-order".to_owned(),
-        serde_json::json!(["account_site", "secret_id", "secret_key", "proxy_mode", "proxy_url"]),
+        serde_json::json!([
+            "account_site",
+            "secret_id",
+            "secret_key",
+            "proxy_mode",
+            "proxy_url"
+        ]),
     );
     // account_site 独占第一行但框保持一列宽（x-end-row 补空列占位换行）：
     // 必须在 proxy 注入前标注，否则 inject 的栅格模拟会误判 secret_key 需补空列，
@@ -578,12 +633,26 @@ mod tests {
 
     #[test]
     fn the_signature_changes_with_the_secret() {
-        let first = tc3_authorization(&credentials(TencentSite::Cn), 123, "dnspod", "dnspod.tencentcloudapi.com", "CreateRecord", "{}");
+        let first = tc3_authorization(
+            &credentials(TencentSite::Cn),
+            123,
+            "dnspod",
+            "dnspod.tencentcloudapi.com",
+            "CreateRecord",
+            "{}",
+        );
         let other = TencentCredentials {
             secret_key: "another-key".to_owned(),
             ..credentials(TencentSite::Cn)
         };
-        let second = tc3_authorization(&other, 123, "dnspod", "dnspod.tencentcloudapi.com", "CreateRecord", "{}");
+        let second = tc3_authorization(
+            &other,
+            123,
+            "dnspod",
+            "dnspod.tencentcloudapi.com",
+            "CreateRecord",
+            "{}",
+        );
         assert_ne!(first, second);
     }
 
@@ -674,9 +743,10 @@ mod tests {
         }
         // proxy_url 与 proxy_mode=custom 联动显隐。
         assert!(
-            rendered.contains(r#""x-visible-when":{"Equals":{"field":"proxy_mode","values":["custom"]}}"#),
+            rendered.contains(
+                r#""x-visible-when":{"Equals":{"field":"proxy_mode","values":["custom"]}}"#
+            ),
             "proxy_url 应仅在 custom 模式显隐: {rendered}"
         );
     }
 }
-

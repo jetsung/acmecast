@@ -55,7 +55,7 @@ async fn enabled_schedule_without_any_trigger_is_rejected() {
                 enabled: true,
                 catch_up: false,
                 renewal_domains: None,
-                    renewal_threshold_days: None,
+                renewal_threshold_days: None,
             },
         )
         .await
@@ -71,7 +71,7 @@ async fn enabled_schedule_without_any_trigger_is_rejected() {
                 enabled: true,
                 catch_up: false,
                 renewal_domains: Some(vec![]),
-                    renewal_threshold_days: None,
+                renewal_threshold_days: None,
             },
         )
         .await
@@ -91,7 +91,7 @@ async fn disabled_schedule_may_have_no_trigger() {
                 enabled: false,
                 catch_up: false,
                 renewal_domains: None,
-                    renewal_threshold_days: None,
+                renewal_threshold_days: None,
             },
         )
         .await
@@ -114,7 +114,7 @@ async fn enabled_schedule_with_only_cron_is_saved() {
                 enabled: true,
                 catch_up: false,
                 renewal_domains: None,
-                    renewal_threshold_days: None,
+                renewal_threshold_days: None,
             },
         )
         .await
@@ -138,17 +138,14 @@ async fn enabled_schedule_with_only_renewal_domains_is_saved() {
                 enabled: true,
                 catch_up: false,
                 renewal_domains: Some(vec!["Example.COM".to_owned()]),
-                    renewal_threshold_days: None,
+                renewal_threshold_days: None,
             },
         )
         .await
         .expect("仅续期域名集合的启用调度合法");
 
     // 域名按证书同一套规则规范化为小写。
-    assert_eq!(
-        config.renewal_domains,
-        Some(vec!["example.com".to_owned()]),
-    );
+    assert_eq!(config.renewal_domains, Some(vec!["example.com".to_owned()]),);
     // 没有 cron 就没有定时触发点。
     assert!(config.next_trigger_at.is_none());
 }
@@ -165,7 +162,7 @@ async fn save_overwrites_the_existing_schedule_for_the_same_pipeline() {
             enabled: true,
             catch_up: false,
             renewal_domains: None,
-                renewal_threshold_days: None,
+            renewal_threshold_days: None,
         },
     )
     .await
@@ -179,7 +176,7 @@ async fn save_overwrites_the_existing_schedule_for_the_same_pipeline() {
                 enabled: false,
                 catch_up: true,
                 renewal_domains: Some(vec!["example.com".to_owned()]),
-                    renewal_threshold_days: None,
+                renewal_threshold_days: None,
             },
         )
         .await

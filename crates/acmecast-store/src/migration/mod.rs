@@ -23,6 +23,7 @@ pub mod m20250113_000001_add_cert_four_paths;
 pub mod m20250114_000001_add_credential_capabilities;
 pub mod m20250115_000001_migrate_credential_type_ids;
 pub mod m20250116_000001_add_pipeline_notification_channels;
+pub mod m20250117_000001_add_credential_proxy_mode;
 
 use sea_orm::DatabaseConnection;
 use sea_orm_migration::prelude::*;
@@ -49,6 +50,8 @@ pub use m20250113_000001_add_cert_four_paths::Migration as AddCertFourPaths;
 pub use m20250114_000001_add_credential_capabilities::Migration as AddCredentialCapabilities;
 pub use m20250115_000001_migrate_credential_type_ids::Migration as MigrateCredentialTypeIds;
 pub use m20250116_000001_add_pipeline_notification_channels::Migration as AddPipelineNotificationChannels;
+pub use m20250117_000001_add_credential_proxy_mode::Migration as AddCredentialProxyMode;
+pub use m20250117_000001_add_credential_proxy_mode::backfill_credential_proxy_mode;
 
 #[async_trait::async_trait]
 impl MigratorTrait for Migrator {
@@ -70,6 +73,7 @@ impl MigratorTrait for Migrator {
             Box::new(AddCredentialCapabilities),
             Box::new(MigrateCredentialTypeIds),
             Box::new(AddPipelineNotificationChannels),
+            Box::new(AddCredentialProxyMode),
         ]
     }
 }

@@ -6,8 +6,8 @@
 use sea_orm::{ConnectionTrait, Database, DatabaseBackend, Statement};
 use sea_orm_migration::{MigrationTrait, MigratorTrait, SchemaManager};
 
-use acmecast_store::migration::MigrateCredentialTypeIds;
 use acmecast_store::Migrator;
+use acmecast_store::migration::MigrateCredentialTypeIds;
 
 /// 旧短名 → 新分域名，与迁移定义一一对应。
 const REWRITES: [(&str, &str); 7] = [
@@ -69,9 +69,13 @@ async fn insert_credential(db: &sea_orm::DatabaseConnection, type_id: &str) {
                 .to_owned()
         }
     };
-    db.execute(Statement::from_sql_and_values(backend, sql, [type_id.into()]))
-        .await
-        .expect("应能插入凭据行");
+    db.execute(Statement::from_sql_and_values(
+        backend,
+        sql,
+        [type_id.into()],
+    ))
+    .await
+    .expect("应能插入凭据行");
 }
 
 /// 清空凭据表。
@@ -88,10 +92,14 @@ async fn clear_credentials(db: &sea_orm::DatabaseConnection) {
 async fn exists_type_id(db: &sea_orm::DatabaseConnection, type_id: &str) -> bool {
     let backend = db.get_database_backend();
     let sql = "SELECT type_id FROM acmecast_credential WHERE type_id = ?";
-    db.query_one(Statement::from_sql_and_values(backend, sql, [type_id.into()]))
-        .await
-        .expect("查询应成功")
-        .is_some()
+    db.query_one(Statement::from_sql_and_values(
+        backend,
+        sql,
+        [type_id.into()],
+    ))
+    .await
+    .expect("查询应成功")
+    .is_some()
 }
 
 #[tokio::test]
@@ -126,10 +134,7 @@ async fn migration_rewrites_old_type_ids_and_keeps_new_ones() {
             exists_type_id(&db, new).await,
             "旧值 {old} 应被重写为 {new}"
         );
-        assert!(
-            !exists_type_id(&db, old).await,
-            "重写后不应残留旧值 {old}"
-        );
+        assert!(!exists_type_id(&db, old).await, "重写后不应残留旧值 {old}");
     }
 
     // 新值（acme.account）不被任何映射命中，重写后保持不变。

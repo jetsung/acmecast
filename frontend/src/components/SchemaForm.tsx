@@ -2,8 +2,18 @@ import { Col, Form, Input, InputNumber, Row, Select, Switch, Alert, Tooltip, Typ
 import { QuestionCircleOutlined } from "@ant-design/icons";
 import type { FormInstance } from "antd";
 import type { Rule } from "antd/es/form";
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import {
+  Fragment,
+  cloneElement,
+  createContext,
+  isValidElement,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import type { CSSProperties, ReactElement, ReactNode } from "react";
 
 /**
  * 由后端 JSON Schema（schemars 产物）驱动渲染 antd 表单（design D5）。
@@ -61,6 +71,12 @@ interface JsonSchemaNode {
 interface Extension {
   "x-visible-when"?: Condition;
   "x-required-when"?: Condition;
+  /**
+   * 条件禁用（调用方注入）：当前取值命中条件时给控件叠加 `disabled`，
+   * 与 `x-visible-when` 同构的条件表达式。只影响可编辑性，不改显隐与
+   * 必填语义（如 tencent-ssl 变体选中证书 ID 时锁定 repeatable 开关）。
+   */
+  "x-disabled-when"?: Condition;
   "x-hidden"?: boolean;
   /**
    * 多行文本（后端 schema 注入，如 SSH 档案的私钥 PEM）：string 字段渲染成
@@ -158,6 +174,24 @@ export interface SchemaFormProps {
   namePrefix?: (string | number)[];
   disabled?: boolean;
 }
+
+/** 渲染「字段旁附加内容」时拿到的定位信息（字段名、完整表单路径与 schema 节点）。 */
+export interface FieldExtraInfo {
+  name: string;
+  path: (string | number)[];
+  node: SchemaObject;
+}
+
+/** 字段旁插槽的渲染函数：返回非空 ReactNode 时与该字段控件同处一行（右侧）。 */
+export type FieldExtraRenderer = (info: FieldExtraInfo) => ReactNode;
+
+/**
+ * 字段旁附加内容的插槽（SchemaForm 是通用渲染器，不内置任何业务控件；
+ * 调用方经此 Context 在指定字段旁渲染自己的内容，如 tencent-ssl 变体
+ * 「证书 ID」旁的「同步」按钮）。顶层与子表单（变体 config）两处渲染
+ * 路径都会消费该插槽。
+ */
+export const FieldExtraContext = createContext<FieldExtraRenderer | undefined>(undefined);
 
 /**
  * 把 schemars 为字符串枚举生成的
@@ -341,6 +375,52 @@ function visibleWhen(node: SchemaObject, values: Record<string, unknown>): boole
   return conditionSatisfied(condition, values);
 }
 
+/** 读取一个字段的条件禁用标记；条件缺失或形态不认识按「不禁用」处理。 */
+function disabledWhen(node: SchemaObject, values: Record<string, unknown>): boolean {
+  const condition = node["x-disabled-when"];
+  if (!condition || !isKnownCondition(condition)) return false;
+  return conditionSatisfied(condition, values);
+}
+
+/**
+ * 字段旁插槽的消费点：渲染函数返回非空内容时，把控件与插槽收进同一 flex
+ * 行——控件占满剩余宽度、插槽紧贴控件右侧（如 tencent-ssl 变体「证书 ID」
+ * 下拉旁的「同步」按钮）；返回空时原样渲染控件，其余字段布局完全不变。
+ * 对齐细节：`Form.Item` 自带 `margin-bottom`（表单行距），flex 的
+ * `align-items` 按 margin box 对齐，会把插槽压低到视觉上的下一行——
+ * 这里把包裹的 `Form.Item` 行距归零、由 flex 行自身补回，插槽才能与
+ * 控件底边对齐。
+ */
+function FieldControlRow({
+  name,
+  path,
+  node,
+  children,
+}: {
+  name: string;
+  path: (string | number)[];
+  node: SchemaObject;
+  children: ReactNode;
+}) {
+  const renderer = useContext(FieldExtraContext);
+  const extra = renderer?.({ name, path, node });
+  if (extra === null || extra === undefined || extra === false) return <>{children}</>;
+  const item = isValidElement(children)
+    ? cloneElement(children as ReactElement<{ style?: CSSProperties }>, {
+        style: {
+          ...((children.props as { style?: CSSProperties }).style ?? {}),
+          marginBottom: 0,
+        },
+      })
+    : children;
+  return (
+    <div style={{ display: "flex", gap: 8, alignItems: "flex-end", marginBottom: 24 }}>
+      <div style={{ flex: 1, minWidth: 0 }}>{item}</div>
+      <div style={{ flex: "none" }}>{extra}</div>
+    </div>
+  );
+}
+
 export function SchemaForm({ schema, form, namePrefix = [], disabled }: SchemaFormProps) {
   const root = (schema ?? {}) as JsonSchemaNode;
   const object = root.type === "object" || root.properties ? root : root;
@@ -413,22 +493,25 @@ export function SchemaForm({ schema, form, namePrefix = [], disabled }: SchemaFo
                 form={form}
                 path={path}
               />
-              <Form.Item
-                name={path}
-                label={labelInfo.label}
-                tooltip={labelInfo.tooltip ? { title: labelInfo.tooltip, overlayInnerStyle: TOOLTIP_OVERLAY_INNER_STYLE } : undefined}
-                rules={rules}
-                valuePropName={node.type === "boolean" ? "checked" : "value"}
-              >
-                <SchemaField
-                  node={node}
-                  form={form}
-                  path={path}
-                  root={root}
-                  values={values as Record<string, unknown>}
-                  disabled={disabled}
-                />
-              </Form.Item>
+              <FieldControlRow name={name} path={path} node={node}>
+                <Form.Item
+                  name={path}
+                  label={labelInfo.label}
+                  tooltip={labelInfo.tooltip ? { title: labelInfo.tooltip, overlayInnerStyle: TOOLTIP_OVERLAY_INNER_STYLE } : undefined}
+                  rules={rules}
+                  valuePropName={node.type === "boolean" ? "checked" : "value"}
+                >
+                  <SchemaField
+                    node={node}
+                    form={form}
+                    path={path}
+                    root={root}
+                    values={values as Record<string, unknown>}
+                    // 条件禁用（x-disabled-when）只叠加 disabled，不改显隐/必填。
+                    disabled={disabled || disabledWhen(node, values as Record<string, unknown>)}
+                  />
+                </Form.Item>
+              </FieldControlRow>
             </Col>
             {/* 行尾标记：补空列占满剩余宽度，下一个字段从新行开始——
                 独占一行但右侧留空，而不是让后面的字段补位上来。 */}
@@ -690,22 +773,26 @@ function ObjectFieldGroup({
           <Fragment key={childPath.join(".")}>
             <Col span={span}>
               <SchemaDefault value={parentValues?.[name]} node={child} form={form} path={childPath} />
-              <Form.Item
-                name={childPath}
-                label={child["x-label"] ?? name}
-                tooltip={child.description ? { title: child.description, overlayInnerStyle: TOOLTIP_OVERLAY_INNER_STYLE } : undefined}
-                rules={rules}
-                valuePropName={childType === "boolean" ? "checked" : "value"}
-              >
-                <SchemaField
-                  node={child}
-                  form={form}
-                  path={childPath}
-                  root={root}
-                  values={(parentValues?.[name] ?? {}) as Record<string, unknown>}
-                  disabled={disabled}
-                />
-              </Form.Item>
+              <FieldControlRow name={name} path={childPath} node={child}>
+                <Form.Item
+                  name={childPath}
+                  label={child["x-label"] ?? name}
+                  tooltip={child.description ? { title: child.description, overlayInnerStyle: TOOLTIP_OVERLAY_INNER_STYLE } : undefined}
+                  rules={rules}
+                  valuePropName={childType === "boolean" ? "checked" : "value"}
+                >
+                  <SchemaField
+                    node={child}
+                    form={form}
+                    path={childPath}
+                    root={root}
+                    values={(parentValues?.[name] ?? {}) as Record<string, unknown>}
+                    // 条件禁用（x-disabled-when）取父对象取值求值：条件里的
+                    // field 指向同级字段（与 visibleWhen 同一取值口径）。
+                    disabled={disabled || disabledWhen(child, parentValues ?? {})}
+                  />
+                </Form.Item>
+              </FieldControlRow>
             </Col>
             {/* 行尾标记：补空列占满剩余宽度，下一个字段从新行开始——
                 独占一行但右侧留空，而不是让后面的字段补位上来。 */}

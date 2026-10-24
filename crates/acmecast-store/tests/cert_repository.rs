@@ -22,6 +22,7 @@ async fn add_account(db: &DatabaseConnection, name: &str) -> i64 {
     credential::ActiveModel {
         name: Set(name.to_owned()),
         type_id: Set("acme.account".to_owned()),
+        proxy_mode: Set("direct".to_owned()),
         encrypted_fields: Set("{}".to_owned()),
         created_at: Set(now),
         updated_at: Set(now),
@@ -50,7 +51,8 @@ async fn setup() -> (DatabaseConnection, i64) {
 /// 构造一条证书输入；除域名集合、指纹与到期天数外均取固定值。
 fn input(domains: &[&str], fingerprint: &str, valid_days: i64, account_id: i64) -> CertInput {
     let now = Utc::now();
-    CertInput { domains: domains.iter().map(|domain| (*domain).to_owned()).collect(),
+    CertInput {
+        domains: domains.iter().map(|domain| (*domain).to_owned()).collect(),
         cert_pem_path: format!("certs/ssl/{fingerprint}.cert.pem"),
         key_pem_path: format!("certs/ssl/{fingerprint}.key.pem"),
         cert_path: None,

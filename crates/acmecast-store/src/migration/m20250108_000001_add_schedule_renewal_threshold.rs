@@ -16,7 +16,9 @@ impl MigrationTrait for Migration {
             .alter_table(
                 Table::alter()
                     .table(schedule::Entity)
-                    .add_column(ColumnDef::new(schedule::Column::RenewalThresholdDays).small_integer())
+                    .add_column(
+                        ColumnDef::new(schedule::Column::RenewalThresholdDays).small_integer(),
+                    )
                     .to_owned(),
             )
             .await

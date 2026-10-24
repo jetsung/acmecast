@@ -8,6 +8,7 @@
 //! DNS 提供商沿用 trait 默认的 `NotTestable`——一次有效探测需要具体
 //! zone，这里不猜一个域名去试。
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use acmecast_access::{ConnectivityOutcome, CredentialType};
@@ -56,7 +57,10 @@ impl CloudflareCredentialType {
             Some(transport) => Arc::clone(transport),
             None => Arc::new(ReqwestTransport::default()),
         };
-        CloudflareProvider::with_transport(transport).with_global_proxy_and_timeout(self.global_proxy_url.clone(), acmecast_core::NETWORK_TIMEOUT)
+        CloudflareProvider::with_transport(transport).with_global_proxy_and_timeout(
+            self.global_proxy_url.clone(),
+            acmecast_core::NETWORK_TIMEOUT,
+        )
     }
 }
 
@@ -92,7 +96,11 @@ impl CredentialType for CloudflareCredentialType {
         validate_proxy_url_field(fields)
     }
 
-    async fn test_connectivity(&self, fields: &serde_json::Value) -> ConnectivityOutcome {
+    async fn test_connectivity(
+        &self,
+        fields: &serde_json::Value,
+        _capabilities: &[String],
+    ) -> ConnectivityOutcome {
         match self.provider().verify_credentials(fields).await {
             Ok(()) => ConnectivityOutcome::Ok,
             Err(error) => ConnectivityOutcome::Unavailable {
@@ -135,7 +143,10 @@ impl AliyunCredentialType {
             Some(transport) => Arc::clone(transport),
             None => Arc::new(ReqwestTransport::default()),
         };
-        AliyunProvider::with_transport(transport).with_global_proxy_and_timeout(self.global_proxy_url.clone(), acmecast_core::NETWORK_TIMEOUT)
+        AliyunProvider::with_transport(transport).with_global_proxy_and_timeout(
+            self.global_proxy_url.clone(),
+            acmecast_core::NETWORK_TIMEOUT,
+        )
     }
 }
 
@@ -175,7 +186,11 @@ impl CredentialType for AliyunCredentialType {
         validate_proxy_url_field(fields)
     }
 
-    async fn test_connectivity(&self, fields: &serde_json::Value) -> ConnectivityOutcome {
+    async fn test_connectivity(
+        &self,
+        fields: &serde_json::Value,
+        _capabilities: &[String],
+    ) -> ConnectivityOutcome {
         match self.provider().verify_credentials(fields).await {
             Ok(()) => ConnectivityOutcome::Ok,
             Err(error) => ConnectivityOutcome::Unavailable {
@@ -250,7 +265,10 @@ impl TencentCredentialType {
             Some(transport) => Arc::clone(transport),
             None => Arc::new(ReqwestTransport::default()),
         };
-        TencentProvider::with_transport(transport).with_global_proxy_and_timeout(self.global_proxy_url.clone(), acmecast_core::NETWORK_TIMEOUT)
+        TencentProvider::with_transport(transport).with_global_proxy_and_timeout(
+            self.global_proxy_url.clone(),
+            acmecast_core::NETWORK_TIMEOUT,
+        )
     }
 }
 
@@ -274,12 +292,48 @@ impl CredentialType for TencentCredentialType {
         validate_tencent_fields(fields)
     }
 
-    async fn test_connectivity(&self, fields: &serde_json::Value) -> ConnectivityOutcome {
-        match self.provider().verify_credentials(fields).await {
-            Ok(()) => ConnectivityOutcome::Ok,
-            Err(error) => ConnectivityOutcome::Unavailable {
-                reason: self.redact(fields, &error.to_string()),
-            },
+    async fn test_connectivity(
+        &self,
+        fields: &serde_json::Value,
+        capabilities: &[String],
+    ) -> ConnectivityOutcome {
+        // 探测接口与用途匹配：各业务线的权限彼此独立，用对用途的接口
+        // 才能反映真实可用性。能力为空按双能力处理（与 capability 模块
+        // 的存量缺省口径一致）；双能力凭据两侧都探测——任一权限缺失
+        // 都会在流水线对应环节炸出来，测试阶段就该暴露。
+        let has_dns = capabilities.is_empty()
+            || capabilities
+                .iter()
+                .any(|cap| cap == acmecast_store::capability::DNS);
+        let has_deploy = capabilities.is_empty()
+            || capabilities
+                .iter()
+                .any(|cap| cap == acmecast_store::capability::DEPLOY);
+
+        let provider = self.provider();
+        let mut failures: Vec<String> = Vec::new();
+        if has_dns {
+            if let Err(error) = provider.verify_credentials(fields).await {
+                failures.push(format!(
+                    "DNS 用途探测失败: {}",
+                    self.redact(fields, &error.to_string())
+                ));
+            }
+        }
+        if has_deploy {
+            if let Err(error) = provider.verify_credentials_for_deploy(fields).await {
+                failures.push(format!(
+                    "部署用途探测失败: {}",
+                    self.redact(fields, &error.to_string())
+                ));
+            }
+        }
+        if failures.is_empty() {
+            ConnectivityOutcome::Ok
+        } else {
+            ConnectivityOutcome::Unavailable {
+                reason: failures.join("；"),
+            }
         }
     }
 }
@@ -316,7 +370,10 @@ impl TencentEoCredentialType {
             Some(transport) => Arc::clone(transport),
             None => Arc::new(ReqwestTransport::default()),
         };
-        TencentEoProvider::with_transport(transport).with_global_proxy_and_timeout(self.global_proxy_url.clone(), acmecast_core::NETWORK_TIMEOUT)
+        TencentEoProvider::with_transport(transport).with_global_proxy_and_timeout(
+            self.global_proxy_url.clone(),
+            acmecast_core::NETWORK_TIMEOUT,
+        )
     }
 }
 
@@ -340,7 +397,11 @@ impl CredentialType for TencentEoCredentialType {
         validate_tencent_fields(fields)
     }
 
-    async fn test_connectivity(&self, fields: &serde_json::Value) -> ConnectivityOutcome {
+    async fn test_connectivity(
+        &self,
+        fields: &serde_json::Value,
+        _capabilities: &[String],
+    ) -> ConnectivityOutcome {
         match self.provider().verify_credentials(fields).await {
             Ok(()) => ConnectivityOutcome::Ok,
             Err(error) => ConnectivityOutcome::Unavailable {
@@ -391,7 +452,11 @@ impl CredentialType for SshHostCredentialType {
         parsed.validate()
     }
 
-    async fn test_connectivity(&self, fields: &serde_json::Value) -> ConnectivityOutcome {
+    async fn test_connectivity(
+        &self,
+        fields: &serde_json::Value,
+        _capabilities: &[String],
+    ) -> ConnectivityOutcome {
         let Ok(parsed) = serde_json::from_value::<SshHostFields>(fields.clone()) else {
             return ConnectivityOutcome::Unavailable {
                 reason: "档案字段不合法，无法测试".to_owned(),
@@ -437,39 +502,77 @@ impl CredentialType for SshHostCredentialType {
 mod tests {
     use super::*;
 
-    /// 按给定的响应体应答的传输层替身：探测的「可用 / 不可用」两条
-    /// 分支都能在无外网的情况下验证。
+    /// 按脚本顺序应答的传输层替身：探测的「可用 / 不可用」两条分支都
+    /// 能在无外网的情况下验证；脚本耗尽后重复最后一项（单一响应即
+    /// 「每次同答」）。同时记录收到的请求，供断言「探测动作随凭据
+    /// 用途分派」。
     #[derive(Debug)]
     struct FakeTransport {
-        body: &'static str,
+        script: std::sync::Mutex<VecDeque<&'static str>>,
+        requests: std::sync::Mutex<Vec<acmecast_dns::HttpRequest>>,
+    }
+
+    impl FakeTransport {
+        /// 每次请求都应答同一个响应体。
+        fn new(body: &'static str) -> Self {
+            Self::scripted(vec![body])
+        }
+
+        /// 按调用顺序依次应答，耗尽后重复最后一项。
+        fn scripted(script: Vec<&'static str>) -> Self {
+            assert!(!script.is_empty(), "应答脚本不能为空");
+            Self {
+                script: std::sync::Mutex::new(VecDeque::from(script)),
+                requests: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn requests(&self) -> Vec<acmecast_dns::HttpRequest> {
+            self.requests.lock().expect("请求记录锁").clone()
+        }
     }
 
     #[async_trait::async_trait]
     impl HttpTransport for FakeTransport {
         async fn send(
             &self,
-            _request: acmecast_dns::HttpRequest,
+            request: acmecast_dns::HttpRequest,
         ) -> acmecast_dns::Result<acmecast_dns::HttpResponse> {
-            Ok(acmecast_dns::HttpResponse::new(200, self.body))
+            self.requests.lock().expect("请求记录锁").push(request);
+            let mut script = self.script.lock().expect("应答脚本锁");
+            let body = *script.front().expect("脚本已保证非空");
+            if script.len() > 1 {
+                script.pop_front();
+            }
+            Ok(acmecast_dns::HttpResponse::new(200, body))
         }
     }
 
-    /// 有效凭据时腾讯云返回的成功形态。
-    const STS_OK: &str = r#"{"Response":{"AccountId":"1234","RequestId":"req-1"}}"#;
+    /// 有效凭据时 DNSPod `DescribeDomainList` 的成功形态（DNS 用途探测）。
+    const DNSPOD_OK: &str = r#"{"Response":{"DomainCountInfo":{"AllTotal":1},"DomainList":[{"Name":"example.com"}],"RequestId":"req-1"}}"#;
+    /// 有效凭据时 SSL `DescribeCertificates` 的成功形态（部署用途探测）。
+    const SSL_OK: &str = r#"{"Response":{"TotalCount":1,"Certificates":[{"CertificateId":"cert-1"}],"RequestId":"req-1"}}"#;
     /// 无效凭据时腾讯云返回的业务错误形态。
     const AUTH_FAILURE: &str = r#"{"Response":{"Error":{"Code":"AuthFailure.SecretIdNotFound","Message":"The SecretId does not exist"},"RequestId":"req-1"}}"#;
     /// 无效凭据时 Cloudflare 返回的错误形态。
-    const CF_INVALID: &str = r#"{"success":false,"errors":[{"message":"Invalid request headers"}]}"#;
+    const CF_INVALID: &str =
+        r#"{"success":false,"errors":[{"message":"Invalid request headers"}]}"#;
     /// 有效凭据时 Cloudflare 返回的成功形态。
     const CF_ACTIVE: &str = r#"{"success":true,"result":{"status":"active"}}"#;
 
     /// 类型标识必须与 DNS 提供商的 type_id 一致，否则凭据 `type_id` 推导的提供商对不上。
     #[test]
     fn type_ids_match_dns_providers() {
-        assert_eq!(CloudflareCredentialType::default().type_id(), "cloud.cloudflare");
+        assert_eq!(
+            CloudflareCredentialType::default().type_id(),
+            "cloud.cloudflare"
+        );
         assert_eq!(AliyunCredentialType::default().type_id(), "cloud.aliyun");
         assert_eq!(TencentCredentialType::default().type_id(), "cloud.tencent");
-        assert_eq!(TencentEoCredentialType::default().type_id(), "dns.tencent-eo");
+        assert_eq!(
+            TencentEoCredentialType::default().type_id(),
+            "dns.tencent-eo"
+        );
     }
 
     #[test]
@@ -493,7 +596,7 @@ mod tests {
             "proxy_url": "socks5://user:supersecret@127.0.0.1:1",
         });
         let acmecast_access::ConnectivityOutcome::Unavailable { reason } =
-            cloudflare.test_connectivity(&fields).await
+            cloudflare.test_connectivity(&fields, &[]).await
         else {
             panic!("代理不可达时应报不可用");
         };
@@ -503,7 +606,10 @@ mod tests {
             "错误应指向代理地址: {reason}"
         );
         // 代理 URL 内嵌的凭据经 redact 脱敏，不出现在错误信息里。
-        assert!(!reason.contains("supersecret"), "内嵌凭据应被脱敏: {reason}");
+        assert!(
+            !reason.contains("supersecret"),
+            "内嵌凭据应被脱敏: {reason}"
+        );
     }
 
     /// 连通性测试走与正式调用相同的 `proxy_mode` transport：
@@ -514,11 +620,14 @@ mod tests {
         // direct：全局代理已配也不该经代理——直连会因无网络而失败，
         // 但错误里不该出现代理主机（无代理主机可指认）。
         let outcome = cloudflare
-            .test_connectivity(&serde_json::json!({
-                "api_token": "cf-token",
-                "proxy_mode": "direct",
-                "proxy_url": "socks5://user:supersecret@127.0.0.1:1",
-            }))
+            .test_connectivity(
+                &serde_json::json!({
+                    "api_token": "cf-token",
+                    "proxy_mode": "direct",
+                    "proxy_url": "socks5://user:supersecret@127.0.0.1:1",
+                }),
+                &[],
+            )
             .await;
         let acmecast_access::ConnectivityOutcome::Unavailable { reason } = outcome else {
             panic!("直连应失败并给出原因");
@@ -527,7 +636,10 @@ mod tests {
             !reason.contains("经代理"),
             "direct 模式不该出现代理归因: {reason}"
         );
-        assert!(!reason.contains("supersecret"), "内嵌凭据应被脱敏: {reason}");
+        assert!(
+            !reason.contains("supersecret"),
+            "内嵌凭据应被脱敏: {reason}"
+        );
     }
 
     /// 保存校验：`proxy_mode=custom` 时校验 `proxy_url`，
@@ -589,48 +701,128 @@ mod tests {
         validate(serde_json::json!({ "api_token": "t" })).expect("存量缺字段应视为 direct");
     }
 
+    /// 腾讯云凭据探测按能力分派：仅 DNS 探测 DNSPod 域名列表，仅部署
+    /// 探测 SSL 证书列表；双能力两侧都探测、全部通过才算可用，失败
+    /// 原因指明用途并含服务端错误码且不回显密钥。
     #[tokio::test]
-    async fn tencent_probe_reports_ok_or_a_redacted_reason() {
-        let ok = TencentCredentialType::with_transport(Arc::new(FakeTransport { body: STS_OK }));
+    async fn tencent_probe_follows_the_declared_capabilities() {
+        let tencent_keys = serde_json::json!({
+            "secret_id": "AKID", "secret_key": "tencent-secret", "account_site": "intl"
+        });
+        let dns_cap = vec!["dns".to_owned()];
+        let deploy_cap = vec!["deploy".to_owned()];
+        let both_caps = vec!["dns".to_owned(), "deploy".to_owned()];
+
+        // 仅 DNS 能力 → DNSPod DescribeDomainList 单侧探测。
+        let transport = Arc::new(FakeTransport::new(DNSPOD_OK));
+        let kind = TencentCredentialType::with_transport(Arc::clone(&transport) as _);
         assert!(
-            ok.test_connectivity(&serde_json::json!({
-                "secret_id": "AKID", "secret_key": "tencent-secret", "account_site": "intl"
-            }))
+            kind.test_connectivity(&tencent_keys, &dns_cap)
+                .await
+                .is_ok(),
+            "有效凭据应判定可用"
+        );
+        let requests = transport.requests();
+        assert_eq!(requests.len(), 1, "仅 DNS 用途应恰好发出一次探测");
+        assert_eq!(requests[0].headers["X-TC-Action"], "DescribeDomainList");
+        assert_eq!(requests[0].url, "https://dnspod.intl.tencentcloudapi.com/");
+
+        // 仅部署能力 → SSL DescribeCertificates 单侧探测。
+        let transport = Arc::new(FakeTransport::new(SSL_OK));
+        let kind = TencentCredentialType::with_transport(Arc::clone(&transport) as _);
+        assert!(
+            kind.test_connectivity(&tencent_keys, &deploy_cap)
+                .await
+                .is_ok(),
+            "有效凭据应判定可用"
+        );
+        let requests = transport.requests();
+        assert_eq!(requests.len(), 1, "仅部署用途应恰好发出一次探测");
+        assert_eq!(requests[0].headers["X-TC-Action"], "DescribeCertificates");
+        assert_eq!(requests[0].url, "https://ssl.intl.tencentcloudapi.com/");
+
+        // 双能力 → DNS 与 SSL 两侧都探测，全部通过才算可用。
+        let transport = Arc::new(FakeTransport::scripted(vec![DNSPOD_OK, SSL_OK]));
+        let kind = TencentCredentialType::with_transport(Arc::clone(&transport) as _);
+        assert!(
+            kind.test_connectivity(&tencent_keys, &both_caps)
+                .await
+                .is_ok(),
+            "两侧权限都有效才应判定可用"
+        );
+        let requests = transport.requests();
+        assert_eq!(requests.len(), 2, "双能力应先后探测两个接口");
+        assert_eq!(requests[0].headers["X-TC-Action"], "DescribeDomainList");
+        assert_eq!(requests[1].headers["X-TC-Action"], "DescribeCertificates");
+
+        // 双能力、DNS 侧失败：原因指明用途，含错误码且不回显密钥。
+        let transport = Arc::new(FakeTransport::scripted(vec![AUTH_FAILURE, SSL_OK]));
+        let kind = TencentCredentialType::with_transport(Arc::clone(&transport) as _);
+        let outcome = kind.test_connectivity(&tencent_keys, &both_caps).await;
+        let reason = outcome.reason().expect("不可用应给出原因");
+        assert!(reason.contains("DNS 用途探测失败"), "{reason}");
+        assert!(!reason.contains("部署用途"), "部署侧通过不该被点名: {reason}");
+        assert!(reason.contains("AuthFailure.SecretIdNotFound"), "{reason}");
+        assert!(
+            !reason.contains("tencent-secret"),
+            "原因不得回显密钥: {reason}"
+        );
+
+        // 双能力、部署侧失败：同理点名部署用途。
+        let transport = Arc::new(FakeTransport::scripted(vec![DNSPOD_OK, AUTH_FAILURE]));
+        let kind = TencentCredentialType::with_transport(Arc::clone(&transport) as _);
+        let outcome = kind.test_connectivity(&tencent_keys, &both_caps).await;
+        let reason = outcome.reason().expect("不可用应给出原因");
+        assert!(reason.contains("部署用途探测失败"), "{reason}");
+        assert!(!reason.contains("DNS 用途"), "DNS 侧通过不该被点名: {reason}");
+
+        // 双能力、两侧都失败：两侧原因一并给出。
+        let transport = Arc::new(FakeTransport::new(AUTH_FAILURE));
+        let kind = TencentCredentialType::with_transport(Arc::clone(&transport) as _);
+        let outcome = kind.test_connectivity(&tencent_keys, &both_caps).await;
+        let reason = outcome.reason().expect("不可用应给出原因");
+        assert!(reason.contains("DNS 用途探测失败"), "{reason}");
+        assert!(reason.contains("部署用途探测失败"), "{reason}");
+    }
+
+    /// EdgeOne 凭据探测固定走 DescribePlans（不受控类型无能力分派）。
+    #[tokio::test]
+    async fn tencent_eo_probe_uses_describe_plans() {
+        let transport = Arc::new(FakeTransport::new(
+            r#"{"Response":{"TotalCount":1,"Plans":[{"PlanId":"plan-1"}],"RequestId":"req-1"}}"#,
+        ));
+        let kind = TencentEoCredentialType::with_transport(Arc::clone(&transport) as _);
+        assert!(
+            kind.test_connectivity(
+                &serde_json::json!({
+                    "secret_id": "AKID", "secret_key": "tencent-secret", "account_site": "intl"
+                }),
+                &[]
+            )
             .await
             .is_ok(),
             "有效凭据应判定可用"
         );
-
-        let broken =
-            TencentCredentialType::with_transport(Arc::new(FakeTransport { body: AUTH_FAILURE }));
-        let outcome = broken
-            .test_connectivity(&serde_json::json!({
-                "secret_id": "AKID", "secret_key": "tencent-secret", "account_site": "intl"
-            }))
-            .await;
-        assert!(!outcome.is_ok(), "无效凭据不应判定可用");
-        let reason = outcome.reason().expect("不可用应给出原因");
-        assert!(reason.contains("AuthFailure.SecretIdNotFound"), "{reason}");
-        assert!(!reason.contains("tencent-secret"), "原因不得回显密钥: {reason}");
+        let requests = transport.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].headers["X-TC-Action"], "DescribePlans");
+        assert_eq!(requests[0].url, "https://teo.intl.tencentcloudapi.com/");
     }
 
     #[tokio::test]
     async fn cloudflare_probe_reports_ok_or_a_redacted_reason() {
-        let ok = CloudflareCredentialType::with_transport(Arc::new(FakeTransport {
-            body: CF_ACTIVE,
-        }));
+        let ok = CloudflareCredentialType::with_transport(Arc::new(FakeTransport::new(CF_ACTIVE)));
         assert!(
-            ok.test_connectivity(&serde_json::json!({ "api_token": "cf-token" }))
+            ok.test_connectivity(&serde_json::json!({ "api_token": "cf-token" }), &[])
                 .await
                 .is_ok(),
             "有效令牌应判定可用"
         );
 
-        let broken = CloudflareCredentialType::with_transport(Arc::new(FakeTransport {
-            body: CF_INVALID,
-        }));
+        let broken =
+            CloudflareCredentialType::with_transport(Arc::new(FakeTransport::new(CF_INVALID)));
         let outcome = broken
-            .test_connectivity(&serde_json::json!({ "api_token": "cf-token" }))
+            .test_connectivity(&serde_json::json!({ "api_token": "cf-token" }), &[])
             .await;
         let reason = outcome.reason().expect("不可用应给出原因");
         assert!(reason.contains("Invalid request headers"), "{reason}");
@@ -728,7 +920,11 @@ mod tests {
     #[test]
     fn a_valid_proxy_url_passes_validation() {
         // 合法三种 scheme 均放行（腾讯系校验即代表三处 DNS 凭据类型的口径）。
-        for proxy in ["socks5://127.0.0.1:7890", "http://proxy.local:8080", "https://p.example.com"] {
+        for proxy in [
+            "socks5://127.0.0.1:7890",
+            "http://proxy.local:8080",
+            "https://p.example.com",
+        ] {
             TencentCredentialType::default()
                 .validate(&serde_json::json!({
                     "secret_id": "id", "secret_key": "secret", "proxy_url": proxy,
@@ -819,8 +1015,8 @@ mod tests {
 
     #[test]
     fn the_ssh_host_schema_marks_the_private_key_multiline() {
-        let rendered =
-            serde_json::to_value(SshHostCredentialType::default().fields_schema()).expect("Schema 应可序列化");
+        let rendered = serde_json::to_value(SshHostCredentialType::default().fields_schema())
+            .expect("Schema 应可序列化");
         assert_eq!(
             rendered["properties"]["private_key"]["x-multiline"],
             serde_json::Value::Bool(true)
@@ -829,8 +1025,8 @@ mod tests {
 
     #[test]
     fn the_ssh_host_schema_carries_only_profile_fields_with_form_defaults() {
-        let rendered =
-            serde_json::to_value(SshHostCredentialType::default().fields_schema()).expect("Schema 应可序列化");
+        let rendered = serde_json::to_value(SshHostCredentialType::default().fields_schema())
+            .expect("Schema 应可序列化");
         let properties = rendered["properties"]
             .as_object()
             .expect("schema 应有 properties");
@@ -869,7 +1065,9 @@ mod tests {
         fields["host"] = serde_json::json!("127.0.0.1");
         fields["port"] = serde_json::json!(1);
 
-        let outcome = SshHostCredentialType::default().test_connectivity(&fields).await;
+        let outcome = SshHostCredentialType::default()
+            .test_connectivity(&fields, &[])
+            .await;
         let ConnectivityOutcome::Unavailable { reason } = outcome else {
             panic!("不可达主机应报不可用，实际 {outcome:?}");
         };
@@ -897,7 +1095,7 @@ mod tests {
     #[tokio::test]
     async fn ssh_host_connectivity_rejects_malformed_fields() {
         let outcome = SshHostCredentialType::default()
-            .test_connectivity(&serde_json::json!({ "host": 1 }))
+            .test_connectivity(&serde_json::json!({ "host": 1 }), &[])
             .await;
         assert!(
             matches!(outcome, ConnectivityOutcome::Unavailable { .. }),

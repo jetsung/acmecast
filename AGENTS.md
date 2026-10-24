@@ -65,7 +65,7 @@
 
 ### 使用 just 启动前、后端
 
-`justfile` 已通过 `mise exec` 统一注入 `mise.toml` 的工具链与 `.env` 环境变量，直接使用 `just` 命令即可：
+`justfile` 的任务直接调用 `cargo` / `pnpm`（不再经 `mise exec` 包装）。工具链来源按以下优先级取用：全局已安装（`mise use -g`，用于本地所有项目共享）优先；未安装时回退到 `mise.toml` 声明的版本（进入仓库目录由 mise 自动激活，用于云端单项目隔离环境）。`.env` 由 `mise.toml` 的 `[env] _.file = ".env"` 自动加载，无需手动 export。首次使用：`cp .env.example .env`（详见 `docs/02-getting-started.md`）。
 
 ```bash
 # 同时启动前后端（后端 0.0.0.0:8080，前端 localhost:5173，/api → 8080）

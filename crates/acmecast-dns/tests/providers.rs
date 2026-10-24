@@ -367,9 +367,18 @@ async fn tencent_creates_a_txt_record() {
         "application/json; charset=utf-8"
     );
     let authorization = &request.headers["Authorization"];
-    assert!(authorization.starts_with("TC3-HMAC-SHA256 Credential=AKID/"), "{authorization}");
-    assert!(authorization.contains("/dnspod/tc3_request"), "{authorization}");
-    assert!(authorization.contains("SignedHeaders=content-type;host;x-tc-action"), "{authorization}");
+    assert!(
+        authorization.starts_with("TC3-HMAC-SHA256 Credential=AKID/"),
+        "{authorization}"
+    );
+    assert!(
+        authorization.contains("/dnspod/tc3_request"),
+        "{authorization}"
+    );
+    assert!(
+        authorization.contains("SignedHeaders=content-type;host;x-tc-action"),
+        "{authorization}"
+    );
 
     // 记录名被拆成「域名 + 主机记录」两半，线路用默认。
     let body = request.body.as_ref().expect("应带请求体");
@@ -443,7 +452,10 @@ async fn tencent_deletes_by_looking_the_record_up_first() {
     // 按值挑出候选再删——同名但不是我们写的记录不该被替人清掉。
     let requests = transport.requests();
     assert_eq!(requests.len(), 2, "查记录、删记录");
-    assert_eq!(requests[0].headers["X-TC-Action"], "DescribeRecordFilterList");
+    assert_eq!(
+        requests[0].headers["X-TC-Action"],
+        "DescribeRecordFilterList"
+    );
     assert_eq!(requests[1].headers["X-TC-Action"], "DeleteRecord");
     let body = requests[1].body.as_ref().expect("应带请求体");
     assert_eq!(body["Domain"], "example.com");
@@ -560,7 +572,10 @@ async fn teo_deletes_by_looking_the_record_up_first() {
     let query = requests[1].body.as_ref().expect("应带请求体");
     assert_eq!(query["ZoneId"], "zone-9");
     assert_eq!(query["Filters"][0]["Name"], "name");
-    assert_eq!(query["Filters"][0]["Values"][0], "_acme-challenge.example.com");
+    assert_eq!(
+        query["Filters"][0]["Values"][0],
+        "_acme-challenge.example.com"
+    );
     assert_eq!(query["Filters"][1]["Name"], "type");
     assert_eq!(query["Filters"][1]["Values"][0], "TXT");
     assert_eq!(query["Limit"], 1000, "默认每页 20，应顶格避免分页截断");
@@ -612,7 +627,10 @@ async fn teo_finds_txt_records_via_the_real_query_action() {
     assert_eq!(requests[1].headers["X-TC-Action"], "DescribeDnsRecords");
     let query = requests[1].body.as_ref().expect("应带请求体");
     assert_eq!(query["ZoneId"], "zone-9");
-    assert_eq!(query["Filters"][0]["Values"][0], "_acme-challenge.example.com");
+    assert_eq!(
+        query["Filters"][0]["Values"][0],
+        "_acme-challenge.example.com"
+    );
     assert_eq!(query["Filters"][1]["Values"][0], "TXT");
     assert_eq!(query["Limit"], 1000);
 }
@@ -634,7 +652,10 @@ async fn cloudflare_verify_credentials_accepts_an_active_token() {
         .expect("active 令牌应可用");
 
     let request = &transport.requests()[0];
-    assert_eq!(request.url, "https://api.cloudflare.com/client/v4/user/tokens/verify");
+    assert_eq!(
+        request.url,
+        "https://api.cloudflare.com/client/v4/user/tokens/verify"
+    );
     assert_eq!(request.headers["Authorization"], "Bearer cf-token-abc");
 }
 
@@ -694,15 +715,15 @@ async fn aliyun_verify_credentials_surfaces_server_errors() {
 }
 
 #[tokio::test]
-async fn tencent_verify_credentials_probes_sts_per_account_site() {
+async fn tencent_verify_credentials_probes_dnspod_per_account_site() {
     // 国内站与国际站的凭据各探测一次，端点必须随 account_site 切换。
     for (site, expected_host) in [
-        ("cn", "https://sts.tencentcloudapi.com/"),
-        ("intl", "https://sts.intl.tencentcloudapi.com/"),
+        ("cn", "https://dnspod.tencentcloudapi.com/"),
+        ("intl", "https://dnspod.intl.tencentcloudapi.com/"),
     ] {
         let transport = ScriptedTransport::new(vec![HttpResponse::new(
             200,
-            r#"{"Response":{"AccountId":"1234","RequestId":"req-1"}}"#,
+            r#"{"Response":{"DomainCountInfo":{"AllTotal":1},"DomainList":[{"Name":"example.com"}],"RequestId":"req-1"}}"#,
         )]);
         let provider =
             TencentProvider::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
@@ -714,9 +735,50 @@ async fn tencent_verify_credentials_probes_sts_per_account_site() {
 
         let request = &transport.requests()[0];
         assert_eq!(request.url, expected_host);
-        assert_eq!(request.headers["X-TC-Action"], "GetCallerIdentity");
-        assert_eq!(request.headers["X-TC-Version"], "2018-08-13");
-        assert_eq!(request.body.as_ref().expect("应带请求体"), &json!({}));
+        assert_eq!(request.headers["X-TC-Action"], "DescribeDomainList");
+        assert_eq!(request.headers["X-TC-Version"], "2021-03-23");
+        assert_eq!(
+            request.body.as_ref().expect("应带请求体"),
+            &json!({ "Limit": 1 })
+        );
+        // TC3 签名的派生密钥含服务名，Credential 块必须落在 dnspod 下。
+        let authorization = &request.headers["Authorization"];
+        assert!(
+            authorization.contains("/dnspod/tc3_request"),
+            "{authorization}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn tencent_verify_credentials_for_deploy_probes_ssl() {
+    // 仅部署能力的凭据探测 SSL 证书列表：单页 Limit=1，端点随站点切换。
+    for (site, expected_host) in [
+        ("cn", "https://ssl.tencentcloudapi.com/"),
+        ("intl", "https://ssl.intl.tencentcloudapi.com/"),
+    ] {
+        let transport = ScriptedTransport::new(vec![HttpResponse::new(
+            200,
+            r#"{"Response":{"TotalCount":1,"Certificates":[{"CertificateId":"cert-1"}],"RequestId":"req-1"}}"#,
+        )]);
+        let provider =
+            TencentProvider::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
+
+        provider
+            .verify_credentials_for_deploy(&tencent_keys(site))
+            .await
+            .expect("有效密钥应可用");
+
+        let request = &transport.requests()[0];
+        assert_eq!(request.url, expected_host);
+        assert_eq!(request.headers["X-TC-Action"], "DescribeCertificates");
+        assert_eq!(request.headers["X-TC-Version"], "2019-12-05");
+        assert_eq!(
+            request.body.as_ref().expect("应带请求体"),
+            &json!({ "Limit": 1 })
+        );
+        let authorization = &request.headers["Authorization"];
+        assert!(authorization.contains("/ssl/tc3_request"), "{authorization}");
     }
 }
 
@@ -739,10 +801,10 @@ async fn tencent_verify_credentials_surfaces_server_errors() {
 }
 
 #[tokio::test]
-async fn tencent_eo_verify_credentials_probes_sts_too() {
+async fn tencent_eo_verify_credentials_probes_plans() {
     let transport = ScriptedTransport::new(vec![HttpResponse::new(
         200,
-        r#"{"Response":{"AccountId":"1234","RequestId":"req-1"}}"#,
+        r#"{"Response":{"TotalCount":1,"Plans":[{"PlanId":"plan-1"}],"RequestId":"req-1"}}"#,
     )]);
     let provider =
         TencentEoProvider::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
@@ -752,9 +814,13 @@ async fn tencent_eo_verify_credentials_probes_sts_too() {
         .await
         .expect("有效密钥应可用");
 
+    let request = &transport.requests()[0];
+    assert_eq!(request.url, "https://teo.intl.tencentcloudapi.com/");
+    assert_eq!(request.headers["X-TC-Action"], "DescribePlans");
+    assert_eq!(request.headers["X-TC-Version"], "2022-09-01");
     assert_eq!(
-        transport.requests()[0].url,
-        "https://sts.intl.tencentcloudapi.com/"
+        request.body.as_ref().expect("应带请求体"),
+        &json!({ "Limit": 1 })
     );
 }
 
@@ -800,21 +866,39 @@ fn both_providers_are_registered_and_looked_up_by_type_id() {
     );
 
     // 凭据定义随提供商一起导出，前端据此渲染表单。
-    for type_id in ["cloud.cloudflare", "cloud.aliyun", "cloud.tencent", "dns.tencent-eo"] {
+    for type_id in [
+        "cloud.cloudflare",
+        "cloud.aliyun",
+        "cloud.tencent",
+        "dns.tencent-eo",
+    ] {
         let rendered =
             serde_json::to_string(&registry.require(type_id).unwrap().credential_fields()).unwrap();
         assert!(rendered.contains("required"), "{type_id}: {rendered}");
     }
     assert!(
-        serde_json::to_string(&registry.require("cloud.aliyun").unwrap().credential_fields())
-            .unwrap()
-            .contains("access_key_secret")
+        serde_json::to_string(
+            &registry
+                .require("cloud.aliyun")
+                .unwrap()
+                .credential_fields()
+        )
+        .unwrap()
+        .contains("access_key_secret")
     );
     // 腾讯云体系的凭据字段：两家共用一份定义，含站点枚举。
-    let tencent_fields =
-        serde_json::to_string(&registry.require("cloud.tencent").unwrap().credential_fields()).unwrap();
+    let tencent_fields = serde_json::to_string(
+        &registry
+            .require("cloud.tencent")
+            .unwrap()
+            .credential_fields(),
+    )
+    .unwrap();
     for field in ["secret_id", "secret_key", "account_site", "cn", "intl"] {
-        assert!(tencent_fields.contains(field), "凭据 schema 应含 {field}: {tencent_fields}");
+        assert!(
+            tencent_fields.contains(field),
+            "凭据 schema 应含 {field}: {tencent_fields}"
+        );
     }
 }
 
@@ -840,7 +924,11 @@ async fn cloudflare_probe_zone_hits_the_zone_lookup() {
 
     let requests = transport.requests();
     assert_eq!(requests.len(), 1);
-    assert!(requests[0].url.contains("/zones?name=example.com"), "{}", requests[0].url);
+    assert!(
+        requests[0].url.contains("/zones?name=example.com"),
+        "{}",
+        requests[0].url
+    );
 }
 
 #[tokio::test]
@@ -865,8 +953,7 @@ async fn aliyun_probe_zone_queries_the_domain() {
         200,
         r#"{"DomainInfo":{"DomainName":"example.com"}}"#,
     )]);
-    let provider =
-        AliyunProvider::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
+    let provider = AliyunProvider::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
 
     provider
         .probe_zone(&aliyun_keys(), "example.com")
@@ -875,8 +962,16 @@ async fn aliyun_probe_zone_queries_the_domain() {
 
     let requests = transport.requests();
     assert_eq!(requests.len(), 1);
-    assert!(requests[0].url.contains("Action=DescribeDomain"), "{}", requests[0].url);
-    assert!(requests[0].url.contains("DomainName=example.com"), "{}", requests[0].url);
+    assert!(
+        requests[0].url.contains("Action=DescribeDomain"),
+        "{}",
+        requests[0].url
+    );
+    assert!(
+        requests[0].url.contains("DomainName=example.com"),
+        "{}",
+        requests[0].url
+    );
 }
 
 #[tokio::test]
@@ -885,8 +980,7 @@ async fn aliyun_probe_zone_fails_for_an_unmanaged_domain() {
         400,
         r#"{"Code":"InvalidDomainName.NoExist","Message":"域名不存在"}"#,
     )]);
-    let provider =
-        AliyunProvider::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
+    let provider = AliyunProvider::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
 
     let err = provider
         .probe_zone(&aliyun_keys(), "example.com")
@@ -956,14 +1050,24 @@ async fn the_default_probe_zone_reports_unsupported() {
     struct NoProbeProvider;
     #[async_trait]
     impl acmecast_dns::DnsProvider for NoProbeProvider {
-        fn type_id(&self) -> &'static str { "no-probe" }
-        fn display_name(&self) -> &'static str { "无探测" }
+        fn type_id(&self) -> &'static str {
+            "no-probe"
+        }
+        fn display_name(&self) -> &'static str {
+            "无探测"
+        }
         fn credential_fields(&self) -> schemars::schema::RootSchema {
             schemars::schema_for!(serde_json::Value)
         }
-        async fn find_txt(&self, _: &Value, _: &TxtRecord) -> Result<Vec<String>> { Ok(vec![]) }
-        async fn create_txt(&self, _: &Value, _: &TxtRecord) -> Result<()> { Ok(()) }
-        async fn delete_txt(&self, _: &Value, _: &TxtRecord) -> Result<()> { Ok(()) }
+        async fn find_txt(&self, _: &Value, _: &TxtRecord) -> Result<Vec<String>> {
+            Ok(vec![])
+        }
+        async fn create_txt(&self, _: &Value, _: &TxtRecord) -> Result<()> {
+            Ok(())
+        }
+        async fn delete_txt(&self, _: &Value, _: &TxtRecord) -> Result<()> {
+            Ok(())
+        }
     }
 
     let err = NoProbeProvider

@@ -216,14 +216,12 @@ async fn resolve_channels(
     let mut channels = Vec::with_capacity(ids.len());
     for id in ids {
         match store.resolve(*id).await {
-            Ok(credential) => {
-                match channel_config_from_credential(&credential, global_proxy_url) {
-                    Ok(channel) => channels.push(channel),
-                    Err(error) => {
-                        tracing::warn!(credential_id = *id, %error, "通知渠道字段无法转换为渠道配置，跳过");
-                    }
+            Ok(credential) => match channel_config_from_credential(&credential, global_proxy_url) {
+                Ok(channel) => channels.push(channel),
+                Err(error) => {
+                    tracing::warn!(credential_id = *id, %error, "通知渠道字段无法转换为渠道配置，跳过");
                 }
-            }
+            },
             Err(error) => {
                 tracing::warn!(credential_id = *id, %error, "通知渠道凭据解析失败，跳过");
             }

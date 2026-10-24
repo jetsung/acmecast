@@ -440,10 +440,7 @@ fn fill_directory_field(
 }
 
 /// 对象键/基路径前缀：去空白与首尾 `/`，非空时补一个 `/`。
-fn normalize_joined_prefix(
-    config: &mut serde_json::Map<String, serde_json::Value>,
-    field: &str,
-) {
+fn normalize_joined_prefix(config: &mut serde_json::Map<String, serde_json::Value>, field: &str) {
     let Some(serde_json::Value::String(value)) = config.get_mut(field) else {
         return;
     };

@@ -16,8 +16,8 @@ use acmecast_store::entity::history::RunStatus;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::http::header::{ACCEPT, HeaderMap, HeaderName, HeaderValue};
-use axum::response::{IntoResponse, Response};
 use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::response::{IntoResponse, Response};
 use chrono::Utc;
 use sea_orm::EntityTrait;
 use serde::{Deserialize, Serialize};
@@ -63,7 +63,10 @@ pub fn enforce_max_data_size(data: &serde_json::Value) -> String {
             let target_len = msg_str.len().saturating_sub(overflow + suffix.len() + 16);
             let truncated = if target_len > 0 && target_len < msg_str.len() {
                 let mut indices = msg_str.char_indices();
-                let split = indices.nth(target_len).map(|(i, _)| i).unwrap_or(msg_str.len());
+                let split = indices
+                    .nth(target_len)
+                    .map(|(i, _)| i)
+                    .unwrap_or(msg_str.len());
                 format!("{}{suffix}", &msg_str[..split])
             } else {
                 suffix.to_owned()
@@ -673,7 +676,8 @@ mod tests {
         assert_eq!(id2, 2);
 
         // 2. subscribe
-        let (mut rx, events, terminal, _guard) = broadcaster.subscribe(history_id).expect("应能订阅");
+        let (mut rx, events, terminal, _guard) =
+            broadcaster.subscribe(history_id).expect("应能订阅");
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].event, "started");
         assert_eq!(events[1].event, "log");
@@ -696,7 +700,9 @@ mod tests {
         // 4. 超过 20 个订阅者限流
         let mut guards = Vec::new();
         for _ in 0..19 {
-            let (_, _, _, g) = broadcaster.subscribe(history_id).expect("应能继续订阅至 20");
+            let (_, _, _, g) = broadcaster
+                .subscribe(history_id)
+                .expect("应能继续订阅至 20");
             guards.push(g);
         }
         let overflow = broadcaster.subscribe(history_id);

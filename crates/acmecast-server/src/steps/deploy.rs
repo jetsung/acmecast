@@ -17,35 +17,96 @@ fn platform_summary(input: &CertDeployInput) -> String {
     let target = input.target.trim();
     let cfg = &input.config;
     let obj = cfg.as_object();
-    let get = |k: &str| obj.and_then(|o| o.get(k)).and_then(|v| v.as_str()).map(|s| s.trim()).filter(|s| !s.is_empty()).map(|s| s.to_owned());
+    let get = |k: &str| {
+        obj.and_then(|o| o.get(k))
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_owned())
+    };
     match target {
         "s3" => {
             let bucket = get("bucket").or_else(|| get("Bucket"));
             let region = get("region").or_else(|| get("Region"));
-            let endpoint = get("endpoint").or_else(|| get("Endpoint")).or_else(|| get("endpoint_url"));
+            let endpoint = get("endpoint")
+                .or_else(|| get("Endpoint"))
+                .or_else(|| get("endpoint_url"));
             let host = endpoint.as_deref().and_then(|u| url_host(u));
-            if let Some(b) = bucket { if let Some(r) = region { format!("{b}/{r}") } else if let Some(h) = host { format!("{b}@{h}") } else { b } } else if let Some(h) = host { h } else if let Some(r) = region { r } else { "unknown".to_owned() }
+            if let Some(b) = bucket {
+                if let Some(r) = region {
+                    format!("{b}/{r}")
+                } else if let Some(h) = host {
+                    format!("{b}@{h}")
+                } else {
+                    b
+                }
+            } else if let Some(h) = host {
+                h
+            } else if let Some(r) = region {
+                r
+            } else {
+                "unknown".to_owned()
+            }
         }
         "ssh" => {
             let host = get("host").or_else(|| get("hostname"));
             let port = get("port");
-            if let Some(h) = host { if let Some(p) = port { format!("{h}:{p}") } else { h } } else { "unknown".to_owned() }
+            if let Some(h) = host {
+                if let Some(p) = port {
+                    format!("{h}:{p}")
+                } else {
+                    h
+                }
+            } else {
+                "unknown".to_owned()
+            }
         }
         "tencent-ssl" => {
-            let cid = obj.and_then(|o| o.get("credential_id")).and_then(|v| v.as_i64()).map(|n| n.to_string());
+            let cid = obj
+                .and_then(|o| o.get("credential_id"))
+                .and_then(|v| v.as_i64())
+                .map(|n| n.to_string());
             let region = get("region").or_else(|| get("Region"));
-            match (cid, region) { (Some(c), Some(r)) => format!("credential={c} region={r}"), (Some(c), None) => format!("credential={c}"), (None, Some(r)) => r, _ => "unknown".to_owned() }
+            match (cid, region) {
+                (Some(c), Some(r)) => format!("credential={c} region={r}"),
+                (Some(c), None) => format!("credential={c}"),
+                (None, Some(r)) => r,
+                _ => "unknown".to_owned(),
+            }
         }
-        "local" => get("fullchain_path").or_else(|| get("cert_path")).or_else(|| get("certPath")).or_else(|| get("key_path")).unwrap_or_else(|| "unknown".to_owned()),
-        "webdav" => { let url = get("url").or_else(|| get("endpoint")); url.as_deref().and_then(|u| url_host(u)).unwrap_or_else(|| "unknown".to_owned()) }
+        "local" => get("fullchain_path")
+            .or_else(|| get("cert_path"))
+            .or_else(|| get("certPath"))
+            .or_else(|| get("key_path"))
+            .unwrap_or_else(|| "unknown".to_owned()),
+        "webdav" => {
+            let url = get("url").or_else(|| get("endpoint"));
+            url.as_deref()
+                .and_then(|u| url_host(u))
+                .unwrap_or_else(|| "unknown".to_owned())
+        }
         _ => "unknown".to_owned(),
     }
 }
 fn url_host(raw: &str) -> Option<String> {
-    let s = raw.trim(); if s.is_empty() { return None; }
+    let s = raw.trim();
+    if s.is_empty() {
+        return None;
+    }
     let without_scheme = s.split("://").last().unwrap_or(s);
-    let host = without_scheme.split('/').next().unwrap_or(without_scheme).split('?').next().unwrap_or(without_scheme).trim();
-    if host.is_empty() { None } else { Some(host.to_owned()) }
+    let host = without_scheme
+        .split('/')
+        .next()
+        .unwrap_or(without_scheme)
+        .split('?')
+        .next()
+        .unwrap_or(without_scheme)
+        .trim();
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_owned())
+    }
 }
 
 /// 一条部署目标日志条目：凭据元数据（id/type/name/remark）+ 注册表目标项。
@@ -65,9 +126,16 @@ pub(crate) fn deploy_target_entry(
             non_blank(name),
             non_blank(remark),
         ),
-        None => ("—".to_owned(), target_type.to_owned(), "—".to_owned(), "—".to_owned()),
+        None => (
+            "—".to_owned(),
+            target_type.to_owned(),
+            "—".to_owned(),
+            "—".to_owned(),
+        ),
     };
-    format!("id:{id} type:{type_id} name:{name} remark:{remark} target:{target_type}({target_display})")
+    format!(
+        "id:{id} type:{type_id} name:{name} remark:{remark} target:{target_type}({target_display})"
+    )
 }
 
 /// 空白视为缺省。
@@ -107,7 +175,11 @@ impl CertDeployStep {
     /// 用部署注册表与部署记录存储装配。
     #[must_use]
     pub fn new(registry: Arc<DeploymentRegistry>, state: Arc<dyn DeploymentStateStore>) -> Self {
-        Self { registry, state, proxy_url: None }
+        Self {
+            registry,
+            state,
+            proxy_url: None,
+        }
     }
 
     /// 设置全局出网代理（`[proxy] url` / `ACMECAST_PROXY_URL`），供日志中
@@ -199,7 +271,14 @@ impl PipelineStep for CertDeployStep {
             Some(credential_id) => ctx.credentials().resolve(credential_id).await.ok(),
             None => None,
         };
-        let credential_meta = credential.as_ref().map(|c| (&c.id, c.type_id.as_str(), c.name.as_str(), c.remark.as_str()));
+        let credential_meta = credential.as_ref().map(|c| {
+            (
+                &c.id,
+                c.type_id.as_str(),
+                c.name.as_str(),
+                c.remark.as_str(),
+            )
+        });
         ctx.log_info(format_deploy_targets(&[deploy_target_entry(
             credential_meta,
             target.type_id(),
@@ -212,9 +291,9 @@ impl PipelineStep for CertDeployStep {
         // direct 直连、custom 走凭据自带 URL。展示形态剥掉 userinfo——认证材料不进运行历史。
         const PROXY_CARRYING_TARGETS: [&str; 3] = ["ssh", "s3", "webdav"];
         if PROXY_CARRYING_TARGETS.contains(&target.type_id())
-            && let Some(proxy) = credential
-                .as_ref()
-                .and_then(|c| acmecast_core::effective_proxy_url(&c.fields, self.proxy_url.as_deref()))
+            && let Some(proxy) = credential.as_ref().and_then(|c| {
+                acmecast_core::effective_proxy_url(&c.fields, self.proxy_url.as_deref())
+            })
         {
             ctx.log_info(format!(
                 "proxy: via {}",
@@ -229,9 +308,18 @@ impl PipelineStep for CertDeployStep {
             .and_then(serde_json::Value::as_i64)
             && let Some(bastion) = ctx.credentials().resolve(bastion_id).await.ok()
         {
-            let host = bastion.fields.get("host").and_then(|v| v.as_str()).unwrap_or("").trim();
+            let host = bastion
+                .fields
+                .get("host")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
             if !host.is_empty() {
-                let port = bastion.fields.get("port").and_then(serde_json::Value::as_u64).unwrap_or(22);
+                let port = bastion
+                    .fields
+                    .get("port")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(22);
                 ctx.log_info(format!("bastion: via {host}:{port} (id={bastion_id})"));
             }
         }
@@ -313,30 +401,99 @@ mod tests_platform {
     use super::*;
 
     fn input(target: &str, config: serde_json::Value) -> CertDeployInput {
-        CertDeployInput { target: target.to_owned(), config }
+        CertDeployInput {
+            target: target.to_owned(),
+            config,
+        }
     }
 
     #[test]
     fn s3_platform_summary_variants() {
-        assert_eq!(platform_summary(&input("s3", serde_json::json!({"bucket":"my-bucket","region":"auto"}))), "my-bucket/auto");
-        assert_eq!(platform_summary(&input("s3", serde_json::json!({"bucket":"my-bucket","endpoint":"https://r2.cloudflarestorage.com"}))), "my-bucket@r2.cloudflarestorage.com");
-        assert_eq!(platform_summary(&input("s3", serde_json::json!({"region":"us-east-1"}))), "us-east-1");
-        assert_eq!(platform_summary(&input("s3", serde_json::json!({}))), "unknown");
+        assert_eq!(
+            platform_summary(&input(
+                "s3",
+                serde_json::json!({"bucket":"my-bucket","region":"auto"})
+            )),
+            "my-bucket/auto"
+        );
+        assert_eq!(
+            platform_summary(&input(
+                "s3",
+                serde_json::json!({"bucket":"my-bucket","endpoint":"https://r2.cloudflarestorage.com"})
+            )),
+            "my-bucket@r2.cloudflarestorage.com"
+        );
+        assert_eq!(
+            platform_summary(&input("s3", serde_json::json!({"region":"us-east-1"}))),
+            "us-east-1"
+        );
+        assert_eq!(
+            platform_summary(&input("s3", serde_json::json!({}))),
+            "unknown"
+        );
     }
 
     #[test]
     fn ssh_and_tencent_and_webdav_platform() {
-        assert_eq!(platform_summary(&input("ssh", serde_json::json!({"host":"10.0.0.1","port":"2222"}))), "10.0.0.1:2222");
-        assert_eq!(platform_summary(&input("ssh", serde_json::json!({"host":"10.0.0.1"}))), "10.0.0.1");
-        assert_eq!(platform_summary(&input("tencent-ssl", serde_json::json!({"credential_id": 7}))), "credential=7");
-        assert_eq!(platform_summary(&input("tencent-ssl", serde_json::json!({"credential_id": 7, "region":"ap-guangzhou"}))), "credential=7 region=ap-guangzhou");
-        assert_eq!(platform_summary(&input("webdav", serde_json::json!({"url":"https://dav.example.com/files"}))), "dav.example.com");
-        assert_eq!(platform_summary(&input("webdav", serde_json::json!({}))), "unknown");
-        assert_eq!(platform_summary(&input("local", serde_json::json!({"fullchain_path":"/etc/ssl/example.com.fullchain.cer"}))), "/etc/ssl/example.com.fullchain.cer");
+        assert_eq!(
+            platform_summary(&input(
+                "ssh",
+                serde_json::json!({"host":"10.0.0.1","port":"2222"})
+            )),
+            "10.0.0.1:2222"
+        );
+        assert_eq!(
+            platform_summary(&input("ssh", serde_json::json!({"host":"10.0.0.1"}))),
+            "10.0.0.1"
+        );
+        assert_eq!(
+            platform_summary(&input(
+                "tencent-ssl",
+                serde_json::json!({"credential_id": 7})
+            )),
+            "credential=7"
+        );
+        assert_eq!(
+            platform_summary(&input(
+                "tencent-ssl",
+                serde_json::json!({"credential_id": 7, "region":"ap-guangzhou"})
+            )),
+            "credential=7 region=ap-guangzhou"
+        );
+        assert_eq!(
+            platform_summary(&input(
+                "webdav",
+                serde_json::json!({"url":"https://dav.example.com/files"})
+            )),
+            "dav.example.com"
+        );
+        assert_eq!(
+            platform_summary(&input("webdav", serde_json::json!({}))),
+            "unknown"
+        );
+        assert_eq!(
+            platform_summary(&input(
+                "local",
+                serde_json::json!({"fullchain_path":"/etc/ssl/example.com.fullchain.cer"})
+            )),
+            "/etc/ssl/example.com.fullchain.cer"
+        );
         // 存量配置只有旧字段时，摘要仍可读。
-        assert_eq!(platform_summary(&input("local", serde_json::json!({"cert_path":"/etc/ssl/cert.pem"}))), "/etc/ssl/cert.pem");
-        assert_eq!(platform_summary(&input("local", serde_json::json!({}))), "unknown");
-        assert_eq!(platform_summary(&input("unknown-target", serde_json::json!({}))), "unknown");
+        assert_eq!(
+            platform_summary(&input(
+                "local",
+                serde_json::json!({"cert_path":"/etc/ssl/cert.pem"})
+            )),
+            "/etc/ssl/cert.pem"
+        );
+        assert_eq!(
+            platform_summary(&input("local", serde_json::json!({}))),
+            "unknown"
+        );
+        assert_eq!(
+            platform_summary(&input("unknown-target", serde_json::json!({}))),
+            "unknown"
+        );
     }
 }
 
@@ -424,6 +581,7 @@ mod tests {
             serde_json::json!([
                 "credential_id",
                 "alias",
+                "certificate_id",
                 "repeatable",
                 "replace_existing",
                 "resource_types",
@@ -605,7 +763,9 @@ mod tests {
             .position(|log| log.message.starts_with("deploy targets: "))
             .expect("应有 deploy targets 日志行");
         assert!(
-            logs[targets_idx].message.contains("id:— type:tencent-ssl name:— remark:—"),
+            logs[targets_idx]
+                .message
+                .contains("id:— type:tencent-ssl name:— remark:—"),
             "无凭据条目应缺省记 —: {}",
             logs[targets_idx].message
         );
@@ -759,7 +919,10 @@ mod tests {
         // 预置已部署指纹，使下一次同指纹部署走 SkipWrite。
         state
             .record(acmecast_deploy::state::DeploymentEntry {
-                target: acmecast_deploy::state::target_ref_of("tencent-ssl", &serde_json::json!({})),
+                target: acmecast_deploy::state::target_ref_of(
+                    "tencent-ssl",
+                    &serde_json::json!({}),
+                ),
                 fingerprint: "sha256:abc".to_owned(),
                 skipped_write: false,
                 deployed_at: chrono::Utc::now(),
@@ -890,6 +1053,7 @@ mod tests {
         let model = acmecast_store::entity::credential::ActiveModel {
             name: Set("测试凭据".to_owned()),
             type_id: Set("test.proxy-fields".to_owned()),
+            proxy_mode: Set("direct".to_owned()),
             encrypted_fields: Set(encrypted),
             remark: Set(String::new()),
             capabilities: Set("[]".to_owned()),
@@ -912,13 +1076,20 @@ mod tests {
 
         let mut registry = DeploymentRegistry::new();
         registry
-            .register(MockTarget { type_id_val: target_id, cert_ids: vec![] })
+            .register(MockTarget {
+                type_id_val: target_id,
+                cert_ids: vec![],
+            })
             .expect("注册应成功");
-        let step = CertDeployStep::new(Arc::new(registry), Arc::new(InMemoryDeploymentState::new()));
+        let step =
+            CertDeployStep::new(Arc::new(registry), Arc::new(InMemoryDeploymentState::new()));
 
         let mut credential_registry = CredentialRegistry::new();
-        credential_registry.register(ProxyFieldCredentialType).expect("注册应成功");
-        let credentials = CredentialStore::new(&db, Arc::new(credential_registry), Arc::new(cipher));
+        credential_registry
+            .register(ProxyFieldCredentialType)
+            .expect("注册应成功");
+        let credentials =
+            CredentialStore::new(&db, Arc::new(credential_registry), Arc::new(cipher));
         let pipeline_state = MemoryState::default();
         let artifacts = cert_artifacts();
         let input = serde_json::json!({
@@ -959,8 +1130,7 @@ mod tests {
             "proxy_url": "socks5://user:pass@10.0.0.1:3128"
         });
         let logs = run_deploy_with_credential("ssh", custom).await;
-        let proxy_lines: Vec<&String> =
-            logs.iter().filter(|m| m.starts_with("proxy: ")).collect();
+        let proxy_lines: Vec<&String> = logs.iter().filter(|m| m.starts_with("proxy: ")).collect();
         assert_eq!(
             proxy_lines,
             vec!["proxy: via socks5://10.0.0.1:3128"],
@@ -991,13 +1161,20 @@ mod tests {
 
         let mut registry = DeploymentRegistry::new();
         registry
-            .register(MockTarget { type_id_val: "ssh", cert_ids: vec![] })
+            .register(MockTarget {
+                type_id_val: "ssh",
+                cert_ids: vec![],
+            })
             .expect("注册应成功");
-        let step = CertDeployStep::new(Arc::new(registry), Arc::new(InMemoryDeploymentState::new()));
+        let step =
+            CertDeployStep::new(Arc::new(registry), Arc::new(InMemoryDeploymentState::new()));
 
         let mut credential_registry = CredentialRegistry::new();
-        credential_registry.register(ProxyFieldCredentialType).expect("注册应成功");
-        let credentials = CredentialStore::new(&db, Arc::new(credential_registry), Arc::new(cipher));
+        credential_registry
+            .register(ProxyFieldCredentialType)
+            .expect("注册应成功");
+        let credentials =
+            CredentialStore::new(&db, Arc::new(credential_registry), Arc::new(cipher));
         let pipeline_state = MemoryState::default();
         let artifacts = cert_artifacts();
 
@@ -1010,7 +1187,8 @@ mod tests {
         step.execute(&mut ctx).await.expect("部署应成功");
         let logs: Vec<String> = ctx.take_logs().into_iter().map(|log| log.message).collect();
         assert!(
-            logs.iter().any(|m| m == &format!("bastion: via 10.0.0.9:2222 (id={bastion_id})")),
+            logs.iter()
+                .any(|m| m == &format!("bastion: via 10.0.0.9:2222 (id={bastion_id})")),
             "经跳板应打一行 bastion 日志: {logs:?}"
         );
 
@@ -1028,5 +1206,4 @@ mod tests {
             "直连不应打 bastion 行: {logs:?}"
         );
     }
-
 }

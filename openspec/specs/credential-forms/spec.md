@@ -7,22 +7,44 @@
 
 ### Requirement: DNS 凭据类型支持连通性测试
 
-四家内置 DNS 凭据类型（`cloud.cloudflare`、`cloud.aliyun`、`cloud.tencent`、`dns.tencent-eo`）MUST 实现连通性测试：用解密后的凭据对各家的**轻量身份接口**发起一次真实调用——Cloudflare 调用 `GET /user/tokens/verify`，阿里云与腾讯云体系调用 STS `GetCallerIdentity`——凭据有效且服务可达时返回可用，否则返回不可用并附原因。
+四家内置 DNS 凭据类型（`cloud.cloudflare`、`cloud.aliyun`、`cloud.tencent`、`dns.tencent-eo`）MUST 实现连通性测试：用解密后的凭据对各家的**轻量身份接口**发起一次真实调用——Cloudflare 调用 `GET /user/tokens/verify`，阿里云调用 STS `GetCallerIdentity`，腾讯云体系按凭据声明的能力分派探测接口（凭据测试端点 MUST 把凭据的能力标签传给探测动作）：
 
-#### Scenario: 腾讯云国际站凭据测试发往国际端点
+- `cloud.tencent` 且能力仅含 `deploy` → 调用 SSL `DescribeCertificates`（服务 `ssl`、版本 `2019-12-05`，单页 `Limit=1`）
+- `cloud.tencent` 且能力仅含 `dns` → 调用 DNSPod `DescribeDomainList`（服务 `dnspod`、版本 `2021-03-23`，单页 `Limit=1`）
+- `cloud.tencent` 且能力同时含 `dns` 与 `deploy` → 两侧都探测（DNSPod 与 SSL 各一次），全部通过才返回可用
+- `dns.tencent-eo` → 调用 EdgeOne `DescribePlans`（服务 `teo`、版本 `2022-09-01`，单页 `Limit=1`）
 
-- **WHEN** 对 `account_site` 为 `intl` 的腾讯云凭据执行测试
-- **THEN** 探测请求发往 `sts.intl.tencentcloudapi.com`，国内站凭据发往 `sts.tencentcloudapi.com`
+凭据有效且对应业务权限可达时返回可用，否则返回不可用并附原因。
+
+#### Scenario: 仅部署能力的腾讯云凭据探测 SSL 证书列表
+
+- **WHEN** 对能力为 `["deploy"]` 的 `cloud.tencent` 凭据执行测试
+- **THEN** 探测请求发往 SSL 服务的 `DescribeCertificates`：国内站 `ssl.tencentcloudapi.com`，国际站 `ssl.intl.tencentcloudapi.com`
+
+#### Scenario: 仅 DNS 能力的腾讯云凭据探测 DNSPod 域名列表
+
+- **WHEN** 对能力为 `["dns"]` 的 `cloud.tencent` 凭据执行测试
+- **THEN** 探测请求发往 DNSPod 服务的 `DescribeDomainList`：国内站 `dnspod.tencentcloudapi.com`，国际站 `dnspod.intl.tencentcloudapi.com`
+
+#### Scenario: 双能力腾讯云凭据两侧均探测
+
+- **WHEN** 对能力同时含 `dns` 与 `deploy` 的 `cloud.tencent` 凭据执行测试
+- **THEN** 先后探测 DNSPod `DescribeDomainList` 与 SSL `DescribeCertificates` 两个接口，全部成功才返回「凭据可用」；任一侧失败时返回不可用，原因指明失败用途（如「DNS 用途探测失败」/「部署用途探测失败」）并附对应服务端错误码
+
+#### Scenario: EdgeOne 凭据探测套餐列表
+
+- **WHEN** 对 `dns.tencent-eo` 凭据执行测试
+- **THEN** 探测请求发往 EdgeOne 服务的 `DescribePlans`：国内站 `teo.tencentcloudapi.com`，国际站 `teo.intl.tencentcloudapi.com`
 
 #### Scenario: 探测成功
 
-- **WHEN** 凭据被服务端接受（签名与权限校验通过）
+- **WHEN** 凭据被服务端接受（签名与对应业务的权限校验通过）
 - **THEN** 返回「凭据可用」
 
 #### Scenario: 探测失败的原因不回显密钥
 
-- **WHEN** 探测因凭据不合法或服务不可达而失败
-- **THEN** 返回不可用并附脱敏后的原因（含服务端错误码如 `AuthFailure.SignatureFailure`、Cloudflare `errors[].message`），原因中不得出现任何凭据字段值
+- **WHEN** 探测因凭据不合法、业务权限未授权或服务不可达而失败
+- **THEN** 返回不可用并附脱敏后的原因（含服务端错误码如 `AuthFailure.SignatureFailure`、`UnauthorizedOperation.*`、Cloudflare `errors[].message`），原因中不得出现任何凭据字段值
 
 ### Requirement: 长文本凭据字段渲染为多行文本域
 

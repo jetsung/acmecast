@@ -40,6 +40,16 @@ impl ProxyMode {
     /// schema 里注入的三个候选值（前端下拉按序渲染）。
     pub const VARIANTS: [&'static str; 3] = ["direct", "inherit", "custom"];
 
+    /// 数据库明文列的文本形态：`proxy_mode` 冗余列存的就是它。
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::Inherit => "inherit",
+            Self::Custom => "custom",
+        }
+    }
+
     /// 从凭据 JSON 解析模式，做存量兼容归一化：
     ///
     /// - `proxy_mode` 缺省但旧 `proxy_url` 有值 → `Custom` + 该值；
@@ -119,17 +129,17 @@ pub fn validate_proxy_field(credentials: &Value) -> Result<()> {
 ///
 /// 供运行时传输层构建与凭据保存校验共用，保证两处口径一致。
 pub fn validate_proxy_url(proxy_url: &str) -> Result<()> {
-    let parsed = url::Url::parse(proxy_url).map_err(|_| {
-        Error::Validation {
-            field: "proxy_url".to_owned(),
-            reason: format!("代理 URL `{proxy_url}` 无法解析（支持 socks5://、http://、https://）"),
-        }
+    let parsed = url::Url::parse(proxy_url).map_err(|_| Error::Validation {
+        field: "proxy_url".to_owned(),
+        reason: format!("代理 URL `{proxy_url}` 无法解析（支持 socks5://、http://、https://）"),
     })?;
     match parsed.scheme() {
         "socks5" | "http" | "https" => Ok(()),
         other => Err(Error::Validation {
             field: "proxy_url".to_owned(),
-            reason: format!("代理 URL scheme `{other}` 不支持（支持 socks5://、http://、https://）"),
+            reason: format!(
+                "代理 URL scheme `{other}` 不支持（支持 socks5://、http://、https://）"
+            ),
         }),
     }
 }
@@ -149,7 +159,8 @@ pub fn inject_proxy_field_annotations(schema: &mut schemars::schema::RootSchema)
     let Some(validation) = schema.schema.object.as_mut() else {
         return;
     };
-    if let Some(schemars::schema::Schema::Object(mode)) = validation.properties.get_mut("proxy_mode")
+    if let Some(schemars::schema::Schema::Object(mode)) =
+        validation.properties.get_mut("proxy_mode")
     {
         // schemars 对 `Option<String>` 不产 `enum` 数组——手动注入，
         // 否则前端 `SchemaForm` 的 `node.enum.length > 0` 分支不命中，
@@ -168,7 +179,8 @@ pub fn inject_proxy_field_annotations(schema: &mut schemars::schema::RootSchema)
             }),
         );
     }
-    if let Some(schemars::schema::Schema::Object(url)) = validation.properties.get_mut("proxy_url") {
+    if let Some(schemars::schema::Schema::Object(url)) = validation.properties.get_mut("proxy_url")
+    {
         url.extensions.insert(
             "x-visible-when".to_owned(),
             serde_json::json!({ "Equals": { "field": "proxy_mode", "values": ["custom"] } }),
@@ -230,7 +242,9 @@ pub fn inject_proxy_field_annotations(schema: &mut schemars::schema::RootSchema)
         // col==0 意味着前驱已在行尾或整行后，proxy_mode 已在新行首列，无需补。
         if col == 12 {
             let prev = &order[pos - 1];
-            if let Some(schemars::schema::Schema::Object(field)) = validation.properties.get_mut(prev) {
+            if let Some(schemars::schema::Schema::Object(field)) =
+                validation.properties.get_mut(prev)
+            {
                 field
                     .extensions
                     .insert("x-end-row".to_owned(), serde_json::Value::Bool(true));
@@ -254,7 +268,9 @@ mod tests {
             ProxyMode::Inherit
         );
         assert_eq!(
-            ProxyMode::from_credentials(&serde_json::json!({"proxy_mode": "custom", "proxy_url": "http://10.0.0.1:3128"})),
+            ProxyMode::from_credentials(
+                &serde_json::json!({"proxy_mode": "custom", "proxy_url": "http://10.0.0.1:3128"})
+            ),
             ProxyMode::Custom
         );
         // 存量兼容：无 proxy_mode 但旧 proxy_url 有值 → custom；都无 → direct。
@@ -304,7 +320,10 @@ mod tests {
             proxy_log_target("socks5://user:pass@10.0.0.1:7890"),
             "socks5://10.0.0.1:7890"
         );
-        assert_eq!(proxy_log_target("http://10.0.0.1:3128"), "http://10.0.0.1:3128");
+        assert_eq!(
+            proxy_log_target("http://10.0.0.1:3128"),
+            "http://10.0.0.1:3128"
+        );
         assert!(!proxy_log_target("socks5://user:secret@1.2.3.4:1080").contains("secret"));
     }
 
@@ -323,10 +342,15 @@ mod tests {
             "应注入枚举候选: {rendered}"
         );
         for label in ["直连", "继承全局", "自定义"] {
-            assert!(rendered.contains(label), "应含中文展示名 {label}: {rendered}");
+            assert!(
+                rendered.contains(label),
+                "应含中文展示名 {label}: {rendered}"
+            );
         }
         assert!(
-            rendered.contains(r#""x-visible-when":{"Equals":{"field":"proxy_mode","values":["custom"]}}"#),
+            rendered.contains(
+                r#""x-visible-when":{"Equals":{"field":"proxy_mode","values":["custom"]}}"#
+            ),
             "proxy_url 应联动 custom: {rendered}"
         );
         let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();

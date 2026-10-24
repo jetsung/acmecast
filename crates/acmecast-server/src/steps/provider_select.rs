@@ -139,8 +139,8 @@ mod tests {
     use super::*;
     use acmecast_dns::TxtRecord;
     use serde_json::json;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// 可编程探测结果的测试提供商。
     #[derive(Debug)]
@@ -216,16 +216,37 @@ mod tests {
     #[test]
     fn candidate_order_follows_registry_stable_order() {
         let order = candidate_order(
-            &["cloud.cloudflare", "cloud.aliyun", "route53", "cloud.tencent"],
-            &["cloud.aliyun", "cloud.cloudflare", "route53", "cloud.tencent"],
+            &[
+                "cloud.cloudflare",
+                "cloud.aliyun",
+                "route53",
+                "cloud.tencent",
+            ],
+            &[
+                "cloud.aliyun",
+                "cloud.cloudflare",
+                "route53",
+                "cloud.tencent",
+            ],
         );
         // 注册表稳定序，无偏好排序
-        assert_eq!(order, vec!["cloud.aliyun", "cloud.cloudflare", "route53", "cloud.tencent"]);
+        assert_eq!(
+            order,
+            vec![
+                "cloud.aliyun",
+                "cloud.cloudflare",
+                "route53",
+                "cloud.tencent"
+            ]
+        );
     }
 
     #[test]
     fn types_without_credentials_are_dropped() {
-        let order = candidate_order(&["cloud.aliyun"], &["cloud.tencent", "cloud.aliyun", "cloud.cloudflare"]);
+        let order = candidate_order(
+            &["cloud.aliyun"],
+            &["cloud.tencent", "cloud.aliyun", "cloud.cloudflare"],
+        );
         assert_eq!(order, vec!["cloud.aliyun"]);
     }
 
@@ -249,7 +270,8 @@ mod tests {
         assert_eq!(first_probes.load(Ordering::SeqCst), 1, "首选被探测一次");
         assert_eq!(second_probes.load(Ordering::SeqCst), 1);
         assert!(
-            logs.iter().any(|m| m.contains("cloud.aliyun") && m.contains("不可用")),
+            logs.iter()
+                .any(|m| m.contains("cloud.aliyun") && m.contains("不可用")),
             "跳过原因应写日志：{logs:?}"
         );
         assert!(
@@ -274,7 +296,11 @@ mod tests {
         .expect("首选应命中");
 
         assert_eq!(picked.provider_id, "cloud.aliyun");
-        assert_eq!(second_probes.load(Ordering::SeqCst), 0, "命中后不再探测后续候选");
+        assert_eq!(
+            second_probes.load(Ordering::SeqCst),
+            0,
+            "命中后不再探测后续候选"
+        );
     }
 
     #[tokio::test]

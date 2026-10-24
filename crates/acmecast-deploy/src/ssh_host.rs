@@ -142,13 +142,13 @@ impl std::fmt::Debug for SshHostFields {
                 "private_key",
                 &acmecast_core::redact_presence(&self.private_key),
             )
-            .field(
-                "password",
-                &acmecast_core::redact_presence(&self.password),
-            )
+            .field("password", &acmecast_core::redact_presence(&self.password))
             .field("cert_mode", &self.cert_mode)
             .field("key_mode", &self.key_mode)
-            .field("proxy_url", &acmecast_core::redact_presence(&self.proxy_url))
+            .field(
+                "proxy_url",
+                &acmecast_core::redact_presence(&self.proxy_url),
+            )
             .finish()
     }
 }
@@ -193,14 +193,16 @@ impl SshHostFields {
             _ => Ok(()),
         }?;
         // custom 模式必须给出合法代理 URL（保存/部署前拦截）。
-        let proxy_mode = acmecast_core::ProxyMode::from_credentials(
-            &serde_json::json!({
-                "proxy_mode": self.proxy_mode,
-                "proxy_url": self.proxy_url,
-            }),
-        );
+        let proxy_mode = acmecast_core::ProxyMode::from_credentials(&serde_json::json!({
+            "proxy_mode": self.proxy_mode,
+            "proxy_url": self.proxy_url,
+        }));
         if proxy_mode == acmecast_core::ProxyMode::Custom {
-            let Some(url) = self.proxy_url.as_deref().map(str::trim).filter(|u| !u.is_empty())
+            let Some(url) = self
+                .proxy_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|u| !u.is_empty())
             else {
                 return Err(acmecast_core::Error::validation(
                     "proxy_url",
@@ -349,9 +351,10 @@ mod tests {
 
     #[test]
     fn port_defaults_to_22_when_missing_from_json() {
-        let parsed: SshHostFields =
-            serde_json::from_value(serde_json::json!({ "host": "h", "user": "u", "private_key": "K" }))
-                .expect("应能解析");
+        let parsed: SshHostFields = serde_json::from_value(
+            serde_json::json!({ "host": "h", "user": "u", "private_key": "K" }),
+        )
+        .expect("应能解析");
         assert_eq!(parsed.port, 22, "端口缺省应为 22");
     }
 
@@ -370,8 +373,14 @@ mod tests {
         let rendered = serde_json::to_value(ssh_host_fields_schema()).expect("Schema 应可序列化");
         let properties = &rendered["properties"];
         assert_eq!(properties["user"]["default"], "root", "用户缺省应为 root");
-        assert_eq!(properties["cert_mode"]["default"], "0644", "证书权限缺省应为 0644");
-        assert_eq!(properties["key_mode"]["default"], "0600", "私钥权限缺省应为 0600");
+        assert_eq!(
+            properties["cert_mode"]["default"], "0644",
+            "证书权限缺省应为 0644"
+        );
+        assert_eq!(
+            properties["key_mode"]["default"], "0600",
+            "私钥权限缺省应为 0600"
+        );
         for removed in ["cert_path", "key_path", "reload_command"] {
             assert!(
                 properties.get(removed).is_none(),
@@ -402,11 +411,23 @@ mod tests {
     fn the_field_schema_lays_out_proxy_on_its_own_row_and_keeps_host_port_together() {
         // 目标布局：cert_mode|key_mode / host|port / user|password / private_key 整行 / proxy_mode|proxy_url
         let rendered = serde_json::to_value(ssh_host_fields_schema()).expect("Schema 应可序列化");
-        let order = rendered["x-field-order"].as_array().expect("应有 x-field-order");
+        let order = rendered["x-field-order"]
+            .as_array()
+            .expect("应有 x-field-order");
         let order: Vec<&str> = order.iter().map(|v| v.as_str().unwrap()).collect();
         assert_eq!(
             order,
-            ["cert_mode", "key_mode", "host", "port", "user", "password", "private_key", "proxy_mode", "proxy_url"],
+            [
+                "cert_mode",
+                "key_mode",
+                "host",
+                "port",
+                "user",
+                "password",
+                "private_key",
+                "proxy_mode",
+                "proxy_url"
+            ],
             "字段顺序应满足 cert_mode|key_mode / host|port / user|password / private_key 整行 / proxy 行"
         );
         // private_key 整行后 proxy 自然新行首列，前驱不应补 x-end-row。
@@ -418,12 +439,26 @@ mod tests {
         // host/port、user/password 为同行半宽，不做 x-full-width/x-multiline/x-end-row。
         for name in ["host", "port", "user", "password", "cert_mode", "key_mode"] {
             let node = &rendered["properties"][name];
-            assert!(node["x-full-width"].is_null(), "{name} 不应 x-full-width: {node}");
-            assert!(node["x-multiline"].is_null(), "{name} 不应 x-multiline: {node}");
+            assert!(
+                node["x-full-width"].is_null(),
+                "{name} 不应 x-full-width: {node}"
+            );
+            assert!(
+                node["x-multiline"].is_null(),
+                "{name} 不应 x-multiline: {node}"
+            );
         }
         // 代理下拉与联动仍注入。
-        assert!(rendered.to_string().contains(r#""enum":["direct","inherit","custom"]"#));
-        assert!(rendered.to_string().contains(r#""x-visible-when":{"Equals":{"field":"proxy_mode","values":["custom"]}}"#));
+        assert!(
+            rendered
+                .to_string()
+                .contains(r#""enum":["direct","inherit","custom"]"#)
+        );
+        assert!(
+            rendered.to_string().contains(
+                r#""x-visible-when":{"Equals":{"field":"proxy_mode","values":["custom"]}}"#
+            )
+        );
     }
 
     #[test]

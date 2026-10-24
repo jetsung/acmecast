@@ -230,12 +230,14 @@ pub fn resolve_input(
                 user: bastion_profile.user.clone(),
                 // validate 之后材料必然恰好其一；仍把字段名重映射到跳板引用，
                 // 万一字段形态坏掉也不会挂到目标的 `credential_id` 上。
-                auth: bastion_profile.auth_material().map_err(|error| match error {
-                    Error::InvalidInput { reason, .. } => {
-                        Error::invalid_input("bastion_credential_id", reason)
-                    }
-                    other => other,
-                })?,
+                auth: bastion_profile
+                    .auth_material()
+                    .map_err(|error| match error {
+                        Error::InvalidInput { reason, .. } => {
+                            Error::invalid_input("bastion_credential_id", reason)
+                        }
+                        other => other,
+                    })?,
                 // 代理只作用于「本机 → 跳板机」这一段；跳板到目标的
                 // direct-tcpip 转发是 SSH 隧道内部的事，不再走代理。
                 proxy_url: acmecast_core::effective_proxy_url(
@@ -250,8 +252,9 @@ pub fn resolve_input(
     let missing =
         |field: &str| Error::invalid_input(field, "未提供（输入与引用的主机档案中都没有）");
     // 路径不属于档案：报错要说明「从哪补」。
-    let missing_path =
-        |field: &str| Error::invalid_input(field, "未提供（远端路径由部署输入提供，主机档案不含路径）");
+    let missing_path = |field: &str| {
+        Error::invalid_input(field, "未提供（远端路径由部署输入提供，主机档案不含路径）")
+    };
 
     let host = input
         .host
@@ -297,7 +300,9 @@ pub fn resolve_input(
         host,
         port: input
             .port
-            .or(profile.map(|profile| profile.port).filter(|port| *port != 0))
+            .or(profile
+                .map(|profile| profile.port)
+                .filter(|port| *port != 0))
             .unwrap_or_else(default_port),
         user,
         auth,
@@ -362,7 +367,10 @@ fn resolve_remote_path(path: &str, default_name: &str) -> String {
 /// 3 文件语义：fullchain（`chain_pem` 原样）、ca（拆链剩余；`ca_path` 缺省/
 /// 留空或链仅单张时跳过）、key（`key_pem` 原样）。远端路径为目录时按默认
 /// 文件名（`fullchain.cer`／`ca.cer`／`key`）写入该目录。
-fn ssh_files(config: &ResolvedSshConfig, materials: &CertMaterials) -> Vec<(String, String, String)> {
+fn ssh_files(
+    config: &ResolvedSshConfig,
+    materials: &CertMaterials,
+) -> Vec<(String, String, String)> {
     let mut files = Vec::with_capacity(3);
     files.push((
         resolve_remote_path(&config.fullchain_path, "fullchain.cer"),
@@ -440,7 +448,11 @@ impl SshTarget {
     /// 用给定的连接器装配。
     #[must_use]
     pub fn with_connector(connector: Arc<dyn SshConnector>) -> Self {
-        Self { connector, _global_proxy_url: None, _network_timeout: acmecast_core::NETWORK_TIMEOUT }
+        Self {
+            connector,
+            _global_proxy_url: None,
+            _network_timeout: acmecast_core::NETWORK_TIMEOUT,
+        }
     }
 
     /// 走真实 SSH（用 russh）。
@@ -452,8 +464,15 @@ impl SshTarget {
     /// 供 ServerConfig 注入全局代理与网络超时（与 DNS 侧 with_global_proxy_and_timeout 同口径）。
     #[must_use]
     pub fn live_with_proxy(proxy_url: Option<&str>, network_timeout: std::time::Duration) -> Self {
-        let _global_proxy_url = proxy_url.map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned);
-        Self { connector: Arc::new(RusshConnector { network_timeout }), _global_proxy_url, _network_timeout: network_timeout }
+        let _global_proxy_url = proxy_url
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned);
+        Self {
+            connector: Arc::new(RusshConnector { network_timeout }),
+            _global_proxy_url,
+            _network_timeout: network_timeout,
+        }
     }
 }
 
@@ -587,15 +606,13 @@ async fn resolve_profile(
     field: &str,
     credentials: &CredentialStore<'_>,
 ) -> Result<SshHostFields> {
-    let resolved = credentials.resolve(id).await.map_err(|e| {
-        Error::Remote(format!("取 SSH 主机档案 `{id}`（{field}）失败: {e}"))
-    })?;
-    resolved.as_fields().map_err(|e| {
-        Error::invalid_input(
-            field,
-            format!("SSH 主机档案 `{id}` 的字段不合法: {e}"),
-        )
-    })
+    let resolved = credentials
+        .resolve(id)
+        .await
+        .map_err(|e| Error::Remote(format!("取 SSH 主机档案 `{id}`（{field}）失败: {e}")))?;
+    resolved
+        .as_fields()
+        .map_err(|e| Error::invalid_input(field, format!("SSH 主机档案 `{id}` 的字段不合法: {e}")))
 }
 
 /// 建立 SSH 会话：配了代理就先开隧道流，再走 `connect_stream`；
@@ -609,15 +626,32 @@ async fn connect_ssh(
 ) -> Result<russh::client::Handle<ClientHandler>> {
     if let Some(proxy_url) = proxy_url {
         let stream = open_proxy_stream(proxy_url, host, port, timeout).await?;
-        return tokio::time::timeout(timeout, russh::client::connect_stream(settings, stream, ClientHandler))
-            .await
-            .map_err(|_| Error::Remote(format!("连接 {host}:{port} 超时（{} 秒无响应，经代理 {}）", timeout.as_secs(), acmecast_core::proxy_log_target(proxy_url))))?
-            .map_err(|e| Error::Remote(e.to_string()));
-    }
-    tokio::time::timeout(timeout, russh::client::connect(settings, (host, port), ClientHandler))
+        return tokio::time::timeout(
+            timeout,
+            russh::client::connect_stream(settings, stream, ClientHandler),
+        )
         .await
-        .map_err(|_| Error::Remote(format!("连接 {host}:{port} 超时（{} 秒无响应）", timeout.as_secs())))?
-        .map_err(|e| Error::Remote(e.to_string()))
+        .map_err(|_| {
+            Error::Remote(format!(
+                "连接 {host}:{port} 超时（{} 秒无响应，经代理 {}）",
+                timeout.as_secs(),
+                acmecast_core::proxy_log_target(proxy_url)
+            ))
+        })?
+        .map_err(|e| Error::Remote(e.to_string()));
+    }
+    tokio::time::timeout(
+        timeout,
+        russh::client::connect(settings, (host, port), ClientHandler),
+    )
+    .await
+    .map_err(|_| {
+        Error::Remote(format!(
+            "连接 {host}:{port} 超时（{} 秒无响应）",
+            timeout.as_secs()
+        ))
+    })?
+    .map_err(|e| Error::Remote(e.to_string()))
 }
 
 /// 走 russh 的连接器。
@@ -628,7 +662,9 @@ pub struct RusshConnector {
 
 impl Default for RusshConnector {
     fn default() -> Self {
-        Self { network_timeout: acmecast_core::NETWORK_TIMEOUT }
+        Self {
+            network_timeout: acmecast_core::NETWORK_TIMEOUT,
+        }
     }
 }
 
@@ -647,39 +683,45 @@ async fn open_proxy_stream(
     timeout: std::time::Duration,
 ) -> Result<tokio::net::TcpStream> {
     let fut = async {
-    let parsed = url::Url::parse(proxy_url)
-        .map_err(|e| Error::Remote(format!("代理 URL 非法: {e}")))?;
-    let (proxy_host, proxy_port) = match parsed.host_str() {
-        Some(h) if !h.is_empty() => (
-            h.to_owned(),
-            parsed.port().unwrap_or(match parsed.scheme() {
-                "http" => 80,
-                _ => 1080,
-            }),
-        ),
-        _ => {
-            return Err(Error::Remote(format!(
-                "代理 URL 缺少主机: {}",
-                acmecast_core::proxy_log_target(proxy_url)
-            )))
+        let parsed =
+            url::Url::parse(proxy_url).map_err(|e| Error::Remote(format!("代理 URL 非法: {e}")))?;
+        let (proxy_host, proxy_port) = match parsed.host_str() {
+            Some(h) if !h.is_empty() => (
+                h.to_owned(),
+                parsed.port().unwrap_or(match parsed.scheme() {
+                    "http" => 80,
+                    _ => 1080,
+                }),
+            ),
+            _ => {
+                return Err(Error::Remote(format!(
+                    "代理 URL 缺少主机: {}",
+                    acmecast_core::proxy_log_target(proxy_url)
+                )));
+            }
+        };
+        let stream = tokio::net::TcpStream::connect((proxy_host.as_str(), proxy_port))
+            .await
+            .map_err(|e| {
+                Error::Remote(format!(
+                    "连接代理 {} 失败: {e}",
+                    acmecast_core::proxy_log_target(proxy_url)
+                ))
+            })?;
+        match parsed.scheme() {
+            "socks5" => socks5_connect(stream, host, port).await,
+            _ => http_connect(stream, host, port).await,
         }
     };
-    let stream = tokio::net::TcpStream::connect((proxy_host.as_str(), proxy_port))
-        .await
-        .map_err(|e| {
-            Error::Remote(format!(
-                "连接代理 {} 失败: {e}",
-                acmecast_core::proxy_log_target(proxy_url)
-            ))
-        })?;
-    match parsed.scheme() {
-        "socks5" => socks5_connect(stream, host, port).await,
-        _ => http_connect(stream, host, port).await,
-    }
-    };
-    tokio::time::timeout(timeout, fut)
-        .await
-        .map_err(|_| Error::Remote(format!("代理 {} 到 {}:{} 握手超时（{} 秒无响应）", acmecast_core::proxy_log_target(proxy_url), host, port, timeout.as_secs())))?
+    tokio::time::timeout(timeout, fut).await.map_err(|_| {
+        Error::Remote(format!(
+            "代理 {} 到 {}:{} 握手超时（{} 秒无响应）",
+            acmecast_core::proxy_log_target(proxy_url),
+            host,
+            port,
+            timeout.as_secs()
+        ))
+    })?
 }
 
 /// SOCKS5（RFC 1928）握手 + CONNECT：无认证，支持域名（ATYP=3）与 IPv4（ATYP=1）。
@@ -691,13 +733,15 @@ async fn socks5_connect(
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     // 方法选择：只支持无认证。
-    stream.write_all(&[0x05, 0x01, 0x00]).await.map_err(|e| {
-        Error::Remote(format!("SOCKS5 隧道握手失败: {e}"))
-    })?;
+    stream
+        .write_all(&[0x05, 0x01, 0x00])
+        .await
+        .map_err(|e| Error::Remote(format!("SOCKS5 隧道握手失败: {e}")))?;
     let mut greeting = [0u8; 2];
-    stream.read_exact(&mut greeting).await.map_err(|e| {
-        Error::Remote(format!("SOCKS5 隧道握手失败: {e}"))
-    })?;
+    stream
+        .read_exact(&mut greeting)
+        .await
+        .map_err(|e| Error::Remote(format!("SOCKS5 隧道握手失败: {e}")))?;
     if greeting[0] != 0x05 || greeting[1] != 0x00 {
         return Err(Error::Remote(format!(
             "SOCKS5 代理拒绝了无认证方法（回复 {:02x} {:02x}）",
@@ -712,22 +756,26 @@ async fn socks5_connect(
         request.extend_from_slice(&ip.octets());
     } else {
         if host.len() > 255 {
-            return Err(Error::Remote("目标主机名过长，SOCKS5 域名寻址不支持".to_owned()));
+            return Err(Error::Remote(
+                "目标主机名过长，SOCKS5 域名寻址不支持".to_owned(),
+            ));
         }
         request.push(0x03);
         request.push(host.len() as u8);
         request.extend_from_slice(host.as_bytes());
     }
     request.extend_from_slice(&port.to_be_bytes());
-    stream.write_all(&request).await.map_err(|e| {
-        Error::Remote(format!("SOCKS5 隧道请求失败: {e}"))
-    })?;
+    stream
+        .write_all(&request)
+        .await
+        .map_err(|e| Error::Remote(format!("SOCKS5 隧道请求失败: {e}")))?;
 
     // 响应：VER REP RSV ATYP BND ADDR BND PORT。
     let mut head = [0u8; 4];
-    stream.read_exact(&mut head).await.map_err(|e| {
-        Error::Remote(format!("SOCKS5 隧道响应读取失败: {e}"))
-    })?;
+    stream
+        .read_exact(&mut head)
+        .await
+        .map_err(|e| Error::Remote(format!("SOCKS5 隧道响应读取失败: {e}")))?;
     if head[0] != 0x05 {
         return Err(Error::Remote(format!(
             "SOCKS5 代理返回了非 SOCKS5 版本 {:02x}",
@@ -742,7 +790,7 @@ async fn socks5_connect(
     }
     // 跳过绑定的地址与端口（长度取决于 ATYP）。
     let skip = match head[3] {
-        0x01 => 4 + 2, // IPv4 + 端口
+        0x01 => 4 + 2,  // IPv4 + 端口
         0x04 => 16 + 2, // IPv6 + 端口
         0x03 => {
             let mut len = [0u8; 1];
@@ -756,13 +804,14 @@ async fn socks5_connect(
             return Err(Error::Remote(format!(
                 "SOCKS5 代理返回了未知寻址类型 {:02x}",
                 other
-            )))
+            )));
         }
     };
     let mut rest = vec![0u8; skip];
-    stream.read_exact(&mut rest).await.map_err(|e| {
-        Error::Remote(format!("SOCKS5 隧道响应读取失败: {e}"))
-    })?;
+    stream
+        .read_exact(&mut rest)
+        .await
+        .map_err(|e| Error::Remote(format!("SOCKS5 隧道响应读取失败: {e}")))?;
     Ok(stream)
 }
 
@@ -775,9 +824,10 @@ async fn http_connect(
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let request = format!("CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n");
-    stream.write_all(request.as_bytes()).await.map_err(|e| {
-        Error::Remote(format!("HTTP CONNECT 请求失败: {e}"))
-    })?;
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .map_err(|e| Error::Remote(format!("HTTP CONNECT 请求失败: {e}")))?;
 
     // 逐字节读响应头直到 `\r\n\r\n` 结束：CONNECT 2xx 按规范无 body，
     // 响应头之后的第一个字节就是 SSH banner——绝不能多读。
@@ -786,9 +836,10 @@ async fn http_connect(
     let mut header = Vec::new();
     let mut index = 0usize;
     loop {
-        stream.read_exact(&mut byte).await.map_err(|e| {
-            Error::Remote(format!("HTTP 代理响应读取失败: {e}"))
-        })?;
+        stream
+            .read_exact(&mut byte)
+            .await
+            .map_err(|e| Error::Remote(format!("HTTP 代理响应读取失败: {e}")))?;
         let slot = index % 4;
         seen[slot] = byte[0];
         header.push(byte[0]);
@@ -810,7 +861,12 @@ async fn http_connect(
     }
     // 状态行是响应头的第一行：`HTTP/1.x 2xx ...`。
     let status_line = String::from_utf8_lossy(&header);
-    if !status_line.split("\r\n").next().unwrap_or("").contains(" 2") {
+    if !status_line
+        .split("\r\n")
+        .next()
+        .unwrap_or("")
+        .contains(" 2")
+    {
         return Err(Error::Remote(format!(
             "HTTP 代理拒绝连接（响应: {}）",
             status_line.lines().next().unwrap_or("").trim()
@@ -854,7 +910,8 @@ impl RusshConnector {
         let bastion_session = tokio::time::timeout(self.network_timeout, async {
             let mut session = match tunnel {
                 Some(stream) => {
-                    russh::client::connect_stream(Arc::clone(&settings), stream, ClientHandler).await
+                    russh::client::connect_stream(Arc::clone(&settings), stream, ClientHandler)
+                        .await
                 }
                 None => {
                     russh::client::connect(
@@ -964,11 +1021,15 @@ impl SshConnector for RusshConnector {
                 .await;
         }
 
-        let session = connect_ssh(settings, &config.host, config.port, config.proxy_url.as_deref(), self.network_timeout)
-            .await
-            .map_err(|e| {
-                Error::Remote(format!("连接 {}:{} 失败: {e}", config.host, config.port))
-            })?;
+        let session = connect_ssh(
+            settings,
+            &config.host,
+            config.port,
+            config.proxy_url.as_deref(),
+            self.network_timeout,
+        )
+        .await
+        .map_err(|e| Error::Remote(format!("连接 {}:{} 失败: {e}", config.host, config.port)))?;
         let mut session = session;
 
         // 认证也受网络超时约束（与 connect_ssh 同口径，超时展示目标主机）。
@@ -977,8 +1038,21 @@ impl SshConnector for RusshConnector {
             authenticate(&mut session, &config.auth, &config.user, credentials),
         )
         .await
-        .map_err(|_| Error::Remote(format!("认证 {}@{}:{} 超时（{} 秒无响应）", config.user, config.host, config.port, self.network_timeout.as_secs())))?
-        .map_err(|e| Error::Remote(format!("认证 {}@{}:{} 失败: {e}", config.user, config.host, config.port)))?;
+        .map_err(|_| {
+            Error::Remote(format!(
+                "认证 {}@{}:{} 超时（{} 秒无响应）",
+                config.user,
+                config.host,
+                config.port,
+                self.network_timeout.as_secs()
+            ))
+        })?
+        .map_err(|e| {
+            Error::Remote(format!(
+                "认证 {}@{}:{} 失败: {e}",
+                config.user, config.host, config.port
+            ))
+        })?;
 
         Ok(Box::new(RusshTransport {
             session,
@@ -1111,9 +1185,7 @@ const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 /// 调用方（凭据类型）要先用 [`SshHostFields`] 的字段值过一遍脱敏再呈现。
 pub async fn probe_host(fields: &SshHostFields, global_proxy_url: Option<&str>) -> Result<()> {
     fields.validate().map_err(|error| match error {
-        acmecast_core::Error::Validation { field, reason } => {
-            Error::invalid_input(field, reason)
-        }
+        acmecast_core::Error::Validation { field, reason } => Error::invalid_input(field, reason),
         other => Error::Core(other),
     })?;
 
@@ -1122,7 +1194,13 @@ pub async fn probe_host(fields: &SshHostFields, global_proxy_url: Option<&str>) 
         &serde_json::to_value(fields).expect("SshHostFields 必可序列化"),
         global_proxy_url,
     );
-    let connect = connect_ssh(settings, &fields.host, fields.port, proxy_url.as_deref(), PROBE_TIMEOUT);
+    let connect = connect_ssh(
+        settings,
+        &fields.host,
+        fields.port,
+        proxy_url.as_deref(),
+        PROBE_TIMEOUT,
+    );
     let mut session = tokio::time::timeout(PROBE_TIMEOUT, connect)
         .await
         .map_err(|_| {
@@ -1131,9 +1209,7 @@ pub async fn probe_host(fields: &SshHostFields, global_proxy_url: Option<&str>) 
                 fields.host, fields.port
             ))
         })?
-        .map_err(|e| {
-            Error::Remote(format!("连接 {}:{} 失败: {e}", fields.host, fields.port))
-        })?;
+        .map_err(|e| Error::Remote(format!("连接 {}:{} 失败: {e}", fields.host, fields.port)))?;
 
     // 校验已保证材料恰好其一，这里按剩下的那个走。
     if let Some(pem) = fields.private_key.as_deref() {
@@ -1198,7 +1274,12 @@ impl SshTransport for RusshTransport {
         let fut = run_channel(&self.session, &script);
         let (exit_code, output) = tokio::time::timeout(self.network_timeout, fut)
             .await
-            .map_err(|_| Error::Remote(format!("写入 {path} 超时（{} 秒无响应）", self.network_timeout.as_secs())))?
+            .map_err(|_| {
+                Error::Remote(format!(
+                    "写入 {path} 超时（{} 秒无响应）",
+                    self.network_timeout.as_secs()
+                ))
+            })?
             .map_err(|e| Error::Remote(format!("写入 {path} 失败: {e}")))?;
         if exit_code != 0 {
             return Err(Error::Write {
@@ -1213,7 +1294,13 @@ impl SshTransport for RusshTransport {
         let fut = run_channel(&self.session, command);
         tokio::time::timeout(self.network_timeout, fut)
             .await
-            .map_err(|_| Error::Remote(format!("执行命令超时（{} 秒无响应，命令: {}）", self.network_timeout.as_secs(), command.chars().take(80).collect::<String>())))?
+            .map_err(|_| {
+                Error::Remote(format!(
+                    "执行命令超时（{} 秒无响应，命令: {}）",
+                    self.network_timeout.as_secs(),
+                    command.chars().take(80).collect::<String>()
+                ))
+            })?
             .map_err(|e| Error::Remote(format!("执行命令失败: {e}")))
     }
 }
@@ -1301,12 +1388,24 @@ mod tests {
     /// 写入脚本必须先建父目录，且失败路径（非零退出）不会被吞成成功。
     #[test]
     fn the_write_script_creates_the_parent_directory_first() {
-        let script = remote_write_script("/tmp/t3/example.com.fullchain.cer", "PEM", "0644", "/tmp/t3/example.com.fullchain.cer.acmecast-x.tmp");
+        let script = remote_write_script(
+            "/tmp/t3/example.com.fullchain.cer",
+            "PEM",
+            "0644",
+            "/tmp/t3/example.com.fullchain.cer.acmecast-x.tmp",
+        );
 
-        let mkdir = script.find("mkdir -p '/tmp/t3'").expect("应含 mkdir -p 父目录");
-        let cat = script.find("cat > '/tmp/t3/example.com.fullchain.cer.acmecast-x.tmp'").expect("应先写临时文件");
+        let mkdir = script
+            .find("mkdir -p '/tmp/t3'")
+            .expect("应含 mkdir -p 父目录");
+        let cat = script
+            .find("cat > '/tmp/t3/example.com.fullchain.cer.acmecast-x.tmp'")
+            .expect("应先写临时文件");
         let mv = script.find("mv '/tmp/t3/example.com.fullchain.cer.acmecast-x.tmp' '/tmp/t3/example.com.fullchain.cer'").expect("最后原子替换");
-        assert!(mkdir < cat && cat < mv, "顺序必须是 mkdir → 临时写入 → 替换: {script}");
+        assert!(
+            mkdir < cat && cat < mv,
+            "顺序必须是 mkdir → 临时写入 → 替换: {script}"
+        );
     }
 
     #[test]
@@ -1335,7 +1434,10 @@ mod tests {
 
         normalize_ssh_config(&mut input, Some("_wildcard.example.com"));
 
-        assert_eq!(input["fullchain_path"], "/srv/ssl/_wildcard.example.com.fullchain.cer");
+        assert_eq!(
+            input["fullchain_path"],
+            "/srv/ssl/_wildcard.example.com.fullchain.cer"
+        );
         assert_eq!(input["ca_path"], "/tmp/t1/_wildcard.example.com.ca.cer");
         assert_eq!(input["key_path"], "/srv/ssl/_wildcard.example.com.key");
     }
@@ -1353,14 +1455,17 @@ mod tests {
         normalize_ssh_config(&mut raw, None);
         let input: SshInput = parse_input(&raw).unwrap();
         let config = resolve_input(&input, None, None, None).unwrap();
-        let files = ssh_files(&config, &CertMaterials::new(
-            concat!(
-                "-----BEGIN CERTIFICATE-----\n叶子\n-----END CERTIFICATE-----\n",
-                "-----BEGIN CERTIFICATE-----\n中间\n-----END CERTIFICATE-----\n"
+        let files = ssh_files(
+            &config,
+            &CertMaterials::new(
+                concat!(
+                    "-----BEGIN CERTIFICATE-----\n叶子\n-----END CERTIFICATE-----\n",
+                    "-----BEGIN CERTIFICATE-----\n中间\n-----END CERTIFICATE-----\n"
+                ),
+                "-----BEGIN PRIVATE KEY-----\n钥\n-----END PRIVATE KEY-----\n",
+                "sha256:abc",
             ),
-            "-----BEGIN PRIVATE KEY-----\n钥\n-----END PRIVATE KEY-----\n",
-            "sha256:abc",
-        ));
+        );
 
         let paths: Vec<&str> = files.iter().map(|(path, _, _)| path.as_str()).collect();
         assert_eq!(
@@ -1395,9 +1500,15 @@ mod tests {
             );
             let mut port_bytes = [0u8; 2];
             sock.read_exact(&mut port_bytes).await.unwrap();
-            assert_eq!(u16::from_be_bytes(port_bytes), 2222, "隧道请求必须带上目标端口");
+            assert_eq!(
+                u16::from_be_bytes(port_bytes),
+                2222,
+                "隧道请求必须带上目标端口"
+            );
             // REP=0 成功，绑定地址用 0.0.0.0:0。
-            sock.write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await.unwrap();
+            sock.write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+                .await
+                .unwrap();
         });
 
         let stream = open_proxy_stream(
@@ -1463,7 +1574,9 @@ mod tests {
             reader.read_line(&mut line).await.unwrap();
             reader.read_line(&mut line).await.unwrap();
             reader.read_line(&mut line).await.unwrap();
-            sock.write_all(b"HTTP/1.1 403 Forbidden\r\n\r\n").await.unwrap();
+            sock.write_all(b"HTTP/1.1 403 Forbidden\r\n\r\n")
+                .await
+                .unwrap();
         });
 
         let result = open_proxy_stream(
@@ -1476,10 +1589,7 @@ mod tests {
         let Err(e) = result else {
             panic!("非 2xx 应拒绝隧道: {result:?}");
         };
-        assert!(
-            e.to_string().contains("403"),
-            "错误信息应带响应: {e}"
-        );
+        assert!(e.to_string().contains("403"), "错误信息应带响应: {e}");
         proxy.await.unwrap();
     }
 
@@ -1601,7 +1711,8 @@ mod tests {
             "key_path": "/srv/ssl/site.key",
         }))
         .expect("应能解析");
-        let config = resolve_input(&input, Some(&profile()), None, None).expect("档案应补齐连接与认证");
+        let config =
+            resolve_input(&input, Some(&profile()), None, None).expect("档案应补齐连接与认证");
 
         assert_eq!(config.host, "web-1.example.com");
         assert_eq!(config.user, "deploy");
@@ -1626,14 +1737,15 @@ mod tests {
             "credential_id": 1,
         }))
         .expect("应能解析");
-        let err = resolve_input(&input, Some(&profile()), None, None).expect_err("档案不含路径应报错");
+        let err =
+            resolve_input(&input, Some(&profile()), None, None).expect_err("档案不含路径应报错");
 
         let text = err.to_string();
-        assert!(text.contains("fullchain_path"), "应指出缺完整链路径: {text}");
         assert!(
-            text.contains("部署输入"),
-            "报错要说明路径从哪补: {text}"
+            text.contains("fullchain_path"),
+            "应指出缺完整链路径: {text}"
         );
+        assert!(text.contains("部署输入"), "报错要说明路径从哪补: {text}");
     }
 
     #[test]
@@ -1644,7 +1756,8 @@ mod tests {
             "key_path": "/srv/ssl/site.key",
         }))
         .expect("应能解析");
-        let err = resolve_input(&input, Some(&profile()), None, None).expect_err("缺完整链路径应报错");
+        let err =
+            resolve_input(&input, Some(&profile()), None, None).expect_err("缺完整链路径应报错");
         assert!(err.to_string().contains("fullchain_path"), "{err}");
 
         // 缺 key_path：同样指向该字段。
@@ -1653,7 +1766,8 @@ mod tests {
             "fullchain_path": "/srv/ssl/site.fullchain.cer",
         }))
         .expect("应能解析");
-        let err = resolve_input(&input, Some(&profile()), None, None).expect_err("缺私钥路径应报错");
+        let err =
+            resolve_input(&input, Some(&profile()), None, None).expect_err("缺私钥路径应报错");
         assert!(err.to_string().contains("key_path"), "{err}");
 
         // ca_path 缺省或空白都合法：解析为 None（部署时跳过 ca 文件）。
@@ -1699,7 +1813,10 @@ mod tests {
         });
         let input: SshInput =
             serde_json::from_value(without_legacy_alias(&raw)).expect("去重后应能解析");
-        assert_eq!(input.fullchain_path.as_deref(), Some("/new/site.fullchain.cer"));
+        assert_eq!(
+            input.fullchain_path.as_deref(),
+            Some("/new/site.fullchain.cer")
+        );
 
         // 对照：不去重时 serde 会报 duplicate field。
         assert!(serde_json::from_value::<SshInput>(raw.clone()).is_err());
@@ -1722,7 +1839,10 @@ mod tests {
         assert_eq!(config.fullchain_path, "/override/site.crt");
         assert_eq!(config.key_path, "/override/site.key");
         assert_eq!(config.cert_mode, "0600", "输入权限应覆盖档案默认值");
-        assert_eq!(config.reload_command.as_deref(), Some("systemctl reload caddy"));
+        assert_eq!(
+            config.reload_command.as_deref(),
+            Some("systemctl reload caddy")
+        );
         assert_eq!(config.host, "web-1.example.com", "未覆盖的字段回到档案");
     }
 
@@ -1750,10 +1870,7 @@ mod tests {
     fn missing_fields_are_named_after_the_merge() {
         let input: SshInput = serde_json::from_value(serde_json::json!({})).expect("应能解析");
         let err = resolve_input(&input, None, None, None).expect_err("既无档案也无直填应报错");
-        assert!(
-            err.to_string().contains("host"),
-            "应指出缺主机: {err}",
-        );
+        assert!(err.to_string().contains("host"), "应指出缺主机: {err}",);
 
         // 逐项补齐到只剩认证缺失：报错要跟上进度，指向 auth。
         let input: SshInput = serde_json::from_value(serde_json::json!({
@@ -1772,8 +1889,12 @@ mod tests {
         .expect("应能解析");
         let mut broken = profile();
         broken.private_key = None;
-        let err = resolve_input(&input, Some(&broken), None, None).expect_err("档案缺认证材料应报错");
-        assert!(err.to_string().contains("credential_id.private_key"), "{err}");
+        let err =
+            resolve_input(&input, Some(&broken), None, None).expect_err("档案缺认证材料应报错");
+        assert!(
+            err.to_string().contains("credential_id.private_key"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -1784,7 +1905,8 @@ mod tests {
         .expect("应能解析");
         let mut broken = profile();
         broken.private_key = None;
-        let err = resolve_input(&input, Some(&broken), None, None).expect_err("档案缺认证材料应报错");
+        let err =
+            resolve_input(&input, Some(&broken), None, None).expect_err("档案缺认证材料应报错");
         let text = err.to_string();
         assert!(text.contains("credential_id.private_key"), "{err}");
     }
@@ -1913,7 +2035,10 @@ mod tests {
             .expect_err("应连接失败")
             .to_string();
         assert!(!text.contains("SECRET-KEY-MATERIAL"), "{text}");
-        assert!(!text.contains("probe-user"), "用户名也不是材料，但一并别露: {text}");
+        assert!(
+            !text.contains("probe-user"),
+            "用户名也不是材料，但一并别露: {text}"
+        );
     }
 }
 
@@ -1921,6 +2046,9 @@ mod tests {
 mod schema_print {
     #[test]
     fn print() {
-        println!("{}", serde_json::to_string_pretty(&schemars::schema_for!(super::SshInput)).unwrap());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&schemars::schema_for!(super::SshInput)).unwrap()
+        );
     }
 }

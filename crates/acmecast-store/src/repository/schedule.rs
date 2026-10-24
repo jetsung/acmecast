@@ -9,7 +9,9 @@
 
 use chrono::{DateTime, Utc};
 use cron::Schedule as CronSchedule;
-use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder, Set};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder, Set,
+};
 use std::str::FromStr;
 
 use crate::entity::schedule;

@@ -239,7 +239,10 @@ mod tests {
     fn split_chain_two_certs_takes_rest_after_first() {
         let chain = format!("{}{}", der_to_pem(&[1, 2, 3]), der_to_pem(&[4, 5, 6]));
         let (leaf, ca) = split_chain(&chain);
-        assert!(leaf.contains("AQID\n") || leaf.contains("AQID\r"), "leaf 应为首块");
+        assert!(
+            leaf.contains("AQID\n") || leaf.contains("AQID\r"),
+            "leaf 应为首块"
+        );
         assert!(!leaf.contains("BAUG"), "leaf 不应含第二块");
         assert!(ca.contains("BAUG"), "ca 应为首块之后剩余");
         assert_eq!(ca, ca_pem_of(&chain));

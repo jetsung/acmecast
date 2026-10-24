@@ -361,7 +361,12 @@ impl<'a> StepContext<'a> {
     }
 
     /// 记一条日志并附带结构化输出。
-    pub fn log_with_output(&self, level: StepLogLevel, message: impl Into<String>, output: serde_json::Value) {
+    pub fn log_with_output(
+        &self,
+        level: StepLogLevel,
+        message: impl Into<String>,
+        output: serde_json::Value,
+    ) {
         self.push_step_log(StepLog::new(level, message).with_output(output));
     }
 

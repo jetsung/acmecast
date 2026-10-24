@@ -24,6 +24,12 @@ pub struct Model {
     /// 能力标记（JSON 数组文本）：`dns` / `deploy` 的归一化子集，
     /// 仅受控类型（tencent/cloudflare/aliyun）有意义，其余类型为空数组。
     pub capabilities: String,
+    /// 出网代理模式明文冗余列：`direct` / `inherit` / `custom`。
+    ///
+    /// 从加密字段 `fields.proxy_mode` 按 [`acmecast_core::ProxyMode::from_credentials`]
+    /// 归一化提取的非敏感枚举值（与 `capabilities` 同口径），供列表展示；
+    /// 代理 URL 本体仍在 `encrypted_fields` 内加密保存。
+    pub proxy_mode: String,
     /// 记录创建时间。
     pub created_at: chrono::DateTime<chrono::Utc>,
     /// 记录更新时间。
@@ -63,6 +69,7 @@ mod tests {
             Column::EncryptedFields,
             Column::Remark,
             Column::Capabilities,
+            Column::ProxyMode,
             Column::CreatedAt,
             Column::UpdatedAt,
         ];

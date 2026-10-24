@@ -94,6 +94,9 @@ pub struct RuntimeState {
     pub broadcaster: Arc<history_stream::SseBroadcaster>,
     /// 运行控制注册表：本进程内在执行的运行 → 取消令牌，供终止运行接口触发取消。
     pub run_control: Arc<run_control::RunControl>,
+    /// 腾讯云 API 的 HTTP 传输层覆盖：`None` 走真实网络（ReqwestTransport），
+    /// 测试注入替身 transport，供同步证书列表端点等 TencentApiClient 消费者复用。
+    pub tencent_http: Option<Arc<dyn acmecast_dns::http::HttpTransport>>,
 }
 
 impl std::fmt::Debug for RuntimeState {
@@ -105,6 +108,10 @@ impl std::fmt::Debug for RuntimeState {
             .field("auth", &self.auth)
             .field("notifier", &self.notifier)
             .field("redis", &self.redis.as_ref().map(|_| "ConnectionManager"))
+            .field(
+                "tencent_http",
+                &self.tencent_http.as_ref().map(|_| "HttpTransport"),
+            )
             .finish()
     }
 }
@@ -153,6 +160,7 @@ impl RuntimeState {
             redis: None,
             broadcaster: Arc::new(history_stream::SseBroadcaster::new()),
             run_control: Arc::new(run_control::RunControl::new()),
+            tencent_http: None,
         }
     }
 

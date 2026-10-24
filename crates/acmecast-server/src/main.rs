@@ -193,6 +193,16 @@ async fn run(config_override: Option<&str>) -> Result<(), Box<dyn std::error::Er
         AuthMode::Enforced(_) => {}
     }
 
+    // 存量凭据的 proxy_mode 明文列回填：解密 encrypted_fields 需要密钥，
+    // 而 migrate 跑在密钥初始化之前，只能在 RuntimeState 就绪后补做。
+    // 失败只记日志不阻断启动——运行时行为读加密字段，明文列仅供列表展示。
+    if let Err(error) =
+        acmecast_store::migration::backfill_credential_proxy_mode(&db, runtime.cipher.as_deref())
+            .await
+    {
+        tracing::error!(%error, "存量凭据 proxy_mode 回填失败，列表将按 direct 展示");
+    }
+
     // webhook 通知：渠道是流水线级配置（`notification_channels` 凭据 ID），
     // 运行结束时统一投递，装配不依赖启动配置。凭据密钥缺失时渠道无法
     // 解密，装配仍进行——投递路径记 WARN 跳过，避免把配置错误静默吞掉。
@@ -349,6 +359,19 @@ async fn handle_migrate_certs(
     tokio::fs::create_dir_all(&config.data_dir).await?;
     let db = sea_orm::Database::connect(&config.database_url()).await?;
     acmecast_store::migrate(&db).await?;
+    // proxy_mode 明文列回填：解密存量凭据需要密钥，密钥未配置时跳过
+    // （列保持默认 direct），待密钥配置后下次启动补回填。
+    let cipher = std::env::var("ACMECAST__SECURITY__CREDENTIAL_KEY")
+        .or_else(|_| std::env::var("ACMECAST_CREDENTIAL_KEY"))
+        .ok()
+        .and_then(|key| match acmecast_core::CredentialCipher::from_base64(&key) {
+            Ok(cipher) => Some(cipher),
+            Err(error) => {
+                eprintln!("凭据加密密钥无效，跳过 proxy_mode 回填: {error}");
+                None
+            }
+        });
+    acmecast_store::migration::backfill_credential_proxy_mode(&db, cipher.as_ref()).await?;
     acmecast_server::cert_migrate::migrate_archived_certs(&db, &config.data_dir).await;
     println!("存量证书归档迁移完成");
     Ok(())

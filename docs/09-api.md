@@ -69,6 +69,7 @@
 | PUT | `/api/credentials/{id}` | 整体替换字段 |
 | DELETE | `/api/credentials/{id}` | 删除；仍被流水线引用 → 409 并列出引用者 |
 | POST | `/api/credentials/{id}/test` | 连通性测试 → `{status: ok/unavailable/not_testable, reason?}` |
+| GET | `/api/credentials/{id}/tencent-ssl-certificates` | 按腾讯云凭据拉取云端 SSL 证书列表（遍历全部分页）→ `[{value: 证书ID, label: "证书ID (域名)" 或 "证书ID (域名 - 别名)"}]`；非 `cloud.tencent` 凭据 400 且不发起云端调用 |
 | GET | `/api/credential-types` | 已注册类型清单（含字段 JSON Schema） |
 
 ## 历史与日志

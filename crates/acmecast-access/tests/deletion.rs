@@ -39,6 +39,7 @@ async fn insert_credential(db: &DatabaseConnection) -> i64 {
     credential::ActiveModel {
         name: Set("被引用的凭据".to_owned()),
         type_id: Set("acme.account".to_owned()),
+        proxy_mode: Set("direct".to_owned()),
         encrypted_fields: Set(sealed),
         created_at: Set(now),
         updated_at: Set(now),

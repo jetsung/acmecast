@@ -127,8 +127,11 @@ async fn unmatched_paths_fall_back_to_the_spa_entry_html() {
 #[tokio::test]
 async fn favicon_and_webmanifest_are_served_not_shadowed_by_spa_fallback() {
     let dir = TempDir::new("static");
-    std::fs::write(dir.path().join("index.html"), "<!doctype html><title>acmecast</title>")
-        .expect("应能写入入口 HTML");
+    std::fs::write(
+        dir.path().join("index.html"),
+        "<!doctype html><title>acmecast</title>",
+    )
+    .expect("应能写入入口 HTML");
     // ICO 文件头：\0\0\x01\0，后接 1 个目录项。
     std::fs::write(dir.path().join("favicon.ico"), b"\x00\x00\x01\x00\x01\x00")
         .expect("应能写入 favicon");
@@ -143,7 +146,11 @@ async fn favicon_and_webmanifest_are_served_not_shadowed_by_spa_fallback() {
     .await;
 
     // /favicon.ico：命中真实文件，返回 ICO 内容而非 HTML。
-    let response = send(&app, Request::get("/favicon.ico").body(Body::empty()).unwrap()).await;
+    let response = send(
+        &app,
+        Request::get("/favicon.ico").body(Body::empty()).unwrap(),
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::OK);
     let content_type = response
         .headers()
@@ -166,7 +173,9 @@ async fn favicon_and_webmanifest_are_served_not_shadowed_by_spa_fallback() {
     // /site.webmanifest：命中真实文件，Content-Type 与 JSON 字段完整。
     let response = send(
         &app,
-        Request::get("/site.webmanifest").body(Body::empty()).unwrap(),
+        Request::get("/site.webmanifest")
+            .body(Body::empty())
+            .unwrap(),
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -185,7 +194,9 @@ async fn favicon_and_webmanifest_are_served_not_shadowed_by_spa_fallback() {
     assert_eq!(body["short_name"], "AcmeCast");
     assert_eq!(body["start_url"], "/");
     assert!(
-        body["icons"].as_array().is_some_and(|icons| !icons.is_empty()),
+        body["icons"]
+            .as_array()
+            .is_some_and(|icons| !icons.is_empty()),
         "manifest 应包含 icons 数组"
     );
 }

@@ -22,8 +22,8 @@ use sha1::Sha1;
 
 use crate::error::{Error, Result};
 use crate::http::{
-    HttpRequest, HttpResponse, HttpTransport, ReqwestTransport, encode, inject_proxy_field_annotations,
-    transport_for_credentials,
+    HttpRequest, HttpResponse, HttpTransport, ReqwestTransport, encode,
+    inject_proxy_field_annotations, transport_for_credentials,
 };
 use crate::provider::{DnsProvider, TxtRecord, parse_credentials};
 
@@ -329,7 +329,12 @@ pub fn aliyun_credentials_schema() -> RootSchema {
     let mut schema = schema_for!(AliyunCredentials);
     schema.schema.extensions.insert(
         "x-field-order".to_owned(),
-        serde_json::json!(["access_key_id", "access_key_secret", "proxy_mode", "proxy_url"]),
+        serde_json::json!([
+            "access_key_id",
+            "access_key_secret",
+            "proxy_mode",
+            "proxy_url"
+        ]),
     );
     inject_proxy_field_annotations(&mut schema);
     schema

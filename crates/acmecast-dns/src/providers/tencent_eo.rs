@@ -18,8 +18,7 @@ use schemars::schema::RootSchema;
 use serde_json::{Value, json};
 
 use super::tencent::{
-    STS_SERVICE, STS_VERSION, TTL_MAX, TTL_MIN, TencentApiClient, TencentCredentials,
-    tencent_credentials_schema,
+    TTL_MAX, TTL_MIN, TencentApiClient, TencentCredentials, tencent_credentials_schema,
 };
 use crate::error::{Error, Result};
 use crate::http::{HttpTransport, ReqwestTransport, transport_for_credentials};
@@ -92,10 +91,11 @@ impl TencentEoProvider {
         )
     }
 
-    /// 探测凭据是否可用：调 STS 的 `GetCallerIdentity`（与云解析提供商同款）。
+    /// 探测凭据是否可用：调 EdgeOne 的 `DescribePlans`。
     ///
-    /// EdgeOne 凭据与腾讯云 DNS 凭据是同一套密钥体系，探测也走同一个
-    /// 身份接口；端点随凭据的 `account_site` 切换。
+    /// 这是凭据页「测试」按钮的探测动作——探测 EdgeOne 业务所需的最轻
+    /// 只读接口（套餐列表单页，`Limit=1`）；端点随凭据的 `account_site`
+    /// 切换（国内/国际站）。
     pub async fn verify_credentials(&self, credentials: &Value) -> Result<()> {
         let http = self.http_for(credentials, self.global_proxy_url())?;
         let credentials: TencentCredentials = parse_credentials(credentials)?;
@@ -103,10 +103,10 @@ impl TencentEoProvider {
             .call_with(
                 &http,
                 &credentials,
-                STS_SERVICE,
-                STS_VERSION,
-                "GetCallerIdentity",
-                json!({}),
+                TEO_SERVICE,
+                TEO_VERSION,
+                "DescribePlans",
+                json!({ "Limit": 1 }),
             )
             .await
             .map(|_| ())

@@ -77,10 +77,7 @@ where
 
 /// `AsyncRead+AsyncWrite+Debug+Send+Sync+Unpin` 的对象安全别名，方便 `Box<dyn _>`。
 trait AsyncWriteReadDebug: AsyncRead + AsyncWrite + Send + Sync + Unpin + fmt::Debug {}
-impl<T> AsyncWriteReadDebug for T where
-    T: AsyncRead + AsyncWrite + Send + Sync + Unpin + fmt::Debug
-{
-}
+impl<T> AsyncWriteReadDebug for T where T: AsyncRead + AsyncWrite + Send + Sync + Unpin + fmt::Debug {}
 
 /// SMTP 投递的工作超时——隧道建立 + 会话整体计入 [`DEFAULT_TIMEOUT`]。
 async fn with_proxy_timeout<T>(
@@ -144,9 +141,8 @@ async fn send_via_proxy_inner(
                 .await
                 .map_err(|error| format!("SMTP 连接建立失败: {error}"))?;
             if settings.tls == TlsMode::StartTls {
-                let params = TlsParameters::new_rustls(host.clone()).map_err(|error| {
-                    format!("TLS 参数构建失败: {error}")
-                })?;
+                let params = TlsParameters::new_rustls(host.clone())
+                    .map_err(|error| format!("TLS 参数构建失败: {error}"))?;
                 conn.starttls(params, &ClientId::default())
                     .await
                     .map_err(|error| format!("STARTTLS 失败: {error}"))?;
@@ -254,7 +250,9 @@ async fn connect_via_http(
         .host_str()
         .ok_or_else(|| "代理 URL 缺少 host".to_owned())?;
     let proxy_host_owned = proxy_host.to_owned();
-    let proxy_port = parsed.port().unwrap_or(if secure_to_proxy { 443 } else { 8080 });
+    let proxy_port = parsed
+        .port()
+        .unwrap_or(if secure_to_proxy { 443 } else { 8080 });
     let proxy_addr = format!("{proxy_host_owned}:{proxy_port}");
 
     let tcp = tokio::net::TcpStream::connect(&proxy_addr)
@@ -263,14 +261,17 @@ async fn connect_via_http(
 
     // https 代理：先 TLS 到代理本身。
     let mut stream: Box<dyn AsyncWriteReadDebug> = if secure_to_proxy {
-        let tls = tls_wrap(Box::new(tcp) as Box<dyn AsyncWriteReadDebug>, &proxy_host_owned)
-            .await
-            .map_err(|cause| {
-                format!(
-                    "到代理 {} 的 TLS 失败: {cause}",
-                    acmecast_core::proxy_log_target(parsed.as_str())
-                )
-            })?;
+        let tls = tls_wrap(
+            Box::new(tcp) as Box<dyn AsyncWriteReadDebug>,
+            &proxy_host_owned,
+        )
+        .await
+        .map_err(|cause| {
+            format!(
+                "到代理 {} 的 TLS 失败: {cause}",
+                acmecast_core::proxy_log_target(parsed.as_str())
+            )
+        })?;
         Box::new(tls)
     } else {
         Box::new(tcp)
@@ -283,10 +284,8 @@ async fn connect_via_http(
     if !parsed.username().is_empty() {
         let password = parsed.password().unwrap_or("");
         let creds = format!("{}:{password}", parsed.username());
-        let encoded = base64::Engine::encode(
-            &base64::engine::general_purpose::STANDARD,
-            creds.as_bytes(),
-        );
+        let encoded =
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, creds.as_bytes());
         request.push_str(&format!("Proxy-Authorization: Basic {encoded}\r\n"));
     }
     request.push_str("\r\n");
@@ -370,8 +369,12 @@ mod tests {
 
     #[test]
     fn connect_success_parses_status_line() {
-        assert!(is_connect_success("HTTP/1.1 200 Connection Established\r\n\r\n"));
-        assert!(is_connect_success("HTTP/1.0 200 OK\r\nServer: squid\r\n\r\n"));
+        assert!(is_connect_success(
+            "HTTP/1.1 200 Connection Established\r\n\r\n"
+        ));
+        assert!(is_connect_success(
+            "HTTP/1.0 200 OK\r\nServer: squid\r\n\r\n"
+        ));
         assert!(!is_connect_success(
             "HTTP/1.1 407 Proxy Authentication Required\r\n\r\n"
         ));

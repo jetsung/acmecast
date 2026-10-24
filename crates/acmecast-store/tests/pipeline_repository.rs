@@ -538,8 +538,7 @@ async fn deploy_directory_paths_are_filled_before_persisting() {
         "本地目录应补全后入库"
     );
     assert_eq!(
-        found.steps[1].input["config"]["prefix"],
-        "acme/",
+        found.steps[1].input["config"]["prefix"], "acme/",
         "prefix 应归一化"
     );
     assert_eq!(
@@ -547,8 +546,7 @@ async fn deploy_directory_paths_are_filled_before_persisting() {
         "my-keys/{domain}.key"
     );
     assert_eq!(
-        found.steps[2].input["config"]["cert_path"],
-        "certs/{domain}.fullchain.cer",
+        found.steps[2].input["config"]["cert_path"], "certs/{domain}.fullchain.cer",
         "旧别名同样补全"
     );
 }

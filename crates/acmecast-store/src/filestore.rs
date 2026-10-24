@@ -207,7 +207,9 @@ impl FileStore {
         let prefix = base_name_of(cert_pem_relative)
             .strip_suffix(&format!(".{CERT_PEM_SUFFIX}"))
             .or_else(|| base_name_of(cert_pem_relative).strip_suffix(&format!(".{CERT_SUFFIX}")))
-            .or_else(|| base_name_of(cert_pem_relative).strip_suffix(&format!(".{FULLCHAIN_SUFFIX}")))
+            .or_else(|| {
+                base_name_of(cert_pem_relative).strip_suffix(&format!(".{FULLCHAIN_SUFFIX}"))
+            })
             .unwrap_or(base_name_of(cert_pem_relative))
             .to_owned();
         let target = CertFilePaths {
@@ -230,21 +232,37 @@ impl FileStore {
             format!("{ACTIVE_CERT_DIR}/{active_prefix}.{KEY_SUFFIX}"),
         ];
         let mut any = false;
-        for c in [cert_pem_relative, key_pem_relative].iter().copied().chain(active_candidates.iter().map(|s| s.as_str())) {
-            if tokio::fs::metadata(self.resolve(c)?).await.is_ok() { any = true; break; }
+        for c in [cert_pem_relative, key_pem_relative]
+            .iter()
+            .copied()
+            .chain(active_candidates.iter().map(|s| s.as_str()))
+        {
+            if tokio::fs::metadata(self.resolve(c)?).await.is_ok() {
+                any = true;
+                break;
+            }
         }
-        if !any { return Ok(None); }
+        if !any {
+            return Ok(None);
+        }
         self.ensure_archived_dir(fingerprint).await?;
         // 新布局 4 文件
         for src in active_candidates.iter() {
             if tokio::fs::metadata(self.resolve(src)?).await.is_ok() {
                 let dst = format!("{archived_dir}/{}", base_name_of(src));
-                if src != &dst { let _ = self.move_within(src, &dst).await; }
+                if src != &dst {
+                    let _ = self.move_within(src, &dst).await;
+                }
             }
         }
         // 旧布局 2 文件
-        for (src, dst) in [(cert_pem_relative, &target.cert_pem), (key_pem_relative, &target.key_pem)] {
-            if src == dst { continue; }
+        for (src, dst) in [
+            (cert_pem_relative, &target.cert_pem),
+            (key_pem_relative, &target.key_pem),
+        ] {
+            if src == dst {
+                continue;
+            }
             if tokio::fs::metadata(self.resolve(src)?).await.is_ok() {
                 let _ = self.move_within(src, dst).await;
             }
@@ -267,7 +285,6 @@ impl FileStore {
         self.move_to_archived(cert_pem_relative, key_pem_relative, old_fingerprint)
             .await
     }
-
 
     /// 把一条证书的材料移动到吊销目录，返回归档后的相对路径。
     ///
@@ -327,10 +344,19 @@ impl FileStore {
         .filter(|s| !s.is_empty())
         .collect();
         let mut any = false;
-        for c in source_candidates.iter().copied().chain(active_candidates.iter().map(|s| s.as_str())) {
-            if tokio::fs::metadata(self.resolve(c)?).await.is_ok() { any = true; break; }
+        for c in source_candidates
+            .iter()
+            .copied()
+            .chain(active_candidates.iter().map(|s| s.as_str()))
+        {
+            if tokio::fs::metadata(self.resolve(c)?).await.is_ok() {
+                any = true;
+                break;
+            }
         }
-        if !any { return Ok(None); }
+        if !any {
+            return Ok(None);
+        }
 
         if self
             .try_move_whole_dir(cert_pem_relative, key_pem_relative, &revoked_dir)
@@ -343,19 +369,32 @@ impl FileStore {
         for src in active_candidates.iter() {
             if tokio::fs::metadata(self.resolve(src)?).await.is_ok() {
                 let dst = format!("{revoked_dir}/{}", base_name_of(src));
-                if src != &dst { let _ = self.move_within(src, &dst).await; }
+                if src != &dst {
+                    let _ = self.move_within(src, &dst).await;
+                }
             }
         }
         for src in source_candidates.iter() {
             let dst = format!("{revoked_dir}/{}", base_name_of(src));
-            if src == &dst { continue; }
-            if tokio::fs::metadata(self.resolve(src)?).await.is_ok() { let _ = self.move_within(src, &dst).await; }
+            if src == &dst {
+                continue;
+            }
+            if tokio::fs::metadata(self.resolve(src)?).await.is_ok() {
+                let _ = self.move_within(src, &dst).await;
+            }
         }
         // 扁平活跃目录为共享目录，不应因单条证书归档而尝试删除。
         let active_dir = self.resolve(ACTIVE_CERT_DIR)?;
         for source in source_candidates.iter() {
-            let Ok(parent) = self.resolve(source).map(|p| p.parent().unwrap().to_path_buf()) else { continue; };
-            if parent == active_dir { continue; }
+            let Ok(parent) = self
+                .resolve(source)
+                .map(|p| p.parent().unwrap().to_path_buf())
+            else {
+                continue;
+            };
+            if parent == active_dir {
+                continue;
+            }
             let _ = self.remove_parent_dir_if_empty(source).await;
         }
         Ok(Some(target))
@@ -383,10 +422,17 @@ impl FileStore {
             (&archived.key_pem, &original.key_pem),
         ] {
             if tokio::fs::metadata(self.resolve(src)?).await.is_ok() {
-                if src != dst { let _ = self.move_within(src, dst).await; }
+                if src != dst {
+                    let _ = self.move_within(src, dst).await;
+                }
             }
         }
-        for file in [&archived.cert_pem, &archived.key_pem, &archived.cert, &archived.key] {
+        for file in [
+            &archived.cert_pem,
+            &archived.key_pem,
+            &archived.cert,
+            &archived.key,
+        ] {
             let _ = self.remove_parent_dir_if_empty(file).await;
         }
         Ok(())
@@ -629,8 +675,13 @@ impl FileStore {
             .or_else(|| base_name_of(cert_pem_relative).strip_suffix(&format!(".{CERT_SUFFIX}")))
             .unwrap_or(base_name_of(cert_pem_relative))
             .to_owned();
-        let parent_dir = std::path::Path::new(cert_pem_relative).parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
-        let extra = if parent_dir.is_empty() { vec![] } else {
+        let parent_dir = std::path::Path::new(cert_pem_relative)
+            .parent()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let extra = if parent_dir.is_empty() {
+            vec![]
+        } else {
             vec![
                 format!("{parent_dir}/{prefix}.{CERT_SUFFIX}"),
                 format!("{parent_dir}/{prefix}.{CA_SUFFIX}"),
@@ -639,7 +690,11 @@ impl FileStore {
             ]
         };
         let delete_files_individually = async {
-            for rel in [cert_pem_relative, key_pem_relative].iter().copied().chain(extra.iter().map(|s| s.as_str())) {
+            for rel in [cert_pem_relative, key_pem_relative]
+                .iter()
+                .copied()
+                .chain(extra.iter().map(|s| s.as_str()))
+            {
                 let _ = self.delete(rel).await;
             }
         };
