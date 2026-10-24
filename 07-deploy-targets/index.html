@@ -22,7 +22,7 @@
       
       
       <link rel="icon" href="../assets/images/favicon.png">
-      <meta name="generator" content="zensical-0.0.71">
+      <meta name="generator" content="zensical-0.0.72">
     
     
       
@@ -33,7 +33,7 @@
       
         
       
-      <link rel="stylesheet" href="../assets/stylesheets/modern/main.e442bf79.min.css">
+      <link rel="stylesheet" href="../assets/stylesheets/modern/main.4ab2de0c.min.css">
       
         
           
@@ -103,9 +103,10 @@
   <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 5v16M20.001 19A2 2 0 0 0 22 17V5a2 2 0 0 0-1.999-2L16 3.002A5 5 0 0 0 12 5a5 5 0 0 0-4-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 1.999 2H8a5 5 0 0 1 4 2 5 5 0 0 1 4-2z"/></svg>
 
     </a>
-    <label class="md-header__button md-icon" for="__drawer" aria-label="导航栏">
+    <label class="md-header__button md-icon" for="__drawer">
       
       <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-menu" viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h16"/></svg>
+      <span class="md-visually-hidden">导航栏</span>
     </label>
     <div class="md-header__title" data-md-component="header-title">
       <div class="md-header__ellipsis">
@@ -167,9 +168,10 @@
     
       
       
-        <label class="md-header__button md-icon" for="__search" aria-label="查找">
+        <label class="md-header__button md-icon" for="__search">
           
           <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg>
+          <span class="md-visually-hidden">查找</span>
         </label>
         <div class="md-search" data-md-component="search" role="dialog" aria-label="查找">
   <button type="button" class="md-search__button">
@@ -1146,10 +1148,16 @@ CDN / WAF 等云资源引用。<strong>国内站与国际站同构</strong>：�
 <td>上传到云端的证书备注名；空白不提交</td>
 </tr>
 <tr>
+<td><code>certificate_id</code></td>
+<td>否</td>
+<td>—</td>
+<td>云端已存在证书 ID（可选）：非空时跳过同域名匹配，直接把本次证书内容写入该证书（原证书 ID 不变），此时 <code>Repeatable</code> 固定为 <code>false</code>、<code>repeatable</code> 不再生效；空白按未提供处理。部署表单可点「同步」拉取云端证书列表后下拉选择</td>
+</tr>
+<tr>
 <td><code>repeatable</code></td>
 <td>否</td>
 <td><code>false</code></td>
-<td>上传请求的 <code>Repeatable</code>：<code>false</code> 时同指纹已存在返回已有证书 ID、不产生重复；<code>true</code> 时允许重复上传</td>
+<td>上传请求的 <code>Repeatable</code>：<code>false</code> 时同指纹已存在返回已有证书 ID、不产生重复；<code>true</code> 时允许重复上传。选中 <code>certificate_id</code> 时固定为 <code>false</code>，本字段被忽略</td>
 </tr>
 <tr>
 <td><code>replace_existing</code></td>
@@ -1175,6 +1183,7 @@ CDN / WAF 等云资源引用。<strong>国内站与国际站同构</strong>：�
 <ul>
 <li><strong><code>CertificateType</code> 固定为 <code>SVR</code></strong>：服务器证书，不暴露为可配置字段。</li>
 <li><strong>上传幂等</strong>：<code>Repeatable=false</code>（默认）时同指纹重复上传天然幂等、不产生重复证书；<code>Repeatable=true</code> 时允许同指纹重复上传（用于需要多张同指纹证书的场景）。</li>
+<li><strong>选中证书 ID 直写</strong>：<code>certificate_id</code> 非空时跳过「同域名存在性判断 / 自动匹配」，直接以该 ID 调 <code>UploadUpdateCertificateInstance</code> 写入本次证书链与私钥，云端证书 ID 不变、不发起上传新证书调用；更新请求的 <code>Repeatable</code> 固定为 <code>false</code>（写入既有证书与重复上传语义互斥），输入 <code>repeatable</code> 不产生任何影响。<code>certificate_id</code> 为空（或空白）时行为与未引入该字段前完全一致。</li>
 </ul>
 <p>替换语义（<code>replace_existing</code> 开启时）：</p>
 <ul>
@@ -1393,7 +1402,7 @@ CDN / WAF 等云资源引用。<strong>国内站与国际站同构</strong>：�
       <script id="__config" type="application/json">{"annotate":null,"base":"..","features":["announce.dismiss","content.code.annotate","content.code.copy","content.code.select","content.footnote.tooltips","content.tabs.link","content.tooltips","navigation.footer","navigation.indexes","navigation.instant","navigation.instant.prefetch","navigation.path","navigation.sections","navigation.top","navigation.tracking","search.highlight"],"redirect":null,"search":"../assets/javascripts/workers/search.c47bb847.min.js","tags":null,"translations":{"clipboard.copied":"已复制","clipboard.copy":"复制","clipboard.error":"Could not copy to clipboard","search.result.more.one":"在该页上还有 1 个符合条件的结果","search.result.more.other":"在该页上还有 # 个符合条件的结果","search.result.none":"没有找到符合条件的结果","search.result.one":"找到 1 个符合条件的结果","search.result.other":"# 个符合条件的结果","search.result.placeholder":"键入以开始搜索","search.result.term.missing":"缺少","select.version":"选择当前版本"},"version":null}</script>
     
     
-      <script src="../assets/javascripts/bundle.a2388154.min.js"></script>
+      <script src="../assets/javascripts/bundle.10ee5ab6.min.js"></script>
       
     
   </body>

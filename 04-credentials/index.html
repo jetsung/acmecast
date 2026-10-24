@@ -22,7 +22,7 @@
       
       
       <link rel="icon" href="../assets/images/favicon.png">
-      <meta name="generator" content="zensical-0.0.71">
+      <meta name="generator" content="zensical-0.0.72">
     
     
       
@@ -33,7 +33,7 @@
       
         
       
-      <link rel="stylesheet" href="../assets/stylesheets/modern/main.e442bf79.min.css">
+      <link rel="stylesheet" href="../assets/stylesheets/modern/main.4ab2de0c.min.css">
       
         
           
@@ -103,9 +103,10 @@
   <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-book-open" viewBox="0 0 24 24"><path d="M12 5v16M20.001 19A2 2 0 0 0 22 17V5a2 2 0 0 0-1.999-2L16 3.002A5 5 0 0 0 12 5a5 5 0 0 0-4-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 1.999 2H8a5 5 0 0 1 4 2 5 5 0 0 1 4-2z"/></svg>
 
     </a>
-    <label class="md-header__button md-icon" for="__drawer" aria-label="导航栏">
+    <label class="md-header__button md-icon" for="__drawer">
       
       <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-menu" viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h16"/></svg>
+      <span class="md-visually-hidden">导航栏</span>
     </label>
     <div class="md-header__title" data-md-component="header-title">
       <div class="md-header__ellipsis">
@@ -167,9 +168,10 @@
     
       
       
-        <label class="md-header__button md-icon" for="__search" aria-label="查找">
+        <label class="md-header__button md-icon" for="__search">
           
           <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg>
+          <span class="md-visually-hidden">查找</span>
         </label>
         <div class="md-search" data-md-component="search" role="dialog" aria-label="查找">
   <button type="button" class="md-search__button">
@@ -1055,7 +1057,9 @@
 （IM 机器人 / 通用 webhook / SMTP）的认证材料。
 所有凭据字段经 AES-256-GCM 加密后落库（密钥为 <code>ACMECAST_CREDENTIAL_KEY</code>，
 只存在于环境变量），API 与日志中永不出现明文——读取详情的接口解密返回，
-其余列表接口不含字段。</p>
+其余列表接口不含字段。唯一例外是 <code>proxy_mode</code>：从加密字段提取的非敏感
+枚举（<code>direct</code> / <code>inherit</code> / <code>custom</code>）以明文冗余列单独存储，凭据列表直接
+返回并展示（见下文「出网代理」）。</p>
 <h2 id="_2">通用机制<a class="headerlink" href="#_2" title="Permanent link">&para;</a></h2>
 <ul>
 <li><strong>引用方式</strong>：步骤输入中任何层级名为 <code>credential_id</code> 的整数字段都是凭据
@@ -1323,6 +1327,11 @@ CA 账号，不会重复注册（也避免撞上 CA 的账号配额）。</p>
   形态（内嵌凭据会被脱敏，不出现在错误信息里）；</li>
 <li><strong>存量凭据无需迁移</strong>：变更前保存的凭据没有 <code>proxy_mode</code>——旧 <code>proxy_url</code> 有值
   视为 <code>custom</code> + 该值，两字段都缺视为 <code>direct</code>，读取时归一化，不报错；</li>
+<li><strong>列表可见的代理模式列</strong>：<code>proxy_mode</code> 以明文冗余列单独落库（不含代理 URL，
+  URL 仍在加密字段内），凭据列表新增「代理」列直接展示中文标签
+  （<code>direct</code>→直连、<code>inherit</code>→继承全局、<code>custom</code>→自定义），不必逐条打开编辑
+  弹窗确认；升级时由迁移自动为存量凭据回填该列（需凭据加密密钥，未配置时
+  保持默认 <code>direct</code>，配好重启后补回填）；</li>
 <li><strong>代理只覆盖持有该凭据的出网调用</strong>，链路随类型不同：</li>
 <li>DNS 提供商（四类）：提供商 API 调用（查询/写入/删除）与凭据页连通性测试；</li>
 <li><code>acme.account</code>：ACME 目录/账号/下单请求与凭据页连通性测试（含吊销）；</li>
@@ -1724,7 +1733,7 @@ URL（webhook 经 <code>reqwest::Proxy</code>，邮件经 SOCKS5/HTTP-CONNECT �
       <script id="__config" type="application/json">{"annotate":null,"base":"..","features":["announce.dismiss","content.code.annotate","content.code.copy","content.code.select","content.footnote.tooltips","content.tabs.link","content.tooltips","navigation.footer","navigation.indexes","navigation.instant","navigation.instant.prefetch","navigation.path","navigation.sections","navigation.top","navigation.tracking","search.highlight"],"redirect":null,"search":"../assets/javascripts/workers/search.c47bb847.min.js","tags":null,"translations":{"clipboard.copied":"已复制","clipboard.copy":"复制","clipboard.error":"Could not copy to clipboard","search.result.more.one":"在该页上还有 1 个符合条件的结果","search.result.more.other":"在该页上还有 # 个符合条件的结果","search.result.none":"没有找到符合条件的结果","search.result.one":"找到 1 个符合条件的结果","search.result.other":"# 个符合条件的结果","search.result.placeholder":"键入以开始搜索","search.result.term.missing":"缺少","select.version":"选择当前版本"},"version":null}</script>
     
     
-      <script src="../assets/javascripts/bundle.a2388154.min.js"></script>
+      <script src="../assets/javascripts/bundle.10ee5ab6.min.js"></script>
       
     
   </body>
