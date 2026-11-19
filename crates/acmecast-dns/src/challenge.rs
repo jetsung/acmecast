@@ -123,6 +123,36 @@ pub fn challenge_write_name(zone: &str) -> String {
 ///
 /// `action` 通常是「等待传播并让 CA 校验」，但它是个普通 future，
 /// 因此本函数不关心它做什么。
+/// 写入挑战记录（**不负责清理**）：同名同值视为已达目的（幂等），同名不同值
+/// 报错。返回是否实际执行了创建——同名同值跳过时为 `false`。
+///
+/// 清理时机由调用方决定：CA 的（二次）验证是异步的，`set_challenge_ready`
+/// 之后 CA 还会回查 DNS，挑战记录必须保留到订单就绪之后再删。
+pub async fn ensure_txt_record(
+    provider: &dyn DnsProvider,
+    credentials: &Value,
+    record: &TxtRecord,
+) -> Result<bool> {
+    let existing = provider.find_txt(credentials, record).await?;
+    if existing.iter().any(|value| value == &record.value) {
+        warn!(
+            name = %record.name,
+            "挑战记录已存在且值相同，跳过写入"
+        );
+        return Ok(false);
+    }
+    if !existing.is_empty() {
+        return Err(Error::provider(format!(
+            "`{}` 下已有 TXT 记录（{} 条）且值与本次不同；\
+             残留记录会让 CA 读到旧值，请先清理后再挑战",
+            record.name,
+            existing.len()
+        )));
+    }
+    provider.create_txt(credentials, record).await?;
+    Ok(true)
+}
+
 pub async fn with_txt_record<F, T>(
     provider: &dyn DnsProvider,
     credentials: &Value,
@@ -136,22 +166,7 @@ where
     //
     // 同名不同值是真麻烦：CA 可能读到旧的那条，而报出来的只是「校验值不匹配」。
     // 同名同值则视为已达目的——幂等，不重复写。
-    let existing = provider.find_txt(credentials, record).await?;
-    if existing.iter().any(|value| value == &record.value) {
-        warn!(
-            name = %record.name,
-            "挑战记录已存在且值相同，跳过写入"
-        );
-    } else if !existing.is_empty() {
-        return Err(Error::provider(format!(
-            "`{}` 下已有 TXT 记录（{} 条）且值与本次不同；\
-             残留记录会让 CA 读到旧值，请先清理后再挑战",
-            record.name,
-            existing.len()
-        )));
-    } else {
-        provider.create_txt(credentials, record).await?;
-    }
+    ensure_txt_record(provider, credentials, record).await?;
 
     let outcome = action.await;
     let cleaned = provider.delete_txt(credentials, record).await;

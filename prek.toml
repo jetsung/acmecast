@@ -40,17 +40,19 @@ hooks = [
 # 刻意不含 detect-private-key：本仓库源码里到处是 "-----BEGIN PRIVATE KEY-----"
 # 这类 PEM 头部字符串常量（见 crates/acmecast-cert/src/pem.rs），该钩子会全线误报。
 
-# 2) Rust：参数与 CI 的 lint job（.github/workflows/ci.yml）逐字对齐，
-#    避免本地通过、CI 失败这种分歧。language = "system" 表示直接用 devShell 里的 cargo。
+# 2) Rust：本地 pre-commit 阶段直接**自动格式化**（不 --check，改了直接落盘），
+#    CI 仍用 `cargo fmt --check` 做只读校验兜底；clippy 参数与 CI 的 lint job
+#    （.github/workflows/ci.yml）逐字对齐，避免本地通过、CI 失败这种分歧。
+#    language = "system" 表示直接用 devShell 里的 cargo。
 [[repos]]
 repo = "local"
 
 [[repos.hooks]]
 id = "cargo-fmt"
-name = "cargo fmt --check"
+name = "cargo fmt"
 language = "system"
 entry = "cargo fmt"
-args = ["--all", "--", "--check"]
+args = ["--all"]
 files = "\\.rs$"
 pass_filenames = false
 stages = ["pre-commit"]

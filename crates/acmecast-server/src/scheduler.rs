@@ -173,6 +173,8 @@ impl PipelineLauncher for PipelineRunLauncher {
 /// 装载失败（数据库不可用等）只记日志不 panic——服务仍可提供 HTTP
 /// 接口供排障，调度在下次重启时重试装载。
 #[must_use]
+// 参数均为调用方（app 装配）既有上下文，收敛为结构体反而增加一层拆包，故显式豁免。
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_scheduler(
     db: DatabaseConnection,
     steps: Arc<StepRegistry>,

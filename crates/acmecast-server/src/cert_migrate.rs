@@ -14,7 +14,6 @@ use acmecast_store::repository::CertRepository;
 use sea_orm::{DatabaseConnection, EntityTrait};
 
 /// 执行存量归档迁移，返回（活跃保留数，被归档数，跳过数）。
-
 pub async fn migrate_archived_certs(
     db: &DatabaseConnection,
     data_dir: &std::path::Path,
@@ -209,7 +208,6 @@ pub async fn migrate_archived_certs(
 
 /// 确保单条记录的路径已在新布局：活跃的扁平 `certs/ssl/` 或已归档的 `archived/<指纹>/`。
 /// 返回 Ok(true) 表示发生了迁移（旧路径→新位置），Ok(false) 表示已在新布局。
-
 async fn ensure_flat_paths(
     store: &FileStore,
     repository: &CertRepository<'_>,

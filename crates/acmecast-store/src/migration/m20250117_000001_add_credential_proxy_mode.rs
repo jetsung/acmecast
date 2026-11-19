@@ -110,8 +110,6 @@ pub async fn backfill_credential_proxy_mode(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     /// 归一化口径与运行时一致：旧 `proxy_url` 有值视为 `custom`，无值为 `direct`。
     #[test]
     fn proxy_mode_text_matches_runtime_normalization() {

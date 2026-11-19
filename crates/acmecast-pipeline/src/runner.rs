@@ -223,19 +223,19 @@ impl<'a> PipelineRunner<'a> {
 
         // 触发前就已被取消（极端时序）：以第一个启用步骤的名义走失败收尾，
         // 不把这次运行留成 running。没有任何启用步骤时取消无意义，照常跑完。
-        if self.cancel.is_some_and(CancelToken::is_cancelled) {
-            if let Some(step) = ordered.iter().copied().find(|step| step.enabled) {
-                return Ok(self
-                    .abort(
-                        RunState { steps, artifacts },
-                        scope,
-                        step,
-                        CANCEL_REASON.to_owned(),
-                        Vec::new(),
-                        start_time.elapsed(),
-                    )
-                    .await);
-            }
+        if self.cancel.is_some_and(CancelToken::is_cancelled)
+            && let Some(step) = ordered.iter().copied().find(|step| step.enabled)
+        {
+            return Ok(self
+                .abort(
+                    RunState { steps, artifacts },
+                    scope,
+                    step,
+                    CANCEL_REASON.to_owned(),
+                    Vec::new(),
+                    start_time.elapsed(),
+                )
+                .await);
         }
 
         info!(

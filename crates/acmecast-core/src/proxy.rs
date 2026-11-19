@@ -213,10 +213,7 @@ pub fn inject_proxy_field_annotations(schema: &mut schemars::schema::RootSchema)
             });
             let span: u8 = if is_full { 24 } else { 12 };
             if span == 24 {
-                // 整行独占：若当前行有半列残留，先换行再占整行，行满后归零。
-                if col == 12 {
-                    col = 0;
-                }
+                // 整行独占：无论当前行是否有半列残留都换行，行满后归零。
                 col = 0;
             } else {
                 // 半宽：若放不下则换行

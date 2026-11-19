@@ -203,9 +203,13 @@ impl AliyunProvider {
         credentials: &AliyunCredentials,
         record: &TxtRecord,
     ) -> Result<Vec<(String, String)>> {
+        let rr = record.relative_name()?;
         let query = BTreeMap::from([
             ("DomainName".to_owned(), record.zone.clone()),
-            ("RRKeyWord".to_owned(), record.relative_name()?),
+            // RRKeyWord 只是缩小 API 返回范围的关键字，真正起作用的是
+            // 下面的本地精确过滤——否则同名前缀的残留记录（如
+            // `_acme-challenge.x`）会被误判成本次挑战的冲突。
+            ("RRKeyWord".to_owned(), rr.clone()),
             ("TypeKeyWord".to_owned(), "TXT".to_owned()),
         ]);
         let body = self
@@ -218,6 +222,9 @@ impl AliyunProvider {
                 records
                     .iter()
                     .filter_map(|record| {
+                        if record["RR"].as_str()? != rr {
+                            return None;
+                        }
                         Some((
                             record["RecordId"].as_str()?.to_owned(),
                             record["Value"].as_str()?.to_owned(),

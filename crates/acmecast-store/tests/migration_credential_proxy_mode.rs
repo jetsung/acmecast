@@ -8,8 +8,8 @@
 use sea_orm::{ConnectionTrait, Database, DatabaseBackend, Statement};
 use sea_orm_migration::{MigrationTrait, MigratorTrait, SchemaManager};
 
-use acmecast_store::migration::AddCredentialProxyMode;
 use acmecast_store::Migrator;
+use acmecast_store::migration::AddCredentialProxyMode;
 
 /// 与测试密钥一致的加密器：构造存量 `encrypted_fields` 用。
 fn cipher() -> acmecast_core::CredentialCipher {
@@ -126,7 +126,11 @@ async fn backfill_marks_legacy_proxy_url_rows_as_custom_and_others_direct() {
     .await;
     insert_credential(&db, "plain", &serde_json::json!({ "api_token": "tok" })).await;
     run_proxy_mode_migration(&db).await;
-    assert_eq!(proxy_mode_of(&db, "legacy").await, "direct", "建列后存量行得默认 direct");
+    assert_eq!(
+        proxy_mode_of(&db, "legacy").await,
+        "direct",
+        "建列后存量行得默认 direct"
+    );
     assert_eq!(proxy_mode_of(&db, "plain").await, "direct");
 
     // 密钥就绪后回填：仅「默认 direct 但实际为 custom」的行被改写。
@@ -138,7 +142,11 @@ async fn backfill_marks_legacy_proxy_url_rows_as_custom_and_others_direct() {
         "custom",
         "旧 proxy_url 有值的存量行应回填为 custom"
     );
-    assert_eq!(proxy_mode_of(&db, "plain").await, "direct", "无代理字段行保持 direct");
+    assert_eq!(
+        proxy_mode_of(&db, "plain").await,
+        "direct",
+        "无代理字段行保持 direct"
+    );
 }
 
 #[tokio::test]
@@ -163,7 +171,11 @@ async fn backfill_is_idempotent_and_preserves_non_default_values() {
         .await
         .expect("首次回填应成功");
     assert_eq!(proxy_mode_of(&db, "legacy").await, "custom");
-    assert_eq!(proxy_mode_of(&db, "inherited").await, "inherit", "inherit 行不应被回填改动");
+    assert_eq!(
+        proxy_mode_of(&db, "inherited").await,
+        "inherit",
+        "inherit 行不应被回填改动"
+    );
 
     // 重复执行：幂等，值保持稳定。
     acmecast_store::migration::backfill_credential_proxy_mode(&db, Some(&cipher()))

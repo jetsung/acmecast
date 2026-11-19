@@ -18,6 +18,12 @@ pub struct CancelToken {
     inner: tokio_util::sync::CancellationToken,
 }
 
+impl Default for CancelToken {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CancelToken {
     /// 新建一个未取消的令牌。
     #[must_use]

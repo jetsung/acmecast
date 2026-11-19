@@ -8,7 +8,6 @@
 //! DNS 提供商沿用 trait 默认的 `NotTestable`——一次有效探测需要具体
 //! zone，这里不猜一个域名去试。
 
-use std::collections::VecDeque;
 use std::sync::Arc;
 
 use acmecast_access::{ConnectivityOutcome, CredentialType};
@@ -312,21 +311,17 @@ impl CredentialType for TencentCredentialType {
 
         let provider = self.provider();
         let mut failures: Vec<String> = Vec::new();
-        if has_dns {
-            if let Err(error) = provider.verify_credentials(fields).await {
-                failures.push(format!(
-                    "DNS 用途探测失败: {}",
-                    self.redact(fields, &error.to_string())
-                ));
-            }
+        if has_dns && let Err(error) = provider.verify_credentials(fields).await {
+            failures.push(format!(
+                "DNS 用途探测失败: {}",
+                self.redact(fields, &error.to_string())
+            ));
         }
-        if has_deploy {
-            if let Err(error) = provider.verify_credentials_for_deploy(fields).await {
-                failures.push(format!(
-                    "部署用途探测失败: {}",
-                    self.redact(fields, &error.to_string())
-                ));
-            }
+        if has_deploy && let Err(error) = provider.verify_credentials_for_deploy(fields).await {
+            failures.push(format!(
+                "部署用途探测失败: {}",
+                self.redact(fields, &error.to_string())
+            ));
         }
         if failures.is_empty() {
             ConnectivityOutcome::Ok
@@ -501,6 +496,7 @@ impl CredentialType for SshHostCredentialType {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
 
     /// 按脚本顺序应答的传输层替身：探测的「可用 / 不可用」两条分支都
     /// 能在无外网的情况下验证；脚本耗尽后重复最后一项（单一响应即
@@ -761,7 +757,10 @@ mod tests {
         let outcome = kind.test_connectivity(&tencent_keys, &both_caps).await;
         let reason = outcome.reason().expect("不可用应给出原因");
         assert!(reason.contains("DNS 用途探测失败"), "{reason}");
-        assert!(!reason.contains("部署用途"), "部署侧通过不该被点名: {reason}");
+        assert!(
+            !reason.contains("部署用途"),
+            "部署侧通过不该被点名: {reason}"
+        );
         assert!(reason.contains("AuthFailure.SecretIdNotFound"), "{reason}");
         assert!(
             !reason.contains("tencent-secret"),
@@ -774,7 +773,10 @@ mod tests {
         let outcome = kind.test_connectivity(&tencent_keys, &both_caps).await;
         let reason = outcome.reason().expect("不可用应给出原因");
         assert!(reason.contains("部署用途探测失败"), "{reason}");
-        assert!(!reason.contains("DNS 用途"), "DNS 侧通过不该被点名: {reason}");
+        assert!(
+            !reason.contains("DNS 用途"),
+            "DNS 侧通过不该被点名: {reason}"
+        );
 
         // 双能力、两侧都失败：两侧原因一并给出。
         let transport = Arc::new(FakeTransport::new(AUTH_FAILURE));

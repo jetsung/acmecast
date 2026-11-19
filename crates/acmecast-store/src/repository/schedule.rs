@@ -278,7 +278,7 @@ fn config_from_row(row: schedule::Model) -> ScheduleConfig {
         renewal_domains: row
             .renewal_domains
             .and_then(|json| serde_json::from_str(&json).ok()),
-        renewal_threshold_days: row.renewal_threshold_days.map(|days| i32::from(days)),
+        renewal_threshold_days: row.renewal_threshold_days.map(i32::from),
         last_triggered_at: row.last_triggered_at,
         next_trigger_at: row.next_trigger_at,
         updated_at: row.updated_at,

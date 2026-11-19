@@ -116,61 +116,61 @@ impl PipelineStep for CertStoreStep {
             .map_err(|e| domain_error("查询既有证书", e))?;
         let mut should_archive = false;
         let mut old_fingerprint: Option<String> = None;
-        if let Some(old) = &existing {
-            if old.fingerprint != fingerprint {
-                // 防御性守卫：查询到的旧记录若已位于归档/吊销目录下，说明它不是
-                // 当前活跃证书（正常流程不应触发），跳过归档避免错误移动文件。
-                let stale = ["certs/archived/", "certs/revoked/"].iter().any(|prefix| {
-                    old.cert_pem_path.starts_with(prefix) || old.key_pem_path.starts_with(prefix)
-                });
-                if stale {
-                    tracing::warn!(
-                        old_fingerprint = %old.fingerprint,
-                        cert_pem_path = %old.cert_pem_path,
-                        key_pem_path = %old.key_pem_path,
-                        "查询到的旧证书已位于 archived/revoked 目录下，跳过归档"
-                    );
-                } else {
-                    should_archive = true;
-                    old_fingerprint = Some(old.fingerprint.clone());
-                    match store
-                        .archive_replaced_certificate(
-                            &old.cert_pem_path,
-                            &old.key_pem_path,
-                            &old.fingerprint,
-                        )
-                        .await
-                    {
-                        Ok(Some(archived_paths)) => {
-                            // 归档成功需同步更新旧记录路径与 archived_at，否则旧记录仍指向活跃目录。
-                            if let Err(error) = repository
-                                .set_archived_paths(old.id, &archived_paths, chrono::Utc::now())
-                                .await
-                            {
-                                tracing::warn!(
-                                    old_fingerprint = %old.fingerprint,
-                                    %error,
-                                    "旧证书归档后更新库路径失败，文件已归档但库路径未同步"
-                                );
-                            }
-                            ctx.log_info(format!(
-                                "旧证书已归档到 archived/{}（主域名 {}）",
-                                old.fingerprint, primary_domain
-                            ));
-                        }
-                        Ok(None) => {
-                            tracing::warn!(
-                                old_fingerprint = %old.fingerprint,
-                                "旧证书材料缺失，跳过归档，直接写入新证书"
-                            );
-                        }
-                        Err(error) => {
+        if let Some(old) = &existing
+            && old.fingerprint != fingerprint
+        {
+            // 防御性守卫：查询到的旧记录若已位于归档/吊销目录下，说明它不是
+            // 当前活跃证书（正常流程不应触发），跳过归档避免错误移动文件。
+            let stale = ["certs/archived/", "certs/revoked/"].iter().any(|prefix| {
+                old.cert_pem_path.starts_with(prefix) || old.key_pem_path.starts_with(prefix)
+            });
+            if stale {
+                tracing::warn!(
+                    old_fingerprint = %old.fingerprint,
+                    cert_pem_path = %old.cert_pem_path,
+                    key_pem_path = %old.key_pem_path,
+                    "查询到的旧证书已位于 archived/revoked 目录下，跳过归档"
+                );
+            } else {
+                should_archive = true;
+                old_fingerprint = Some(old.fingerprint.clone());
+                match store
+                    .archive_replaced_certificate(
+                        &old.cert_pem_path,
+                        &old.key_pem_path,
+                        &old.fingerprint,
+                    )
+                    .await
+                {
+                    Ok(Some(archived_paths)) => {
+                        // 归档成功需同步更新旧记录路径与 archived_at，否则旧记录仍指向活跃目录。
+                        if let Err(error) = repository
+                            .set_archived_paths(old.id, &archived_paths, chrono::Utc::now())
+                            .await
+                        {
                             tracing::warn!(
                                 old_fingerprint = %old.fingerprint,
                                 %error,
-                                "旧证书归档失败，仍继续写入新证书"
+                                "旧证书归档后更新库路径失败，文件已归档但库路径未同步"
                             );
                         }
+                        ctx.log_info(format!(
+                            "旧证书已归档到 archived/{}（主域名 {}）",
+                            old.fingerprint, primary_domain
+                        ));
+                    }
+                    Ok(None) => {
+                        tracing::warn!(
+                            old_fingerprint = %old.fingerprint,
+                            "旧证书材料缺失，跳过归档，直接写入新证书"
+                        );
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            old_fingerprint = %old.fingerprint,
+                            %error,
+                            "旧证书归档失败，仍继续写入新证书"
+                        );
                     }
                 }
             }
@@ -242,15 +242,15 @@ impl PipelineStep for CertStoreStep {
                 .with_artifact("cert_id", serde_json::json!(cert_id))
                 .with_artifact("fingerprint", serde_json::json!(fingerprint)));
         }
-        if let Some(existing_cert) = existing.as_ref() {
-            if existing_cert.fingerprint == fingerprint {
-                ctx.log_info(format!(
+        if let Some(existing_cert) = existing.as_ref()
+            && existing_cert.fingerprint == fingerprint
+        {
+            ctx.log_info(format!(
                     "指纹一致，幂等入库：cert_id={}, fingerprint={}, target_path={}, target_type=local, skipped_write=true, reason=fingerprint unchanged, archived_old=false",
                     existing_cert.id,
                     fingerprint,
                     paths_shorthand(&paths)
                 ));
-            }
         }
         let outcome = repository
             .save(CertInput {

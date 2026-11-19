@@ -11,9 +11,12 @@ use crate::target::{CertMaterials, DeployMode, DeployOutcome, DeploymentTarget, 
 use acmecast_cert::{ca_pem_of, parse_pem_leaf};
 
 const ACCEPTED_CREDENTIAL_TYPES: [&str; 1] = ["deploy.webdav"];
+
+/// WebDAV 部署目标：把证书产物经 WebDAV 上传到远端目录。
 #[derive(Debug, Default)]
 pub struct WebdavTarget;
 
+/// WebDAV 部署的输入参数。
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct WebdavInput {
     /// 引用一张 `webdav` 类型凭据（凭据中含 url/base_path）。

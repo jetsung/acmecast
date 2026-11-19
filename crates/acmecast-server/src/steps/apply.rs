@@ -334,7 +334,7 @@ impl PipelineStep for CertApplyStep {
         // （domains 是数组字段，默认整行，靠 x-half-width 压成半宽）；
         // 其余字段（算法、传播等待等）按原相对顺序收尾。
         // 结构变化时宁可少注入也不丢 schema。
-        if let Some(_) = schema.schema.object.as_ref() {
+        if schema.schema.object.as_ref().is_some() {
             schema.schema.extensions.insert(
                 "x-field-order".to_owned(),
                 serde_json::json!([
@@ -490,89 +490,88 @@ impl PipelineStep for CertApplyStep {
                         )))
                     })?;
                 let candidate = existing.filter(|c| c.revoked_at.is_none());
-                if let Some(cert) = candidate {
-                    if cert.not_after
+                if let Some(cert) = candidate
+                    && cert.not_after
                         > chrono::Utc::now() + chrono::Duration::days(i64::from(threshold_days))
-                    {
-                        let remaining = (cert.not_after - chrono::Utc::now()).num_days();
-                        ctx.log_info(format!(
+                {
+                    let remaining = (cert.not_after - chrono::Utc::now()).num_days();
+                    ctx.log_info(format!(
                             "跳过 cert.apply：证书距到期 {remaining} 天，阈值 {threshold_days} 天，不在续期窗口"
                         ));
-                        let data_dir = self.data_dir.as_ref().ok_or_else(|| {
-                            domain_error(
-                                "跳过 cert.apply 后注入产物失败：数据目录未配置，无法读取库中证书",
-                                "data_dir 未配置",
-                            )
-                        })?;
-                        let store = FileStore::open(data_dir)
-                            .await
-                            .map_err(|e| domain_error("打开数据目录", e))?;
-                        let domains_value = {
-                            let decoded =
-                                acmecast_store::entity::cert::decode_domains(&cert.domains);
-                            if decoded.is_empty() {
-                                input.domains.clone()
-                            } else {
-                                decoded
+                    let data_dir = self.data_dir.as_ref().ok_or_else(|| {
+                        domain_error(
+                            "跳过 cert.apply 后注入产物失败：数据目录未配置，无法读取库中证书",
+                            "data_dir 未配置",
+                        )
+                    })?;
+                    let store = FileStore::open(data_dir)
+                        .await
+                        .map_err(|e| domain_error("打开数据目录", e))?;
+                    let domains_value = {
+                        let decoded = acmecast_store::entity::cert::decode_domains(&cert.domains);
+                        if decoded.is_empty() {
+                            input.domains.clone()
+                        } else {
+                            decoded
+                        }
+                    };
+                    let primary_domain = domains_value
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| "certificate".to_owned());
+                    // 兼容回退候选：记录路径 → 新旧前缀/新旧后缀推导 → 归档副本。
+                    // 后缀序列对齐 acme.sh 新布局与旧 pem 布局，防止迁移滞后时误失败。
+                    const CHAIN_SUFFIXES: &[&str] = &["fullchain.cer", "cer", "cert.pem"];
+                    const KEY_SUFFIXES: &[&str] = &["key", "key.pem"];
+                    let chain_record: Vec<&str> = [
+                        Some(cert.cert_pem_path.as_str()),
+                        cert.fullchain_path.as_deref(),
+                        cert.cert_path.as_deref(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                    let key_record: Vec<&str> =
+                        [Some(cert.key_pem_path.as_str()), cert.key_path.as_deref()]
+                            .into_iter()
+                            .flatten()
+                            .collect();
+                    let chain_candidates = FileStore::cert_read_candidates(
+                        &chain_record,
+                        &primary_domain,
+                        &cert.fingerprint,
+                        CHAIN_SUFFIXES,
+                    );
+                    let key_candidates = FileStore::cert_read_candidates(
+                        &key_record,
+                        &primary_domain,
+                        &cert.fingerprint,
+                        KEY_SUFFIXES,
+                    );
+                    let (cert_pem, cert_hit, key_pem, key_hit) = match (
+                        store.read_with_fallback(&chain_candidates).await,
+                        store.read_with_fallback(&key_candidates).await,
+                    ) {
+                        (Ok(chain), Ok(key)) => (chain.0, chain.1, key.0, key.1),
+                        (chain_result, key_result) => {
+                            // 链与私钥都尝试完，凑齐完整尝试清单再失败，便于诊断。
+                            let mut attempts: Vec<(String, acmecast_store::Error)> = Vec::new();
+                            if let Err(mut list) = chain_result {
+                                attempts.append(&mut list);
                             }
-                        };
-                        let primary_domain = domains_value
-                            .first()
-                            .cloned()
-                            .unwrap_or_else(|| "certificate".to_owned());
-                        // 兼容回退候选：记录路径 → 新旧前缀/新旧后缀推导 → 归档副本。
-                        // 后缀序列对齐 acme.sh 新布局与旧 pem 布局，防止迁移滞后时误失败。
-                        const CHAIN_SUFFIXES: &[&str] = &["fullchain.cer", "cer", "cert.pem"];
-                        const KEY_SUFFIXES: &[&str] = &["key", "key.pem"];
-                        let chain_record: Vec<&str> = [
-                            Some(cert.cert_pem_path.as_str()),
-                            cert.fullchain_path.as_deref(),
-                            cert.cert_path.as_deref(),
-                        ]
-                        .into_iter()
-                        .flatten()
-                        .collect();
-                        let key_record: Vec<&str> =
-                            [Some(cert.key_pem_path.as_str()), cert.key_path.as_deref()]
-                                .into_iter()
-                                .flatten()
+                            if let Err(mut list) = key_result {
+                                attempts.append(&mut list);
+                            }
+                            let dir_status = match tokio::fs::metadata(data_dir).await {
+                                Ok(meta) if meta.is_dir() => "数据目录存在且可访问".to_owned(),
+                                Ok(_) => "数据目录路径不是目录".to_owned(),
+                                Err(_) => "数据目录不存在或不可访问".to_owned(),
+                            };
+                            let attempted: Vec<String> = attempts
+                                .iter()
+                                .map(|(path, error)| format!("{path}（{error}）"))
                                 .collect();
-                        let chain_candidates = FileStore::cert_read_candidates(
-                            &chain_record,
-                            &primary_domain,
-                            &cert.fingerprint,
-                            CHAIN_SUFFIXES,
-                        );
-                        let key_candidates = FileStore::cert_read_candidates(
-                            &key_record,
-                            &primary_domain,
-                            &cert.fingerprint,
-                            KEY_SUFFIXES,
-                        );
-                        let (cert_pem, cert_hit, key_pem, key_hit) = match (
-                            store.read_with_fallback(&chain_candidates).await,
-                            store.read_with_fallback(&key_candidates).await,
-                        ) {
-                            (Ok(chain), Ok(key)) => (chain.0, chain.1, key.0, key.1),
-                            (chain_result, key_result) => {
-                                // 链与私钥都尝试完，凑齐完整尝试清单再失败，便于诊断。
-                                let mut attempts: Vec<(String, acmecast_store::Error)> = Vec::new();
-                                if let Err(mut list) = chain_result {
-                                    attempts.append(&mut list);
-                                }
-                                if let Err(mut list) = key_result {
-                                    attempts.append(&mut list);
-                                }
-                                let dir_status = match tokio::fs::metadata(data_dir).await {
-                                    Ok(meta) if meta.is_dir() => "数据目录存在且可访问".to_owned(),
-                                    Ok(_) => "数据目录路径不是目录".to_owned(),
-                                    Err(_) => "数据目录不存在或不可访问".to_owned(),
-                                };
-                                let attempted: Vec<String> = attempts
-                                    .iter()
-                                    .map(|(path, error)| format!("{path}（{error}）"))
-                                    .collect();
-                                ctx.log_error(format!(
+                            ctx.log_error(format!(
                                     "跳过 cert.apply 注入失败：证书 #{}（指纹 {}，domains=[{}]）的文件在所有兼容路径均缺失，{}。已尝试：{}。指引：检查数据目录挂载与权限；核对证书是否已归档/迁移；或将 renew_before_days 设为 0 强制重签",
                                     cert.id,
                                     cert.fingerprint,
@@ -580,38 +579,38 @@ impl PipelineStep for CertApplyStep {
                                     dir_status,
                                     attempted.join("、"),
                                 ));
-                                return Err(acmecast_pipeline::Error::Core(
-                                    acmecast_core::Error::Internal(format!(
-                                        "跳过 cert.apply 后注入产物失败：证书 #{}（指纹 {}，domains=[{}]）的证书与私钥文件在所有兼容路径均缺失，{}。已尝试路径：{}。可操作指引：检查数据目录挂载与权限；核对证书是否已归档/迁移完成；或将该步骤 renew_before_days 设为 0 强制重签",
-                                        cert.id,
-                                        cert.fingerprint,
-                                        domains_value.join(", "),
-                                        dir_status,
-                                        attempts
-                                            .iter()
-                                            .map(|(path, _)| path.as_str())
-                                            .collect::<Vec<_>>()
-                                            .join("、"),
-                                    )),
-                                ));
-                            }
-                        };
-                        // 回退命中仅补充一条说明，不为每个候选单独打日志。
-                        let hit_note = if chain_record.contains(&cert_hit.as_str())
-                            && key_record.contains(&key_hit.as_str())
-                        {
-                            format!("证书 #{}", cert.id)
-                        } else {
-                            format!(
-                                "证书 #{}，经兼容回退读取 cert={} key={}",
-                                cert.id, cert_hit, key_hit
-                            )
-                        };
-                        ctx.log_info(format!(
-                            "已注入库中证书以继续部署（指纹 {}，{hit_note}）",
-                            cert.fingerprint
-                        ));
-                        return Ok(StepOutput::empty()
+                            return Err(acmecast_pipeline::Error::Core(
+                                acmecast_core::Error::Internal(format!(
+                                    "跳过 cert.apply 后注入产物失败：证书 #{}（指纹 {}，domains=[{}]）的证书与私钥文件在所有兼容路径均缺失，{}。已尝试路径：{}。可操作指引：检查数据目录挂载与权限；核对证书是否已归档/迁移完成；或将该步骤 renew_before_days 设为 0 强制重签",
+                                    cert.id,
+                                    cert.fingerprint,
+                                    domains_value.join(", "),
+                                    dir_status,
+                                    attempts
+                                        .iter()
+                                        .map(|(path, _)| path.as_str())
+                                        .collect::<Vec<_>>()
+                                        .join("、"),
+                                )),
+                            ));
+                        }
+                    };
+                    // 回退命中仅补充一条说明，不为每个候选单独打日志。
+                    let hit_note = if chain_record.contains(&cert_hit.as_str())
+                        && key_record.contains(&key_hit.as_str())
+                    {
+                        format!("证书 #{}", cert.id)
+                    } else {
+                        format!(
+                            "证书 #{}，经兼容回退读取 cert={} key={}",
+                            cert.id, cert_hit, key_hit
+                        )
+                    };
+                    ctx.log_info(format!(
+                        "已注入库中证书以继续部署（指纹 {}，{hit_note}）",
+                        cert.fingerprint
+                    ));
+                    return Ok(StepOutput::empty()
                             .with_log(acmecast_pipeline::StepLog::info(format!(
                                 "跳过 cert.apply：到期检测判定不在续期窗口（剩余 {remaining} 天，阈值 {threshold_days} 天）"
                             )))
@@ -620,7 +619,6 @@ impl PipelineStep for CertApplyStep {
                             .with_artifact("domains", serde_json::json!(domains_value))
                             .with_artifact("fingerprint", serde_json::json!(cert.fingerprint.clone()))
                             .with_artifact("cert_id", serde_json::json!(cert.id)));
-                    }
                 }
             } else if let Ok(Some(not_after)) = resolve_cert_not_after(ctx, &input.domains).await {
                 let threshold_days = days;
@@ -661,16 +659,16 @@ impl PipelineStep for CertApplyStep {
             }
         };
 
-        for authorization in order
-            .authorizations()
+        // 逐个完成授权挑战；已写入的记录**保留**到订单就绪之后再统一清理——
+        // CA 的验证（尤其 secondary validation）异步回查 DNS，提前删除会
+        // 让它读到 NXDOMAIN（「During secondary validation: … NXDOMAIN」）。
+        let mut staged: Vec<StagedChallenge<'_>> = Vec::new();
+        if let Err(e) = self
+            .complete_challenges(ctx, &input, &mut order, &mut staged)
             .await
-            .map_err(|e| domain_error("读取授权", e))?
         {
-            if authorization.is_valid() {
-                continue;
-            }
-            self.complete_challenge(ctx, &input, &mut order, &authorization)
-                .await?;
+            self.cleanup_challenges(ctx, &staged).await;
+            return Err(e);
         }
 
         // 密钥与 CSR 在本次运行中生成；私钥不落盘、不进日志，只随产物交给入库步骤。
@@ -679,7 +677,12 @@ impl PipelineStep for CertApplyStep {
             input.key_algorithm.as_str()
         ));
         let (key_pem, csr_der) = generate_key_and_csr(&input.domains, input.key_algorithm)?;
-        wait_for_ready(&mut order).await?;
+
+        ctx.log_info("等待订单就绪（order ready）——CA 验证期间挑战记录保持有效");
+        let ready = wait_for_ready(&mut order).await;
+        // 到这里 CA 已完成（或已拒绝）验证，记录使命结束，统一清理。
+        self.cleanup_challenges(ctx, &staged).await;
+        ready?;
         ctx.log_info("订单就绪（order ready），可以提交 CSR");
 
         ctx.log_info("提交 CSR（csr submitted）并等待签发");
@@ -860,14 +863,18 @@ impl CertApplyStep {
         Ok(service)
     }
 
-    /// 完成一个授权的挑战：写 TXT → 等传播 → 让 CA 验证 → 随记录清理。
+    /// 完成一个授权的挑战：写 TXT → 等传播 → 让 CA 验证。
+    ///
+    /// 成功时**不删除**挑战记录，而是作为 [`StagedChallenge`] 返回——CA 的
+    /// 验证（尤其 secondary validation）在通知就绪之后异步回查 DNS，提前
+    /// 删除会让它读到 NXDOMAIN。记录由调用方在订单就绪后统一清理。
     async fn complete_challenge(
         &self,
         ctx: &mut StepContext<'_>,
         input: &AcmeApplyInput,
         order: &mut acmecast_acme::PendingOrder,
         authorization: &acmecast_acme::AuthorizationInfo,
-    ) -> Result<()> {
+    ) -> Result<Option<StagedChallenge<'_>>> {
         if input.challenge != DnsChallengeKind::Dns01 {
             return Err(acmecast_pipeline::Error::Core(
                 acmecast_core::Error::Internal(format!(
@@ -969,11 +976,31 @@ impl CertApplyStep {
             authorization.identifier
         ));
 
-        let mut record_created = false;
-        // 记录存在期间做「等传播 + 通知 CA」；无论成败，退出时记录都会被清理。
-        // action 的错误类型随 with_txt_record 的约定是 DNS 错误，转成流水线错误放在外层。
+        // 写入挑战记录（幂等/冲突判定沿用原约定），但**不立即清理**：
+        // CA 的验证是异步的，secondary validation 会回查 DNS，记录必须
+        // 保留到订单就绪之后，由调用方统一删除。
+        let record_created = match acmecast_dns::ensure_txt_record(provider, &credentials, &record)
+            .await
+        {
+            Ok(created) => created,
+            Err(e) => {
+                let error_kind = classify_dns_error(&e);
+                ctx.log_error(format!(
+                        "向 DNS 提供商提交挑战记录失败：provider={}, zone={}, record={}, record_name={}, action=create, error_kind={}, reason={}",
+                        provider.type_id(),
+                        zone,
+                        record.name,
+                        record.name,
+                        error_kind,
+                        e
+                    ));
+                return Err(domain_error("完成 DNS-01 挑战", e));
+            }
+        };
+
+        // 记录存在期间做「等传播 + 通知 CA」。
+        // action 的错误类型随 ensure_txt_record 的约定是 DNS 错误，转成流水线错误放在外层。
         let action = async {
-            record_created = true;
             ctx.log_info(format!(
                 "DNS 挑战记录提交成功：provider={}, zone={}, record={}, record_name={}, action=create, txt_value={}, result=ok",
                 provider.type_id(),
@@ -1037,31 +1064,82 @@ impl CertApplyStep {
                 .await
                 .map_err(|e| acmecast_dns::Error::provider(e.to_string()))
         };
-        let outcome = acmecast_dns::with_txt_record(provider, &credentials, &record, action).await;
-        if let (Err(e), false) = (&outcome, record_created) {
-            let error_kind = classify_dns_error(e);
-            ctx.log_error(format!(
-                "向 DNS 提供商提交挑战记录失败：provider={}, zone={}, record={}, record_name={}, action=create, error_kind={}, reason={}",
-                provider.type_id(),
-                zone,
-                record.name,
-                record.name,
-                error_kind,
-                e
-            ));
+        if let Err(e) = action.await {
+            // 失败时本条记录没有保留价值，立即清掉；成功时保留给调用方。
+            if record_created {
+                let _ = provider.delete_txt(&credentials, &record).await;
+            }
+            return Err(domain_error("完成 DNS-01 挑战", e));
         }
-        outcome.map_err(|e| domain_error("完成 DNS-01 挑战", e))?;
 
-        ctx.log_info(format!(
-            "清理 DNS 挑战记录：provider={}, zone={}, record={}, record_name={}, action=delete, result=ok",
-            provider.type_id(),
-            zone,
-            record.name,
-            record.name,
-        ));
+        Ok(record_created.then_some(StagedChallenge {
+            provider,
+            credentials,
+            record,
+        }))
+    }
 
+    /// 逐个完成每个未生效授权的挑战，已写入的挑战记录暂存进 `staged`。
+    async fn complete_challenges<'a>(
+        &'a self,
+        ctx: &mut StepContext<'_>,
+        input: &AcmeApplyInput,
+        order: &mut acmecast_acme::PendingOrder,
+        staged: &mut Vec<StagedChallenge<'a>>,
+    ) -> Result<()> {
+        for authorization in order
+            .authorizations()
+            .await
+            .map_err(|e| domain_error("读取授权", e))?
+        {
+            if authorization.is_valid() {
+                continue;
+            }
+            if let Some(staged_challenge) = self
+                .complete_challenge(ctx, input, order, &authorization)
+                .await?
+            {
+                staged.push(staged_challenge);
+            }
+        }
         Ok(())
     }
+
+    /// 删除暂存的挑战记录。清理失败不阻断主流程，只记日志——
+    /// `delete_txt` 只删与本次值相同的记录，不会误伤别人家的。
+    async fn cleanup_challenges(&self, ctx: &mut StepContext<'_>, staged: &[StagedChallenge<'_>]) {
+        for challenge in staged {
+            let record = &challenge.record;
+            match challenge
+                .provider
+                .delete_txt(&challenge.credentials, record)
+                .await
+            {
+                Ok(()) => ctx.log_info(format!(
+                    "清理 DNS 挑战记录：provider={}, zone={}, record={}, action=delete, result=ok",
+                    challenge.provider.type_id(),
+                    record.zone,
+                    record.name,
+                )),
+                Err(e) => ctx.log_error(format!(
+                    "清理 DNS 挑战记录失败（不阻断流程）：provider={}, zone={}, record={}, action=delete, reason={e}",
+                    challenge.provider.type_id(),
+                    record.zone,
+                    record.name,
+                )),
+            }
+        }
+    }
+}
+
+/// 已写入 DNS、等订单就绪后再清理的挑战记录。
+///
+/// 挑战记录的清理不能发生在订单 Ready 之前——CA 的验证（尤其
+/// secondary validation）异步回查 DNS，提前删除会读到 NXDOMAIN。
+struct StagedChallenge<'a> {
+    provider: &'a dyn acmecast_dns::DnsProvider,
+    credentials: serde_json::Value,
+    record: acmecast_dns::TxtRecord,
 }
 
 /// 轮询订单直到 Ready（可提交 CSR）。
@@ -1171,7 +1249,7 @@ fn dns_alias_of(input: &AcmeApplyInput) -> Result<Option<String>> {
         if input
             .dns_zone
             .as_deref()
-            .map_or(true, |z| z.trim().is_empty())
+            .is_none_or(|z| z.trim().is_empty())
         {
             return Err(acmecast_pipeline::Error::Core(
                 acmecast_core::Error::Internal(format!(

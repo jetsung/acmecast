@@ -398,10 +398,10 @@ pub fn prioritize_for_provider(
         }
     }
     for (idx, slot) in by_idx.into_iter().enumerate() {
-        if !taken.contains(&idx) {
-            if let Some(v) = slot {
-                out.push(v);
-            }
+        if !taken.contains(&idx)
+            && let Some(v) = slot
+        {
+            out.push(v);
         }
     }
     out
@@ -576,7 +576,7 @@ where
 /// 四段等分（末段再拆半），在原 1/2、1/4、1/4 三段基础上把 1/2 的权威拆为两个 1/4：
 ///
 /// 1. **命中单家 DNS**（`hit`，占 `timeout` 的前 1/4）：仅查提供商感知的单家 DoH
-///   （`provider=cloudflare` 时仅 Cloudflare 单家），provider 未知/空时跳过该段。
+///    （`provider=cloudflare` 时仅 Cloudflare 单家），provider 未知/空时跳过该段。
 ///
 /// 2. **权威 NS 直查**（`authoritative`，占 `timeout` 的第 2 个 1/4）：
 ///    CA 从根区递归到权威 NS 取答案，不看公共解析器的缓存——直查权威
@@ -597,6 +597,9 @@ where
 /// 直连失败自动经代理重试一次，成功则缓存偏好、后续段直接用代理传输层；
 /// 权威 NS 直查与 `all_dns` 阶段的传输层不受影响，保持直连。未配置即
 /// 完全直连，不做回退。
+// 分阶段等待的参数均来自调用方既有上下文（provider/凭据/记录/三组解析器/策略/代理/回调），
+// 收敛为结构体反而增加一层拆包，故显式豁免。
+#[allow(clippy::too_many_arguments)]
 pub async fn wait_until_visible_phased<F>(
     provider: &dyn DnsProvider,
     credentials: &Value,
@@ -620,8 +623,6 @@ where
     let deadline = start + policy.timeout;
 
     let mut published = false;
-    // 权威为空时跳过预检，直接查公共解析器。
-    let mut authoritative_seen = authoritative.is_empty();
     let mut round = 0_u32;
     let mut missing: Vec<String> = Vec::new();
     let mut unreachable: Vec<String> = Vec::new();

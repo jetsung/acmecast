@@ -413,8 +413,7 @@ async fn credential_list_returns_proxy_mode_from_plaintext_column() {
     let detail_body = json_body(detail).await;
     assert_eq!(detail_body["data"]["proxy_mode"], "custom");
     assert_eq!(
-        detail_body["data"]["fields"]["proxy_url"],
-        "socks5://127.0.0.1:7890",
+        detail_body["data"]["fields"]["proxy_url"], "socks5://127.0.0.1:7890",
         "详情仍解密返回 proxy_url（编辑回填）"
     );
 }
@@ -430,7 +429,9 @@ async fn credential_proxy_mode_updates_reflect_in_list() {
         ))
         .unwrap();
     let response = app.clone().oneshot(create).await.unwrap();
-    let id = json_body(response).await["data"]["id"].as_i64().expect("应返回凭据 id");
+    let id = json_body(response).await["data"]["id"]
+        .as_i64()
+        .expect("应返回凭据 id");
     let list = app
         .clone()
         .oneshot(
@@ -440,7 +441,10 @@ async fn credential_proxy_mode_updates_reflect_in_list() {
         )
         .await
         .unwrap();
-    assert_eq!(json_body(list).await["data"]["items"][0]["proxy_mode"], "direct");
+    assert_eq!(
+        json_body(list).await["data"]["items"][0]["proxy_mode"],
+        "direct"
+    );
 
     let update = Request::put(format!("/api/credentials/{id}"))
         .header("content-type", "application/json")
@@ -460,7 +464,10 @@ async fn credential_proxy_mode_updates_reflect_in_list() {
         )
         .await
         .unwrap();
-    assert_eq!(json_body(list).await["data"]["items"][0]["proxy_mode"], "custom");
+    assert_eq!(
+        json_body(list).await["data"]["items"][0]["proxy_mode"],
+        "custom"
+    );
 }
 
 #[tokio::test]

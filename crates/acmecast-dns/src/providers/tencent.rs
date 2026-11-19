@@ -262,7 +262,9 @@ pub fn ensure_success(response: HttpResponse, action: &str) -> Result<Value> {
         // 常见错误码给一句可操作的中文提示；未收录的透传原始 message。
         // request id 统一放尾部，供提工单定位。
         return Err(Error::provider(match error_hint(code) {
-            Some(hint) => format!("腾讯云 {action} 被拒绝（{code}）：{hint} [request id: {request_id}]"),
+            Some(hint) => {
+                format!("腾讯云 {action} 被拒绝（{code}）：{hint} [request id: {request_id}]")
+            }
             None => format!("腾讯云 {action} 失败：{code}: {message} [request id: {request_id}]"),
         }));
     }

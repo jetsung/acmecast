@@ -1156,6 +1156,7 @@ pub(crate) struct HistoryLogResponse {
     /// `{ "cert_ids": string[], "skipped_write": boolean }`：
     /// - `cert_ids` 为本次上传或更新涉及的腾讯云证书 ID 列表，跳过写入时为空数组；
     /// - `skipped_write` 标识是否因指纹一致跳过写入。
+    ///
     /// 无结构化输出时为 `null`。
     pub output: Option<serde_json::Value>,
     pub created_at: DateTime<Utc>,

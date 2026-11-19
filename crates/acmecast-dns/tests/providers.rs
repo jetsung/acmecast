@@ -257,7 +257,7 @@ async fn aliyun_deletes_by_looking_the_record_up_first() {
         // 查询结果里给出候选记录；只有值与我们这条相同的才会被删。
         HttpResponse::new(
             200,
-            r#"{"DomainRecords":{"Record":[{"RecordId":"rec-9","Value":"digest-value-xyz"}]}}"#,
+            r#"{"DomainRecords":{"Record":[{"RecordId":"rec-9","RR":"_acme-challenge","Value":"digest-value-xyz"}]}}"#,
         ),
         HttpResponse::new(200, r#"{"RecordId":"rec-9"}"#),
     ]);
@@ -285,6 +285,28 @@ async fn aliyun_deletes_by_looking_the_record_up_first() {
         "{}",
         requests[1].url
     );
+}
+
+#[tokio::test]
+async fn aliyun_find_txt_requires_an_exact_rr_match() {
+    // DescribeDomainRecords 的 RRKeyWord 是模糊匹配：RR 里「包含」关键字的
+    // 记录都会返回。只有 RR 与本次主机记录精确一致的才算数——同名前缀的
+    // 残留记录（如 `_acme-challenge.x`）不能被误判成挑战冲突。
+    let transport = ScriptedTransport::new(vec![HttpResponse::new(
+        200,
+        r#"{"DomainRecords":{"Record":[
+            {"RecordId":"rec-1","RR":"_acme-challenge.x","Value":"stale-value"},
+            {"RecordId":"rec-2","RR":"_acme-challenge","Value":"digest-value-xyz"}
+        ]}}"#,
+    )]);
+    let provider = AliyunProvider::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
+
+    let found = provider
+        .find_txt(&aliyun_keys(), &record())
+        .await
+        .expect("应能查询记录");
+
+    assert_eq!(found, vec!["digest-value-xyz"], "仅精确同名记录命中");
 }
 
 #[tokio::test]
@@ -778,7 +800,10 @@ async fn tencent_verify_credentials_for_deploy_probes_ssl() {
             &json!({ "Limit": 1 })
         );
         let authorization = &request.headers["Authorization"];
-        assert!(authorization.contains("/ssl/tc3_request"), "{authorization}");
+        assert!(
+            authorization.contains("/ssl/tc3_request"),
+            "{authorization}"
+        );
     }
 }
 

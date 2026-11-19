@@ -588,7 +588,7 @@ fn jks_is_generated_and_self_verifies() {
     // JKS 以固定魔数 0xFEEDFEED 开头（大端序），与 PFX 的 DER SEQUENCE 完全不同。
     assert_eq!(
         &jks[..4],
-        &[0xFE, 0xED, 0xFE, 0xED],
+        &[0xfe, 0xed, 0xfe, 0xed],
         "应以 JKS 魔数 0xFEEDFEED 开头"
     );
 

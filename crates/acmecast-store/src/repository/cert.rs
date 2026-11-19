@@ -39,8 +39,11 @@ pub struct CertInput {
     pub key_pem_path: String,
     /// 四文件新布局的各路径（对齐 acme.sh）。
     pub cert_path: Option<String>,
+    /// CA 证书 PEM 路径。
     pub ca_path: Option<String>,
+    /// 完整证书链 PEM 路径。
     pub fullchain_path: Option<String>,
+    /// 私钥 PEM 路径。
     pub key_path: Option<String>,
     /// 证书 SHA-256 指纹。
     pub fingerprint: String,
@@ -580,6 +583,13 @@ impl<'db> CertRepository<'db> {
     }
 }
 
+/// 把描述里的空白归一成 `None`，免得库里出现「有值但是空的」描述。
+fn normalize_cert_description(description: Option<String>) -> Option<String> {
+    description
+        .map(|text| text.trim().to_owned())
+        .filter(|text| !text.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -617,11 +627,4 @@ mod tests {
         assert_eq!(page_of(10).total_pages(), 1);
         assert_eq!(page_of(11).total_pages(), 2, "有余数时应向上取整");
     }
-}
-
-/// 把描述里的空白归一成 `None`，免得库里出现「有值但是空的」描述。
-fn normalize_cert_description(description: Option<String>) -> Option<String> {
-    description
-        .map(|text| text.trim().to_owned())
-        .filter(|text| !text.is_empty())
 }

@@ -1180,8 +1180,7 @@ async fn three_consecutive_reissues_archive_each_previous_active_certificate() {
             .filter_map(Result::ok)
             .count();
         assert_eq!(
-            archived_count,
-            round as usize + 0,
+            archived_count, round as usize,
             "第 {round} 轮后 archived/ 下应有 {round} 个指纹目录"
         );
 

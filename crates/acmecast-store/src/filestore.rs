@@ -421,10 +421,8 @@ impl FileStore {
             (&archived.cert_pem, &original.cert_pem),
             (&archived.key_pem, &original.key_pem),
         ] {
-            if tokio::fs::metadata(self.resolve(src)?).await.is_ok() {
-                if src != dst {
-                    let _ = self.move_within(src, dst).await;
-                }
+            if tokio::fs::metadata(self.resolve(src)?).await.is_ok() && src != dst {
+                let _ = self.move_within(src, dst).await;
             }
         }
         for file in [

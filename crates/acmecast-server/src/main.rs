@@ -364,13 +364,15 @@ async fn handle_migrate_certs(
     let cipher = std::env::var("ACMECAST__SECURITY__CREDENTIAL_KEY")
         .or_else(|_| std::env::var("ACMECAST_CREDENTIAL_KEY"))
         .ok()
-        .and_then(|key| match acmecast_core::CredentialCipher::from_base64(&key) {
-            Ok(cipher) => Some(cipher),
-            Err(error) => {
-                eprintln!("凭据加密密钥无效，跳过 proxy_mode 回填: {error}");
-                None
-            }
-        });
+        .and_then(
+            |key| match acmecast_core::CredentialCipher::from_base64(&key) {
+                Ok(cipher) => Some(cipher),
+                Err(error) => {
+                    eprintln!("凭据加密密钥无效，跳过 proxy_mode 回填: {error}");
+                    None
+                }
+            },
+        );
     acmecast_store::migration::backfill_credential_proxy_mode(&db, cipher.as_ref()).await?;
     acmecast_server::cert_migrate::migrate_archived_certs(&db, &config.data_dir).await;
     println!("存量证书归档迁移完成");

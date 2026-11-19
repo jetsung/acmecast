@@ -39,8 +39,6 @@ pub(crate) struct Candidate<'a> {
 pub(crate) struct Selected {
     /// 选定的提供商类型标识。
     pub provider_id: String,
-    /// 所用凭据标识。
-    pub credential_id: i64,
     /// 解密后的凭据字段值，交给后续 TXT 管理。
     pub fields: Value,
 }
@@ -65,7 +63,6 @@ pub(crate) async fn pick(
                     ));
                     return Ok(Selected {
                         provider_id: candidate.type_id.to_owned(),
-                        credential_id,
                         fields,
                     });
                 }
@@ -266,7 +263,6 @@ mod tests {
         .expect("第二个候选应命中");
 
         assert_eq!(picked.provider_id, "cloud.cloudflare");
-        assert_eq!(picked.credential_id, 7);
         assert_eq!(first_probes.load(Ordering::SeqCst), 1, "首选被探测一次");
         assert_eq!(second_probes.load(Ordering::SeqCst), 1);
         assert!(

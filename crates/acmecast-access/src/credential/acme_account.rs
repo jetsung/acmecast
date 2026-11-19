@@ -152,12 +152,10 @@ impl AcmeAccountFields {
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty())
+            && serde_json::from_str::<serde_json::Value>(raw).is_err()
+            && AccountCredentials::from_json(raw).is_err()
         {
-            if serde_json::from_str::<serde_json::Value>(raw).is_err()
-                && AccountCredentials::from_json(raw).is_err()
-            {
-                // 视为未注册，允许保存，申请时再探测
-            }
+            // 视为未注册，允许保存，申请时再探测
         }
         // 代理字段与其他凭据类型同一口径：custom 必须给出合法 proxy_url。
         acmecast_core::validate_proxy_field(

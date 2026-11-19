@@ -474,13 +474,12 @@ impl DeploymentTarget for TencentSslTarget {
         );
         // credential_id 仅接受 cloud.tencent 凭据：前端据此过滤下拉，避免选到
         // dns.tencent-eo（EdgeOne 无 SSL 部署能力）或 deploy.ssh 等无关凭据。
-        if let Some(object) = schema.schema.object.as_mut() {
-            if let Some(Schema::Object(credential_id)) = object.properties.get_mut("credential_id")
-            {
-                credential_id
-                    .extensions
-                    .insert("x-credential-types".to_owned(), json!(["cloud.tencent"]));
-            }
+        if let Some(object) = schema.schema.object.as_mut()
+            && let Some(Schema::Object(credential_id)) = object.properties.get_mut("credential_id")
+        {
+            credential_id
+                .extensions
+                .insert("x-credential-types".to_owned(), json!(["cloud.tencent"]));
         }
         schema
     }

@@ -165,65 +165,6 @@ pub fn s3_fields_schema() -> RootSchema {
     schema
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn s3_fields_schema_pins_field_order() {
-        let schema = s3_fields_schema();
-        let order = schema
-            .schema
-            .extensions
-            .get("x-field-order")
-            .and_then(|v| v.as_array())
-            .expect("应注入 x-field-order");
-        let names: Vec<&str> = order.iter().filter_map(|v| v.as_str()).collect();
-        assert_eq!(
-            names,
-            [
-                "access_key",
-                "secret_key",
-                "endpoint",
-                "bucket",
-                "region",
-                "prefix",
-                "session_token",
-                "proxy_mode",
-                "proxy_url"
-            ]
-        );
-        let props = schema
-            .schema
-            .object
-            .as_ref()
-            .expect("应为对象 schema")
-            .properties
-            .clone();
-        for key in names {
-            assert!(props.contains_key(key), "properties 缺少字段 {key}");
-        }
-        // 代理字段注入：枚举候选 + 中文标签 + custom 联动 + 前驱换行。
-        let rendered = serde_json::to_string(&schema).unwrap();
-        assert!(
-            rendered.contains(r#""enum":["direct","inherit","custom"]"#),
-            "proxy_mode 应注入枚举候选: {rendered}"
-        );
-        for label in ["直连", "继承全局", "自定义"] {
-            assert!(
-                rendered.contains(label),
-                "应含中文展示名 {label}: {rendered}"
-            );
-        }
-        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
-        assert_eq!(
-            value["properties"]["session_token"]["x-end-row"],
-            serde_json::json!(true),
-            "前驱字段（session_token）应带 x-end-row: {rendered}"
-        );
-    }
-}
-
 async fn s3_probe(fields: &S3Fields, global_proxy_url: Option<&str>) -> Result<(), String> {
     use aws_config::Region;
     use aws_credential_types::Credentials;
@@ -292,4 +233,63 @@ async fn s3_probe(fields: &S3Fields, global_proxy_url: Option<&str>) -> Result<(
         return Err(format!("S3 删除探测文件失败: {e:?}"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn s3_fields_schema_pins_field_order() {
+        let schema = s3_fields_schema();
+        let order = schema
+            .schema
+            .extensions
+            .get("x-field-order")
+            .and_then(|v| v.as_array())
+            .expect("应注入 x-field-order");
+        let names: Vec<&str> = order.iter().filter_map(|v| v.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "access_key",
+                "secret_key",
+                "endpoint",
+                "bucket",
+                "region",
+                "prefix",
+                "session_token",
+                "proxy_mode",
+                "proxy_url"
+            ]
+        );
+        let props = schema
+            .schema
+            .object
+            .as_ref()
+            .expect("应为对象 schema")
+            .properties
+            .clone();
+        for key in names {
+            assert!(props.contains_key(key), "properties 缺少字段 {key}");
+        }
+        // 代理字段注入：枚举候选 + 中文标签 + custom 联动 + 前驱换行。
+        let rendered = serde_json::to_string(&schema).unwrap();
+        assert!(
+            rendered.contains(r#""enum":["direct","inherit","custom"]"#),
+            "proxy_mode 应注入枚举候选: {rendered}"
+        );
+        for label in ["直连", "继承全局", "自定义"] {
+            assert!(
+                rendered.contains(label),
+                "应含中文展示名 {label}: {rendered}"
+            );
+        }
+        let value: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(
+            value["properties"]["session_token"]["x-end-row"],
+            serde_json::json!(true),
+            "前驱字段（session_token）应带 x-end-row: {rendered}"
+        );
+    }
 }

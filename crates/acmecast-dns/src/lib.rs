@@ -13,7 +13,8 @@ pub mod resolvers;
 
 pub use authoritative::{AuthoritativeResolver, Authority, HickoryAuthority};
 pub use challenge::{
-    ChallengeKind, challenge_record_name, challenge_write_name, ensure_kind_covers, with_txt_record,
+    ChallengeKind, challenge_record_name, challenge_write_name, ensure_kind_covers,
+    ensure_txt_record, with_txt_record,
 };
 pub use error::{Error, Result};
 pub use http::{

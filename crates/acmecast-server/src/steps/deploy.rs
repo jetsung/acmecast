@@ -31,7 +31,7 @@ fn platform_summary(input: &CertDeployInput) -> String {
             let endpoint = get("endpoint")
                 .or_else(|| get("Endpoint"))
                 .or_else(|| get("endpoint_url"));
-            let host = endpoint.as_deref().and_then(|u| url_host(u));
+            let host = endpoint.as_deref().and_then(url_host);
             if let Some(b) = bucket {
                 if let Some(r) = region {
                     format!("{b}/{r}")
@@ -82,7 +82,7 @@ fn platform_summary(input: &CertDeployInput) -> String {
         "webdav" => {
             let url = get("url").or_else(|| get("endpoint"));
             url.as_deref()
-                .and_then(|u| url_host(u))
+                .and_then(url_host)
                 .unwrap_or_else(|| "unknown".to_owned())
         }
         _ => "unknown".to_owned(),

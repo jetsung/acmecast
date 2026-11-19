@@ -421,7 +421,7 @@ async fn stale_running_histories_are_marked_failed_and_unblock_their_pipelines()
     let pipeline_b = insert_pipeline(&db, "另一条中断的流水线").await;
 
     let stale_a = record_running(&repo, pipeline_a, TriggerSource::Cron).await;
-    let stale_b = record_running(&repo, pipeline_b, TriggerSource::Manual).await;
+    let _stale_b = record_running(&repo, pipeline_b, TriggerSource::Manual).await;
     assert!(repo.has_running(pipeline_a).await.unwrap());
 
     // 一条正常完成的历史混在其中：清理不应碰它。
