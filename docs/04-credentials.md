@@ -105,11 +105,35 @@ EdgeOne（TEO）DNS 提供商凭据。字段与 `cloud.tencent` 完全一致（�
 | `proxy_mode` | 出网代理模式：`direct` / `inherit` / `custom`（见下文「出网代理」） |
 | `proxy_url` | `proxy_mode=custom` 时的自定义代理（见下文「出网代理」） |
 
+### `dns.acme-dns` — acme-dns（自建）
+
+面向自建 [acme-dns](https://github.com/acme-dns/acme-dns) 服务（专为 ACME
+DNS-01 挑战设计的轻量 DNS 服务，凭据只管一个 subdomain 的 TXT 更新）。
+四个业务字段都取自 `POST {api_url}/register` 注册响应，原样粘贴：
+
+| 字段 | 说明 |
+|---|---|
+| `api_url` | acme-dns 服务器基地址，如 `https://acmedns.asfd.cn` |
+| `username` | 注册返回的 username（UUID） |
+| `password` | 注册返回的 password |
+| `subdomain` | 注册返回的 subdomain（UUID），TXT 恒写在该账号的 `fulldomain` 上 |
+| `proxy_mode` | 出网代理模式：`direct` / `inherit` / `custom`（见下文「出网代理」） |
+| `proxy_url` | `proxy_mode=custom` 时的自定义代理（见下文「出网代理」） |
+
+流水线接入与注意事项（domain-alias 模式、CNAME 建法、单账号并发限制）见
+[DNS 提供商](06-dns-providers.md)的「acme-dns 凭据的接入」。
+
+**连通性测试的副作用**：acme-dns 只有 `/update` 能验证凭据，测试会向该账号
+写入探针值并**覆盖当前 TXT**（无查询接口，无法先读后写回）。TXT 值只在挑战
+进行中有意义——挑战进行中请勿点「测试」，正常情况下下次挑战写入会覆盖探针值。
+测试分两段：`GET /health` 失败报「服务不可达」（网络层），探针失败报脱敏后的
+凭据原因（含 HTTP 状态与服务端错误码，不回显密码）。
+
 ### 出网代理（`proxy_mode`）
 
-八类凭据（DNS 提供商四类 `cloud.tencent` / `dns.tencent-eo` / `cloud.cloudflare` /
-`cloud.aliyun`、ACME 账号 `acme.account`、部署档案 `deploy.ssh` / `deploy.s3` /
-`deploy.webdav`）都用 `proxy_mode` 三态控制出网代理，用于提供商 API 不可直连的
+九类凭据（DNS 提供商五类 `cloud.tencent` / `dns.tencent-eo` / `cloud.cloudflare` /
+`cloud.aliyun` / `dns.acme-dns`、ACME 账号 `acme.account`、部署档案 `deploy.ssh` /
+`deploy.s3` / `deploy.webdav`）都用 `proxy_mode` 三态控制出网代理，用于提供商 API 不可直连的
 网络环境（如国内访问 `api.cloudflare.com` 超时）。模式语义：
 
 | `proxy_mode` | 行为 |

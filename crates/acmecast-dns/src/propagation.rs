@@ -490,12 +490,21 @@ where
     // `proxy: ` 行每会话只报一次：首次回退成功后置位，不再重复。
     let mut proxy_reported = false;
 
+    // 不支持 TXT 查询的提供商（覆盖写语义，如 acme-dns）：写入成功即服务端
+    // 已收下，提供商侧确认视为立即成立——没有读取接口，循环等它只会空转
+    // 到超时。首轮即进入解析器可见性阶段。
+    let provider_queryable = provider.supports_txt_query();
+
     loop {
         round += 1;
 
         if !published {
-            let found = provider.find_txt(credentials, record).await?;
-            published = found.iter().any(|value| value == &record.value);
+            if provider_queryable {
+                let found = provider.find_txt(credentials, record).await?;
+                published = found.iter().any(|value| value == &record.value);
+            } else {
+                published = true;
+            }
         }
 
         if published && resolvers.is_empty() {
@@ -660,12 +669,20 @@ where
         }
     }
 
+    // 不支持 TXT 查询的提供商（覆盖写语义，如 acme-dns）：写入成功即服务端
+    // 已收下，提供商侧确认视为立即成立，首轮即进入解析器可见性阶段。
+    let provider_queryable = provider.supports_txt_query();
+
     loop {
         round += 1;
 
         if !published {
-            let found = provider.find_txt(credentials, record).await?;
-            published = found.iter().any(|value| value == &record.value);
+            if provider_queryable {
+                let found = provider.find_txt(credentials, record).await?;
+                published = found.iter().any(|value| value == &record.value);
+            } else {
+                published = true;
+            }
         }
 
         let all_empty = authoritative.is_empty() && all_dns.is_empty() && doh.is_empty();
@@ -1651,6 +1668,8 @@ mod tests {
     struct Publishes {
         values: Mutex<Vec<String>>,
         deleted: Mutex<Vec<String>>,
+        /// 模拟覆盖写服务（不支持 TXT 查询，如 acme-dns）。
+        overwrite_only: bool,
     }
 
     impl Publishes {
@@ -1658,6 +1677,7 @@ mod tests {
             Self {
                 values: Mutex::new(vec![value.to_owned()]),
                 deleted: Mutex::new(Vec::new()),
+                overwrite_only: false,
             }
         }
 
@@ -1665,6 +1685,16 @@ mod tests {
             Self {
                 values: Mutex::new(Vec::new()),
                 deleted: Mutex::new(Vec::new()),
+                overwrite_only: false,
+            }
+        }
+
+        /// 不支持 TXT 查询的假提供商（覆盖写语义）。
+        fn overwrite_only() -> Self {
+            Self {
+                values: Mutex::new(Vec::new()),
+                deleted: Mutex::new(Vec::new()),
+                overwrite_only: true,
             }
         }
 
@@ -1685,6 +1715,10 @@ mod tests {
 
         fn credential_fields(&self) -> schemars::schema::RootSchema {
             schemars::schema_for!(String)
+        }
+
+        fn supports_txt_query(&self) -> bool {
+            !self.overwrite_only
         }
 
         async fn find_txt(&self, _credentials: &Value, _record: &TxtRecord) -> Result<Vec<String>> {
@@ -1828,6 +1862,74 @@ mod tests {
         )
         .await
         .expect("无解析器时提供商侧确认即就绪");
+    }
+
+    #[tokio::test]
+    async fn an_overwrite_only_provider_skips_the_provider_confirmation() {
+        // 覆盖写提供商（如 acme-dns）：没有查询接口，写入成功即服务端已收下，
+        // 首轮就进解析器阶段，不循环等一个永远不会成立的提供商侧确认。
+        let provider = Publishes::overwrite_only();
+        let resolver = ScriptedResolver::new("解析器", vec![vec!["value-1".to_owned()]]);
+
+        wait_until_visible(
+            &provider,
+            &serde_json::json!({}),
+            &record(),
+            &[&resolver],
+            &fast_policy(),
+            None,
+            |_| {},
+        )
+        .await
+        .expect("覆盖写提供商首轮即进入解析器阶段");
+        assert_eq!(resolver.calls(), 1, "首轮就查了解析器");
+    }
+
+    #[tokio::test]
+    async fn an_overwrite_only_provider_without_resolvers_returns_immediately() {
+        // 覆盖写提供商 + 解析器为空（`ACMECAST_DOH_RESOLVERS=none`）：
+        // 提供商侧视为已确认，立即就绪。
+        let provider = Publishes::overwrite_only();
+
+        wait_until_visible(
+            &provider,
+            &serde_json::json!({}),
+            &record(),
+            &[],
+            &fast_policy(),
+            None,
+            |_| {},
+        )
+        .await
+        .expect("覆盖写 + 无解析器应立即成功");
+    }
+
+    #[tokio::test]
+    async fn an_overwrite_only_provider_timeout_reports_the_resolver_side() {
+        // 覆盖写提供商的解析器侧超时：错误只报解析器，不含「提供商侧未确认」。
+        let provider = Publishes::overwrite_only();
+        let resolver = ScriptedResolver::new("解析器", vec![vec![], vec![]]);
+
+        let err = wait_until_visible(
+            &provider,
+            &serde_json::json!({}),
+            &record(),
+            &[&resolver],
+            &fast_policy(),
+            None,
+            |_| {},
+        )
+        .await
+        .expect_err("解析器一直不可见应超时");
+
+        let text = err.to_string();
+        // 「已写入提供商侧」是既有的确认语义表述；未确认错误是「提供商侧仍未确认」。
+        assert!(!text.contains("仍未确认"), "不该报提供商侧未确认: {text}");
+        assert!(
+            text.contains("已写入提供商侧"),
+            "应按解析器侧语义报告: {text}"
+        );
+        assert!(text.contains("不可见"), "应指向解析器不可见: {text}");
     }
 
     #[test]

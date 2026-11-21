@@ -19,6 +19,43 @@ const CAPABILITY_OPTIONS = [
 ];
 const DEFAULT_CAPABILITIES = ["dns", "deploy"];
 
+/**
+ * 凭据类型的分组顺序：新建/编辑弹窗的「类型」下拉按此分组展示——证书签发商
+ * → 纯 DNS 提供商 → 纯部署服务 → 双权限提供商（受控类型，凭据实例可同时
+ * 声明 dns/deploy 能力）→ 通知。未登记的类型归入「其他」兜底，不丢选项。
+ */
+const TYPE_GROUPS: Array<{ label: string; typeIds: string[] }> = [
+  { label: "证书签发商", typeIds: ["acme.account"] },
+  { label: "DNS 提供商", typeIds: ["dns.acme-dns", "dns.tencent-eo"] },
+  { label: "部署服务", typeIds: ["deploy.ssh", "deploy.s3", "deploy.webdav"] },
+  { label: "DNS / 部署", typeIds: ["cloud.tencent", "cloud.cloudflare", "cloud.aliyun"] },
+  {
+    label: "通知",
+    typeIds: ["notify.feishu", "notify.dingtalk", "notify.generic", "notify.email"],
+  },
+];
+
+/** 把类型清单按分组展开为 antd 分组 options；空组不显示。 */
+function groupedTypeOptions(
+  types: Array<{ type_id: string; display_name: string }>,
+): Array<{ label: string; options: Array<{ value: string; label: string }> }> {
+  const known = new Set(TYPE_GROUPS.flatMap((group) => group.typeIds));
+  const groups = TYPE_GROUPS.map((group) => ({
+    label: group.label,
+    options: group.typeIds
+      .flatMap((typeId) => types.filter((item) => item.type_id === typeId))
+      .map((item) => ({ value: item.type_id, label: item.display_name })),
+  })).filter((group) => group.options.length > 0);
+  const others = types.filter((item) => !known.has(item.type_id));
+  if (others.length > 0) {
+    groups.push({
+      label: "其他",
+      options: others.map((item) => ({ value: item.type_id, label: item.display_name })),
+    });
+  }
+  return groups;
+}
+
 function isCapabilityControlled(typeId: string | null | undefined): boolean {
   return typeId !== null && typeId !== undefined && CAPABILITY_CONTROLLED_TYPES.includes(typeId);
 }

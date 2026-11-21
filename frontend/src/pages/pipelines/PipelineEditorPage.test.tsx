@@ -59,12 +59,13 @@ vi.mock("@/api/client", () => ({
                 { id: 10, name: "web-01", type_id: "deploy.ssh", remark: "", proxy_mode: "direct" },
                 { id: 30, name: "腾讯云 SSL", type_id: "cloud.tencent", remark: "生产 DNS", proxy_mode: "direct" },
                 { id: 31, name: "EdgeOne DNS", type_id: "dns.tencent-eo", remark: "", proxy_mode: "direct" },
+                { id: 32, name: "自建 acme-dns", type_id: "dns.acme-dns", remark: "", proxy_mode: "direct" },
                 { id: 40, name: "SSH 主机", type_id: "deploy.ssh", remark: "", proxy_mode: "direct" },
                 { id: 41, name: "jump-01", type_id: "deploy.ssh", remark: "", proxy_mode: "direct" },
                 { id: 50, name: "ops-feishu", type_id: "notify.feishu", remark: "", proxy_mode: "direct" },
                 { id: 51, name: "ops-mail", type_id: "notify.email", remark: "", proxy_mode: "direct" },
               ],
-              total: 10,
+              total: 11,
               page: 1,
               page_size: 100,
             },
@@ -565,9 +566,10 @@ describe("PipelineEditorPage", () => {
     const field = await screen.findByLabelText("dns_credential_id");
     expect(field.getAttribute("role")).toBe("combobox");
     fireEvent.mouseDown(field);
-    // acme.account 的账号凭据不该出现；cloudflare / aliyun 应出现。
+    // acme.account 的账号凭据不该出现；cloudflare / aliyun / acme-dns 应出现。
     expect(screen.queryByTitle("le-prod（id=7）")).toBeNull();
     expect(screen.getByTitle("some-dns（id=8）")).toBeTruthy();
+    expect(screen.getByTitle("自建 acme-dns（id=32）")).toBeTruthy();
     fireEvent.click(await screen.findByTitle("ali-dns（id=9）"));
 
     const body = await save();

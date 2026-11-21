@@ -29,7 +29,8 @@ pub use propagation::{
 };
 pub use provider::{DnsProvider, TxtRecord, parse_credentials};
 pub use providers::{
-    AliyunProvider, CloudflareProvider, TencentApiClient, TencentEoProvider, TencentProvider,
+    AcmeDnsCredentials, AcmeDnsProvider, AliyunProvider, CloudflareProvider, TencentApiClient,
+    TencentEoProvider, TencentProvider,
 };
 pub use registry::DnsProviderRegistry;
 pub use resolvers::{

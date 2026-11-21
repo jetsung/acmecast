@@ -35,8 +35,8 @@ use crate::{
     HttpState,
     auth::{AuthMode, ClientIp, issue_token},
     credentials::{
-        AliyunCredentialType, CloudflareCredentialType, SshHostCredentialType,
-        TencentCredentialType, TencentEoCredentialType,
+        AcmeDnsCredentialType, AliyunCredentialType, CloudflareCredentialType,
+        SshHostCredentialType, TencentCredentialType, TencentEoCredentialType,
     },
     response::{ApiError, ApiJson, ApiQuery, ApiResponse},
 };
@@ -2734,6 +2734,9 @@ pub(crate) fn default_credential_registry(proxy_url: Option<&str>) -> Arc<Creden
     registry
         .register(TencentEoCredentialType::default().with_global_proxy(proxy_url))
         .expect("内置腾讯云 EdgeOne 凭据类型不应重复注册");
+    registry
+        .register(AcmeDnsCredentialType::default().with_global_proxy(proxy_url))
+        .expect("内置 acme-dns 凭据类型不应重复注册");
     // SSH 主机档案：cert.deploy 的 SSH 配置引用它，注册后凭据页才能
     // 创建/测试档案，部署配置也才能从「每次手抄」变成「选一份档案」。
     registry

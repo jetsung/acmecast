@@ -26,6 +26,7 @@ const DNS_CREDENTIAL_TYPE_IDS: Record<string, true> = {
   "cloud.aliyun": true,
   "cloud.tencent": true,
   "dns.tencent-eo": true,
+  "dns.acme-dns": true,
 };
 
 /** 与后端 acmecast_store::capability::CONTROLLED_TYPES 保持一致。 */

@@ -191,6 +191,19 @@ pub trait DnsProvider: Send + Sync + std::fmt::Debug + 'static {
             self.type_id()
         )))
     }
+
+    /// 该提供商能否查询既有 TXT 记录。
+    ///
+    /// 默认 `true`：主流厂商 API 都可查。仅当服务**没有** TXT 读取接口、
+    /// 且写入语义为**覆盖写**（写入即替换该名下全部记录）时可返回 `false`——
+    /// 典型如 acme-dns：`POST /update` 覆盖写，也无删除/查询端点。返回
+    /// `false` 后，[`crate::challenge::ensure_txt_record`] 跳过「同名异值
+    /// 残留」检查（覆盖写天然安全），传播等待把提供商侧确认视为立即成立，
+    /// 直接进入解析器可见性阶段。保留查询能力的提供商必须保持默认值：
+    /// 谎报会让写前检查与传播确认失去事实依据。
+    fn supports_txt_query(&self) -> bool {
+        true
+    }
 }
 
 /// 把凭据字段反序列化成提供商自己的结构体。

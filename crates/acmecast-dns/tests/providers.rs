@@ -7,8 +7,9 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use acmecast_dns::{
-    AliyunProvider, CloudflareProvider, DnsProvider, DnsProviderRegistry, Error, HttpRequest,
-    HttpResponse, HttpTransport, Result, TencentEoProvider, TencentProvider, TxtRecord,
+    AcmeDnsProvider, AliyunProvider, CloudflareProvider, DnsProvider, DnsProviderRegistry, Error,
+    HttpRequest, HttpResponse, HttpTransport, Result, TencentEoProvider, TencentProvider,
+    TxtRecord,
 };
 use async_trait::async_trait;
 use serde_json::{Value, json};
@@ -44,6 +45,16 @@ impl HttpTransport for ScriptedTransport {
             .pop_front()
             .ok_or_else(|| Error::provider("脚本里没有更多响应了".to_owned()))
     }
+}
+
+/// 一份 acme-dns 凭据（注册响应四元组）。
+fn acme_dns_keys() -> Value {
+    json!({
+        "api_url": "https://acme.example.org",
+        "username": "user-uuid",
+        "password": "pass-secret",
+        "subdomain": "sub-uuid"
+    })
 }
 
 /// 一份 Cloudflare 凭据。
@@ -1100,4 +1111,196 @@ async fn the_default_probe_zone_reports_unsupported() {
         .await
         .expect_err("默认实现应报不支持");
     assert!(err.to_string().contains("no-probe"), "{err}");
+}
+
+// ---- acme-dns（自建）----
+
+#[tokio::test]
+async fn acme_dns_creates_by_posting_the_update_endpoint() {
+    let transport = ScriptedTransport::new(vec![HttpResponse::new(
+        200,
+        r#"{"txt":"digest-value-xyz"}"#,
+    )]);
+    let provider =
+        AcmeDnsProvider::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
+
+    provider
+        .create_txt(&acme_dns_keys(), &record())
+        .await
+        .expect("应能创建记录");
+
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 1, "覆盖写无需先查——一次 POST 即完成");
+
+    let request = &requests[0];
+    assert_eq!(request.method, "POST");
+    assert_eq!(request.url, "https://acme.example.org/update");
+    assert_eq!(request.headers["X-Api-User"], "user-uuid");
+    assert_eq!(request.headers["X-Api-Key"], "pass-secret");
+    let body = request.body.as_ref().expect("应带请求体");
+    assert_eq!(body["subdomain"], "sub-uuid");
+    assert_eq!(body["txt"], "digest-value-xyz");
+    // 记录名与 zone 不参与请求：acme-dns 恒更新账号自身的 fulldomain。
+    assert!(
+        !serde_json::to_string(&body)
+            .unwrap()
+            .contains("acme-challenge"),
+        "请求体不应携带记录名: {body}"
+    );
+}
+
+#[tokio::test]
+async fn acme_dns_cleans_up_without_any_request() {
+    // 服务无删除接口：清理为 no-op 成功，不发出请求也不报错。
+    let transport = ScriptedTransport::new(vec![]);
+    let provider =
+        AcmeDnsProvider::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
+
+    provider
+        .delete_txt(&acme_dns_keys(), &record())
+        .await
+        .expect("清理应视为成功");
+    assert!(transport.requests().is_empty(), "删除不该发出任何请求");
+}
+
+#[tokio::test]
+async fn acme_dns_find_txt_never_touches_the_network() {
+    // 服务没有查询端点；`supports_txt_query() = false` 保证正常流程不会调用，
+    // 防御性实现返回空列表而非报错或发请求。
+    let transport = ScriptedTransport::new(vec![]);
+    let provider =
+        AcmeDnsProvider::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
+
+    let found = provider
+        .find_txt(&acme_dns_keys(), &record())
+        .await
+        .expect("查询应防御性返回空");
+    assert!(found.is_empty());
+    assert!(transport.requests().is_empty(), "不该发出任何请求");
+}
+
+#[tokio::test]
+async fn acme_dns_overwrites_instead_of_refusing_conflicts() {
+    // 覆盖写语义：旧的 TXT 值由 update 替换，不触发「同名异值残留」报错。
+    // `supports_txt_query() = false` 时挑战层直接创建——此处验证 create 本身
+    // 对同名记录（无论如何）都会发出 update。
+    let transport = ScriptedTransport::new(vec![
+        HttpResponse::new(200, r#"{"txt":"old-value"}"#),
+        HttpResponse::new(200, r#"{"txt":"digest-value-xyz"}"#),
+    ]);
+    let provider =
+        AcmeDnsProvider::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
+
+    provider
+        .create_txt(&acme_dns_keys(), &record())
+        .await
+        .expect("第一次写入");
+    provider
+        .create_txt(&acme_dns_keys(), &record())
+        .await
+        .expect("第二次写入应覆盖旧值而非报错");
+
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 2, "两次写入各发一次 update");
+}
+
+#[tokio::test]
+async fn acme_dns_reports_auth_failures_without_leaking_the_password() {
+    let transport =
+        ScriptedTransport::new(vec![HttpResponse::new(401, r#"{"error":"forbidden"}"#)]);
+    let provider =
+        AcmeDnsProvider::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
+
+    let err = provider
+        .create_txt(&acme_dns_keys(), &record())
+        .await
+        .expect_err("认证失败应报错");
+
+    let text = err.to_string();
+    assert!(text.contains("401"), "应带 HTTP 状态: {text}");
+    assert!(text.contains("forbidden"), "应带服务端错误码: {text}");
+    assert!(!text.contains("pass-secret"), "不得回显密码: {text}");
+}
+
+#[tokio::test]
+async fn acme_dns_distinguishes_network_failures_from_auth_failures() {
+    // 传输层错误（服务不可达）在 acmecast-dns 层报「请求失败」，与 401
+    // 的业务失败相区分——凭据测试据此分两段诊断。
+    #[derive(Debug)]
+    struct BrokenTransport;
+    #[async_trait]
+    impl HttpTransport for BrokenTransport {
+        async fn send(&self, _request: HttpRequest) -> Result<HttpResponse> {
+            Err(Error::provider(
+                "请求 https://acme.example.org/health 失败: 连接拒绝",
+            ))
+        }
+    }
+    let provider = AcmeDnsProvider::with_transport(Arc::new(BrokenTransport));
+
+    let err = provider
+        .health_check_at(&acme_dns_keys())
+        .await
+        .expect_err("服务不可达应报错");
+    let text = err.to_string();
+    assert!(text.contains("失败"), "{text}");
+}
+
+#[tokio::test]
+async fn acme_dns_verify_credentials_probes_the_update_endpoint() {
+    let transport = ScriptedTransport::new(vec![HttpResponse::new(200, r#"{"txt":"probe-echo"}"#)]);
+    let provider =
+        AcmeDnsProvider::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
+
+    provider
+        .verify_credentials(&acme_dns_keys())
+        .await
+        .expect("凭据有效时探针应通过");
+
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].url, "https://acme.example.org/update");
+    let body = requests[0].body.as_ref().expect("应带请求体");
+    // 探针值是随机生成的 43 字符 base64url：acme-dns 的 validTXT 只放行这个
+    // 长度（LE auth key 尺寸），固定短标记会被 400 bad_txt 拒掉。
+    let txt = body["txt"].as_str().expect("探针应为字符串");
+    assert_eq!(txt.len(), 43, "探针值应恰 43 字符: {txt}");
+    assert!(
+        txt.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'),
+        "探针值应为 base64url 字符集: {txt}"
+    );
+}
+
+#[tokio::test]
+async fn acme_dns_probe_zone_stays_unsupported() {
+    let transport = ScriptedTransport::new(vec![]);
+    let provider =
+        AcmeDnsProvider::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
+
+    let err = provider
+        .probe_zone(&acme_dns_keys(), "acme.example.org")
+        .await
+        .expect_err("无 zone 概念的提供商应不支持探测");
+    assert!(err.to_string().contains("dns.acme-dns"), "{err}");
+    assert!(transport.requests().is_empty(), "探测不该发请求");
+}
+
+#[tokio::test]
+async fn acme_dns_trims_and_normalizes_the_api_url() {
+    // 用户多敲一个尾部斜杠不该拼出 `//update`。
+    let transport = ScriptedTransport::new(vec![HttpResponse::new(200, r#"{"txt":"x"}"#)]);
+    let provider =
+        AcmeDnsProvider::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
+
+    let mut keys = acme_dns_keys();
+    keys["api_url"] = json!("  https://acme.example.org/  ");
+    provider
+        .create_txt(&keys, &record())
+        .await
+        .expect("应能创建记录");
+    assert_eq!(
+        transport.requests()[0].url,
+        "https://acme.example.org/update"
+    );
 }

@@ -12,6 +12,9 @@ use std::sync::Arc;
 
 use acmecast_access::{ConnectivityOutcome, CredentialType};
 use acmecast_deploy::{SshHostFields, probe_host, ssh_host_fields_schema};
+use acmecast_dns::providers::acme_dns::{
+    AcmeDnsCredentials, AcmeDnsProvider, acme_dns_credentials_schema,
+};
 use acmecast_dns::providers::aliyun::{AliyunCredentials, aliyun_credentials_schema};
 use acmecast_dns::providers::cloudflare::{CloudflareCredentials, cloudflare_credentials_schema};
 use acmecast_dns::providers::tencent::{TencentCredentials, tencent_credentials_schema};
@@ -398,6 +401,117 @@ impl CredentialType for TencentEoCredentialType {
         _capabilities: &[String],
     ) -> ConnectivityOutcome {
         match self.provider().verify_credentials(fields).await {
+            Ok(()) => ConnectivityOutcome::Ok,
+            Err(error) => ConnectivityOutcome::Unavailable {
+                reason: self.redact(fields, &error.to_string()),
+            },
+        }
+    }
+}
+
+/// acme-dns 凭据类型（自建 acme-dns 服务：`api_url` / `username` / `password` / `subdomain`）。
+#[derive(Debug, Default)]
+pub struct AcmeDnsCredentialType {
+    /// 测试用传输层替身。
+    transport: Option<Arc<dyn HttpTransport>>,
+    /// 全局出网代理（`[proxy] url` / `ACMECAST_PROXY_URL`）；供
+    /// `proxy_mode=inherit` 的凭据在连通性测试里继承。
+    global_proxy_url: Option<String>,
+}
+
+impl AcmeDnsCredentialType {
+    /// 注入传输层替身，供测试用。
+    #[must_use]
+    pub fn with_transport(transport: Arc<dyn HttpTransport>) -> Self {
+        Self {
+            transport: Some(transport),
+            global_proxy_url: None,
+        }
+    }
+
+    /// 设置全局出网代理，供 `proxy_mode=inherit` 的凭据继承。
+    #[must_use]
+    pub fn with_global_proxy(mut self, proxy_url: Option<impl Into<String>>) -> Self {
+        self.global_proxy_url = proxy_url.map(Into::into);
+        self
+    }
+
+    fn provider(&self) -> AcmeDnsProvider {
+        let transport: Arc<dyn HttpTransport> = match &self.transport {
+            Some(transport) => Arc::clone(transport),
+            None => Arc::new(ReqwestTransport::default()),
+        };
+        AcmeDnsProvider::with_transport(transport).with_global_proxy_and_timeout(
+            self.global_proxy_url.clone(),
+            acmecast_core::NETWORK_TIMEOUT,
+        )
+    }
+}
+
+#[async_trait::async_trait]
+impl CredentialType for AcmeDnsCredentialType {
+    fn type_id(&self) -> &'static str {
+        // 与 `AcmeDnsProvider::type_id` 对齐：cert.apply 的凭据 `type_id` 即提供商标识。
+        "dns.acme-dns"
+    }
+
+    fn display_name(&self) -> &'static str {
+        "acme-dns（自建）"
+    }
+
+    fn fields_schema(&self) -> RootSchema {
+        acme_dns_credentials_schema()
+    }
+
+    fn validate(&self, fields: &serde_json::Value) -> acmecast_core::Result<()> {
+        let parsed: AcmeDnsCredentials =
+            serde_json::from_value(fields.clone()).map_err(|error| {
+                acmecast_core::Error::validation("api_url", format!("字段不合法: {error}"))
+            })?;
+        // 四个业务字段都取自 `POST /register` 响应，缺一不可。
+        if parsed.api_url.trim().is_empty() {
+            return Err(acmecast_core::Error::validation(
+                "api_url",
+                "API 地址不能为空白",
+            ));
+        }
+        if parsed.username.trim().is_empty() {
+            return Err(acmecast_core::Error::validation(
+                "username",
+                "用户名不能为空白",
+            ));
+        }
+        if parsed.password.trim().is_empty() {
+            return Err(acmecast_core::Error::validation(
+                "password",
+                "密码不能为空白",
+            ));
+        }
+        if parsed.subdomain.trim().is_empty() {
+            return Err(acmecast_core::Error::validation(
+                "subdomain",
+                "子域标识不能为空白",
+            ));
+        }
+        validate_proxy_url_field(fields)
+    }
+
+    async fn test_connectivity(
+        &self,
+        fields: &serde_json::Value,
+        _capabilities: &[String],
+    ) -> ConnectivityOutcome {
+        // 两段探测：先 `GET /health`（无认证）区分「服务不可达」与「凭据无效」，
+        // 再探针 `POST /update` 验证凭据。acme-dns 唯一能验证凭据的端点就是
+        // update，探针会覆盖该账号当前 TXT 值（无查询接口无法先读后写回）——
+        // 副作用已在表单帮助文案与文档说明：TXT 值只在挑战进行中有意义。
+        let provider = self.provider();
+        if let Err(error) = provider.health_check_at(fields).await {
+            return ConnectivityOutcome::Unavailable {
+                reason: format!("服务不可达（{}）", self.redact(fields, &error.to_string())),
+            };
+        }
+        match provider.verify_credentials(fields).await {
             Ok(()) => ConnectivityOutcome::Ok,
             Err(error) => ConnectivityOutcome::Unavailable {
                 reason: self.redact(fields, &error.to_string()),
@@ -829,6 +943,142 @@ mod tests {
         let reason = outcome.reason().expect("不可用应给出原因");
         assert!(reason.contains("Invalid request headers"), "{reason}");
         assert!(!reason.contains("cf-token"), "原因不得回显令牌: {reason}");
+    }
+
+    /// acme-dns 的凭据测试需要非 200 响应（health 失败 / update 401），
+    /// `FakeTransport` 恒回 200，这里给一个带状态码脚本的变体。
+    #[derive(Debug)]
+    struct AcmeStatusTransport {
+        script: std::sync::Mutex<VecDeque<(u16, &'static str)>>,
+        requests: std::sync::Mutex<Vec<acmecast_dns::HttpRequest>>,
+    }
+
+    impl AcmeStatusTransport {
+        /// 按调用顺序依次应答（状态码 + 响应体），耗尽后重复最后一项。
+        fn scripted(script: Vec<(u16, &'static str)>) -> Self {
+            Self {
+                script: std::sync::Mutex::new(VecDeque::from(script)),
+                requests: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn requests(&self) -> Vec<acmecast_dns::HttpRequest> {
+            self.requests.lock().expect("请求记录锁").clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl HttpTransport for AcmeStatusTransport {
+        async fn send(
+            &self,
+            request: acmecast_dns::HttpRequest,
+        ) -> acmecast_dns::Result<acmecast_dns::HttpResponse> {
+            self.requests.lock().expect("请求记录锁").push(request);
+            let mut script = self.script.lock().expect("应答脚本锁");
+            let (status, body) = *script.front().expect("脚本已保证非空");
+            if script.len() > 1 {
+                script.pop_front();
+            }
+            Ok(acmecast_dns::HttpResponse::new(status, body))
+        }
+    }
+
+    fn acme_dns_fields() -> serde_json::Value {
+        serde_json::json!({
+            "api_url": "https://acme.example.org",
+            "username": "user-uuid",
+            "password": "acme-pass-secret",
+            "subdomain": "sub-uuid"
+        })
+    }
+
+    /// acme-dns 凭据测试两段探测：先 health（无认证，区分服务不可达），
+    /// 再探针 update（验证凭据）；成功时两段各发一次请求。
+    #[tokio::test]
+    async fn acme_dns_probe_runs_health_then_update() {
+        let transport = Arc::new(AcmeStatusTransport::scripted(vec![
+            (200, ""),                                         // GET /health
+            (200, r#"{"txt":"acmecast-connectivity-probe"}"#), // POST /update 探针
+        ]));
+        let kind = AcmeDnsCredentialType::with_transport(Arc::clone(&transport) as _);
+        assert!(
+            kind.test_connectivity(&acme_dns_fields(), &[])
+                .await
+                .is_ok(),
+            "凭据有效应判定可用"
+        );
+
+        let requests = transport.requests();
+        assert_eq!(requests.len(), 2, "两段探测各发一次请求");
+        assert_eq!(requests[0].method, "GET");
+        assert_eq!(requests[0].url, "https://acme.example.org/health");
+        assert_eq!(requests[1].method, "POST");
+        assert_eq!(requests[1].url, "https://acme.example.org/update");
+        assert_eq!(requests[1].headers["X-Api-User"], "user-uuid");
+        assert_eq!(requests[1].headers["X-Api-Key"], "acme-pass-secret");
+        let body = requests[1].body.as_ref().expect("探针应带请求体");
+        assert_eq!(body["subdomain"], "sub-uuid");
+        // 探针值是随机生成的 43 字符 base64url：acme-dns 的 validTXT 只放行
+        // 这个长度（LE auth key 尺寸），固定短标记会被 400 bad_txt 拒掉。
+        let txt = body["txt"].as_str().expect("探针应为字符串");
+        assert_eq!(txt.len(), 43, "探针值应恰 43 字符: {txt}");
+        assert!(
+            txt.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'),
+            "探针值应为 base64url 字符集: {txt}"
+        );
+    }
+
+    /// acme-dns 凭据测试的 health 失败按「服务不可达」报告，不继续探针。
+    #[tokio::test]
+    async fn acme_dns_health_failure_reports_unreachable() {
+        let transport = Arc::new(AcmeStatusTransport::scripted(vec![(502, r#"Bad Gateway"#)]));
+        let kind = AcmeDnsCredentialType::with_transport(Arc::clone(&transport) as _);
+        let outcome = kind.test_connectivity(&acme_dns_fields(), &[]).await;
+        let reason = outcome.reason().expect("不可用应给出原因");
+        assert!(reason.contains("服务不可达"), "{reason}");
+        assert_eq!(transport.requests().len(), 1, "health 失败后不再探针");
+    }
+
+    /// acme-dns 凭据测试的探针失败按凭据问题脱敏报告，不回显密码。
+    #[tokio::test]
+    async fn acme_dns_probe_failure_reports_a_redacted_reason() {
+        let transport = Arc::new(AcmeStatusTransport::scripted(vec![
+            (200, ""),                         // GET /health 通过
+            (401, r#"{"error":"forbidden"}"#), // POST /update 认证失败
+        ]));
+        let kind = AcmeDnsCredentialType::with_transport(Arc::clone(&transport) as _);
+        let outcome = kind.test_connectivity(&acme_dns_fields(), &[]).await;
+        let reason = outcome.reason().expect("不可用应给出原因");
+        assert!(reason.contains("401"), "{reason}");
+        assert!(reason.contains("forbidden"), "{reason}");
+        assert!(
+            !reason.contains("acme-pass-secret"),
+            "原因不得回显密码: {reason}"
+        );
+        assert!(
+            !reason.contains("服务不可达"),
+            "health 通过时不应误报服务不可达: {reason}"
+        );
+    }
+
+    /// acme-dns 凭据的空白字段校验逐字段定位。
+    #[test]
+    fn acme_dns_validate_names_each_blank_field() {
+        let kind = AcmeDnsCredentialType::default();
+        for field in ["api_url", "username", "password", "subdomain"] {
+            let mut fields = acme_dns_fields();
+            fields[field] = serde_json::json!("   ");
+            let err = kind.validate(&fields).expect_err("空白字段应被拒绝");
+            match &err {
+                acmecast_core::Error::Validation { field: named, .. } => {
+                    assert_eq!(named, field, "应定位到 {field}");
+                }
+                other => panic!("期望 Validation 错误，实际 {other:?}"),
+            }
+        }
+        kind.validate(&acme_dns_fields())
+            .expect("字段齐全应通过校验");
     }
 
     /// SSH 档案的标识必须与 SSH 部署目标一致，前端据此对齐语义。

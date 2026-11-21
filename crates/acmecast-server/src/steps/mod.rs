@@ -76,6 +76,12 @@ pub fn default_dns_registry(
                 .with_global_proxy_and_timeout(proxy_url, network_timeout),
         )
         .expect("内置 DNS 提供商不应重复注册");
+    registry
+        .register(
+            acmecast_dns::AcmeDnsProvider::new()
+                .with_global_proxy_and_timeout(proxy_url, network_timeout),
+        )
+        .expect("内置 DNS 提供商不应重复注册");
     Arc::new(registry)
 }
 

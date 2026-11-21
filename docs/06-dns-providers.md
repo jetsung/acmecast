@@ -12,6 +12,7 @@ DNS-01 挑战的生命周期：**写入 TXT 记录 → 等传播 → 通知 CA �
 | `aliyun` | 阿里云 DNS | `access_key_id`、`access_key_secret` | RPC 风格 API（HMAC-SHA1 签名）；TTL 被 clamp 到 600–86400（低于 600 阿里云直接 400） |
 | `tencent` | 腾讯云 DNSPod | `secret_id`、`secret_key`、`account_site` | API 3.0（TC3-HMAC-SHA256 签名）；`account_site` 选 `cn`/`intl`（国内/国际站）；TTL 下限 600（免费/标准版报 `LimitExceeded.RecordTtlLimit`） |
 | `tencent-eo` | 腾讯云 EdgeOne | `secret_id`、`secret_key`、`account_site` | 共用腾讯云 API 3.0 签名基础，换 EdgeOne 服务名与 Action；`DescribeZones` 查 zone 是否已接入 EdgeOne |
+| `dns.acme-dns` | acme-dns（自建） | `api_url`、`username`、`password`、`subdomain` | 自建 [acme-dns](https://github.com/acme-dns/acme-dns) 服务；只有 `POST /update`（覆盖写）与 `GET /health`，**无查询/删除接口**——写前残留检查与传播等待的提供商侧确认均跳过（写入即服务端收下，首轮进解析器阶段），清理为 no-op；无 zone 概念，不参与自动选择，须显式指定 `dns_credential_id`；凭据「测试」以探针 update 验证，会**覆盖该账号当前 TXT 值**（见[凭据](04-credentials.md)） |
 
 通用行为：
 
@@ -140,7 +141,9 @@ export ACMECAST_DOH_RESOLVERS="腾讯 DoH=https://doh.pub/dns-query,https://1.12
 ## HTTP-01 的现状
 
 HTTP-01 目前只有**材料计算**能力（token、`/.well-known/acme-challenge/<token>`
-路径、key authorization 响应体），没有投放通道。申请证书请使用 DNS-01。
+路径、key authorization 响应体），没有投放通道。`cert.apply` 的 `challenge`
+输入已收窄为唯一值 `dns-01`（表单下拉不再出现 HTTP-01，提交 `http-01` 会被
+schema 校验拒绝）；申请证书请使用 DNS-01。
 
 ## 通配符与 CNAME 的排障
 
@@ -192,3 +195,38 @@ CNAME 形态与字段对照：
 |---|---|
 | `_acme-challenge.a.com → _acme-challenge.b.com`（challenge-alias 模式） | `dns_zone: b.com` |
 | `_acme-challenge.a.com → myalias.b.com`（domain-alias 模式） | `dns_alias: myalias.b.com` + `dns_zone: b.com` |
+
+### acme-dns 凭据的接入（domain-alias 模式的典型场景）
+
+自建 acme-dns 的写入目标恒为注册返回的 `fulldomain`（不带 `_acme-challenge.` 前缀），
+因此它**只能**走 domain-alias 模式。接入三步：
+
+1. 在 acme-dns 上注册账号（`POST {api_url}/register`），得到
+   `username` / `password` / `fulldomain` / `subdomain`，四元组原样填进
+   `dns.acme-dns` 凭据；
+2. 在授权域名的 DNS 服务商处建 CNAME：
+   `_acme-challenge.<授权域名> → <fulldomain>`（目标不带挑战前缀）；
+3. 流水线 `cert.apply`：`dns_credential_id` 指向该凭据、
+   `dns_alias` 填 `fulldomain`、`dns_zone` 填服务器 ACME zone
+   （`fulldomain` 去掉 subdomain 段，如 `fulldomain = xxx.acme.example.org`
+   则 `dns_zone: acme.example.org`）。
+
+示例：`fulldomain = 4104321c-….acme.666517.xyz`、授权域名 `test1.666517.xyz`：
+
+```text
+_acme-challenge.test1.666517.xyz  CNAME  4104321c-….acme.666517.xyz.
+```
+
+流水线字段：`dns_alias: 4104321c-….acme.666517.xyz`、`dns_zone: acme.666517.xyz`。
+
+**注意事项：**
+
+- **同一账号同一时间只服务一个挑战**：acme-dns 的 TXT 槽位是单账号单值的
+  （rolling update 保留新旧两条以支持裸域+通配符双挑战），并发挑战会互相
+  覆盖。多个域名可共用账号串行签发，或每域名注册独立账号。
+- **凭据「测试」会覆盖 TXT 值**：探针写入后无法恢复（无查询接口），挑战
+  进行中勿点测试。
+- **无 zone 概念**：acme-dns 不参与 DNS 提供商自动选择（zone 托管探测不支持），
+  `dns_credential_id` 必须显式指定。
+- 传播等待不做提供商侧确认（无查询接口），写入成功后直接按解析器可见性判定；
+  CNAME 链由授权域名一侧出发跟随，与既有委派语义一致。

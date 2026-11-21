@@ -133,6 +133,13 @@ pub async fn ensure_txt_record(
     credentials: &Value,
     record: &TxtRecord,
 ) -> Result<bool> {
+    // 不支持查询的提供商（覆盖写语义，如 acme-dns）跳过检查直接写：
+    // 没有读取接口，查询无从谈起；写入即替换全部同名记录，残留检查
+    // 既不可行也无必要。返回 `true`——覆盖写总是实际执行了写入。
+    if !provider.supports_txt_query() {
+        provider.create_txt(credentials, record).await?;
+        return Ok(true);
+    }
     let existing = provider.find_txt(credentials, record).await?;
     if existing.iter().any(|value| value == &record.value) {
         warn!(
@@ -227,6 +234,8 @@ mod tests {
         fail_delete: bool,
         /// 让写入失败。
         fail_create: bool,
+        /// 模拟覆盖写服务（不支持 TXT 查询，如 acme-dns）。
+        overwrite_only: bool,
     }
 
     impl FakeProvider {
@@ -236,6 +245,14 @@ mod tests {
 
         fn record(&self, call: &str) {
             self.calls.lock().expect("锁不应中毒").push(call.to_owned());
+        }
+
+        /// 不支持 TXT 查询的假提供商（覆盖写语义）。
+        fn overwrite_only() -> Self {
+            Self {
+                overwrite_only: true,
+                ..Self::default()
+            }
         }
     }
 
@@ -251,6 +268,10 @@ mod tests {
 
         fn credential_fields(&self) -> RootSchema {
             schema_for!(String)
+        }
+
+        fn supports_txt_query(&self) -> bool {
+            !self.overwrite_only
         }
 
         async fn find_txt(&self, _credentials: &Value, _record: &TxtRecord) -> Result<Vec<String>> {
@@ -542,6 +563,47 @@ mod tests {
         assert!(
             !calls.iter().any(|call| call.starts_with("delete")),
             "既有记录不是我们写的，不该替别人删掉: {calls:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_overwrite_only_provider_writes_without_checking() {
+        // 覆盖写提供商（如 acme-dns）：没有查询接口，写前检查跳过，
+        // 直接写入——「同名异值」无从谈起，覆盖本身就是安全语义。
+        let provider = FakeProvider::overwrite_only();
+
+        let created = ensure_txt_record(&provider, &credentials(), &record())
+            .await
+            .expect("覆盖写应直接创建");
+
+        assert!(created, "覆盖写总是实际执行了写入");
+        let calls = provider.calls();
+        assert!(
+            !calls.iter().any(|call| call.starts_with("find")),
+            "不支持查询的提供商不该发起查询: {calls:?}"
+        );
+        assert!(
+            calls.iter().any(|call| call.starts_with("create")),
+            "应直接写入: {calls:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_overwrite_only_provider_failure_stops_the_action() {
+        // 覆盖写提供商的写入失败同样要拦住后续动作。
+        let provider = FakeProvider {
+            fail_create: true,
+            ..FakeProvider::overwrite_only()
+        };
+
+        let result: Result<()> =
+            with_txt_record(&provider, &credentials(), &record(), async { Ok(()) }).await;
+
+        assert!(result.is_err(), "写入失败应报错");
+        let calls = provider.calls();
+        assert!(
+            !calls.iter().any(|call| call.starts_with("delete")),
+            "写入失败时既有清理流程照旧（记录未曾写下）: {calls:?}"
         );
     }
 }
