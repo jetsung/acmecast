@@ -1,4 +1,6 @@
 
+
+
 <!doctype html>
 <html lang="zh" class="no-js">
   <head>
@@ -7,6 +9,7 @@
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
         <meta name="description" content="证书自动签发与部署系统：ACME 申请、流水线编排、自动续期与部署">
+      
       
       
       
@@ -22,7 +25,7 @@
       
       
       <link rel="icon" href="../assets/images/favicon.png">
-      <meta name="generator" content="zensical-0.0.72">
+      <meta name="generator" content="zensical-0.1.3">
     
     
       
@@ -33,12 +36,13 @@
       
         
       
-      <link rel="stylesheet" href="../assets/stylesheets/modern/main.4ab2de0c.min.css">
+      <link rel="stylesheet" href="../assets/stylesheets/modern/main.e2cf241e.min.css">
       
         
           
         
         <link rel="stylesheet" href="../assets/stylesheets/modern/palette.b60ce83d.min.css">
+      
       
       
 
@@ -612,6 +616,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#acme-dns-domain-alias" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        acme-dns 凭据的接入（domain-alias 模式的典型场景）
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -1075,6 +1090,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#acme-dns-domain-alias" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        acme-dns 凭据的接入（domain-alias 模式的典型场景）
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -1146,6 +1172,12 @@
 <td>腾讯云 EdgeOne</td>
 <td><code>secret_id</code>、<code>secret_key</code>、<code>account_site</code></td>
 <td>共用腾讯云 API 3.0 签名基础，换 EdgeOne 服务名与 Action；<code>DescribeZones</code> 查 zone 是否已接入 EdgeOne</td>
+</tr>
+<tr>
+<td><code>dns.acme-dns</code></td>
+<td>acme-dns（自建）</td>
+<td><code>api_url</code>、<code>username</code>、<code>password</code>、<code>subdomain</code></td>
+<td>自建 <a href="https://github.com/acme-dns/acme-dns">acme-dns</a> 服务；只有 <code>POST /update</code>（覆盖写）与 <code>GET /health</code>，<strong>无查询/删除接口</strong>——写前残留检查与传播等待的提供商侧确认均跳过（写入即服务端收下，首轮进解析器阶段），清理为 no-op；无 zone 概念，不参与自动选择，须显式指定 <code>dns_credential_id</code>；凭据「测试」以探针 update 验证，会<strong>覆盖该账号当前 TXT 值</strong>（见<a href="../04-credentials/">凭据</a>）</td>
 </tr>
 </tbody>
 </table>
@@ -1283,7 +1315,9 @@
 </blockquote>
 <h2 id="http-01">HTTP-01 的现状<a class="headerlink" href="#http-01" title="Permanent link">&para;</a></h2>
 <p>HTTP-01 目前只有<strong>材料计算</strong>能力（token、<code>/.well-known/acme-challenge/&lt;token&gt;</code>
-路径、key authorization 响应体），没有投放通道。申请证书请使用 DNS-01。</p>
+路径、key authorization 响应体），没有投放通道。<code>cert.apply</code> 的 <code>challenge</code>
+输入已收窄为唯一值 <code>dns-01</code>（表单下拉不再出现 HTTP-01，提交 <code>http-01</code> 会被
+schema 校验拒绝）；申请证书请使用 DNS-01。</p>
 <h2 id="cname">通配符与 CNAME 的排障<a class="headerlink" href="#cname" title="Permanent link">&para;</a></h2>
 <h3 id="zone-_acme-challenge">泛解析（<code>*.&lt;zone&gt;</code>）不要把 <code>_acme-challenge</code> 也套进去<a class="headerlink" href="#zone-_acme-challenge" title="Permanent link">&para;</a></h3>
 <p>最常见的误用：为了把 <code>*.example.com</code> 全指向一台服务器，配了</p>
@@ -1331,6 +1365,36 @@ CNAME 形态与字段对照：</p>
 </tr>
 </tbody>
 </table>
+<h3 id="acme-dns-domain-alias">acme-dns 凭据的接入（domain-alias 模式的典型场景）<a class="headerlink" href="#acme-dns-domain-alias" title="Permanent link">&para;</a></h3>
+<p>自建 acme-dns 的写入目标恒为注册返回的 <code>fulldomain</code>（不带 <code>_acme-challenge.</code> 前缀），
+因此它<strong>只能</strong>走 domain-alias 模式。接入三步：</p>
+<ol>
+<li>在 acme-dns 上注册账号（<code>POST {api_url}/register</code>），得到
+   <code>username</code> / <code>password</code> / <code>fulldomain</code> / <code>subdomain</code>，四元组原样填进
+   <code>dns.acme-dns</code> 凭据；</li>
+<li>在授权域名的 DNS 服务商处建 CNAME：
+   <code>_acme-challenge.&lt;授权域名&gt; → &lt;fulldomain&gt;</code>（目标不带挑战前缀）；</li>
+<li>流水线 <code>cert.apply</code>：<code>dns_credential_id</code> 指向该凭据、
+   <code>dns_alias</code> 填 <code>fulldomain</code>、<code>dns_zone</code> 填服务器 ACME zone
+   （<code>fulldomain</code> 去掉 subdomain 段，如 <code>fulldomain = xxx.acme.example.org</code>
+   则 <code>dns_zone: acme.example.org</code>）。</li>
+</ol>
+<p>示例：<code>fulldomain = 4104321c-….acme.666517.xyz</code>、授权域名 <code>test1.666517.xyz</code>：</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>_acme-challenge.test1.666517.xyz  CNAME  4104321c-….acme.666517.xyz.
+</span></code></pre></div>
+<p>流水线字段：<code>dns_alias: 4104321c-….acme.666517.xyz</code>、<code>dns_zone: acme.666517.xyz</code>。</p>
+<p><strong>注意事项：</strong></p>
+<ul>
+<li><strong>同一账号同一时间只服务一个挑战</strong>：acme-dns 的 TXT 槽位是单账号单值的
+  （rolling update 保留新旧两条以支持裸域+通配符双挑战），并发挑战会互相
+  覆盖。多个域名可共用账号串行签发，或每域名注册独立账号。</li>
+<li><strong>凭据「测试」会覆盖 TXT 值</strong>：探针写入后无法恢复（无查询接口），挑战
+  进行中勿点测试。</li>
+<li><strong>无 zone 概念</strong>：acme-dns 不参与 DNS 提供商自动选择（zone 托管探测不支持），
+  <code>dns_credential_id</code> 必须显式指定。</li>
+<li>传播等待不做提供商侧确认（无查询接口），写入成功后直接按解析器可见性判定；
+  CNAME 链由授权域名一侧出发跟随，与既有委派语义一致。</li>
+</ul>
 
 
 
@@ -1438,10 +1502,11 @@ CNAME 形态与字段对照：</p>
       
         
         
-      <script id="__config" type="application/json">{"annotate":null,"base":"..","features":["announce.dismiss","content.code.annotate","content.code.copy","content.code.select","content.footnote.tooltips","content.tabs.link","content.tooltips","navigation.footer","navigation.indexes","navigation.instant","navigation.instant.prefetch","navigation.path","navigation.sections","navigation.top","navigation.tracking","search.highlight"],"redirect":null,"search":"../assets/javascripts/workers/search.c47bb847.min.js","tags":null,"translations":{"clipboard.copied":"已复制","clipboard.copy":"复制","clipboard.error":"Could not copy to clipboard","search.result.more.one":"在该页上还有 1 个符合条件的结果","search.result.more.other":"在该页上还有 # 个符合条件的结果","search.result.none":"没有找到符合条件的结果","search.result.one":"找到 1 个符合条件的结果","search.result.other":"# 个符合条件的结果","search.result.placeholder":"键入以开始搜索","search.result.term.missing":"缺少","select.version":"选择当前版本"},"version":null}</script>
+      <script id="__config" type="application/json">{"annotate":null,"base":"..","features":["announce.dismiss","content.code.annotate","content.code.copy","content.code.select","content.footnote.tooltips","content.tabs.link","content.tooltips","navigation.footer","navigation.indexes","navigation.instant","navigation.instant.prefetch","navigation.path","navigation.sections","navigation.top","navigation.tracking","search.highlight"],"redirect":null,"search":"../assets/javascripts/workers/search.719e0d91.min.js","tags":null,"translations":{"clipboard.copied":"已复制","clipboard.copy":"复制","clipboard.error":"Could not copy to clipboard","search.result.more.one":"在该页上还有 1 个符合条件的结果","search.result.more.other":"在该页上还有 # 个符合条件的结果","search.result.none":"没有找到符合条件的结果","search.result.one":"找到 1 个符合条件的结果","search.result.other":"# 个符合条件的结果","search.result.placeholder":"键入以开始搜索","search.result.term.missing":"缺少","select.version":"选择当前版本"},"version":null}</script>
     
     
-      <script src="../assets/javascripts/bundle.10ee5ab6.min.js"></script>
+      <script src="../assets/javascripts/bundle.9e76c64c.min.js"></script>
+      
       
     
   </body>

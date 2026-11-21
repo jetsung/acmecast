@@ -1,4 +1,6 @@
 
+
+
 <!doctype html>
 <html lang="zh" class="no-js">
   <head>
@@ -7,6 +9,7 @@
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
         <meta name="description" content="证书自动签发与部署系统：ACME 申请、流水线编排、自动续期与部署">
+      
       
       
       
@@ -22,7 +25,7 @@
       
       
       <link rel="icon" href="../assets/images/favicon.png">
-      <meta name="generator" content="zensical-0.0.72">
+      <meta name="generator" content="zensical-0.1.3">
     
     
       
@@ -33,12 +36,13 @@
       
         
       
-      <link rel="stylesheet" href="../assets/stylesheets/modern/main.4ab2de0c.min.css">
+      <link rel="stylesheet" href="../assets/stylesheets/modern/main.e2cf241e.min.css">
       
         
           
         
         <link rel="stylesheet" href="../assets/stylesheets/modern/palette.b60ce83d.min.css">
+      
       
       
 
@@ -518,6 +522,17 @@
   <a href="#_2" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
+        全局调度（串行跑全量）
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
         调度参数（内置默认）
       </span>
     </span>
@@ -537,7 +552,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#_3" class="md-nav__link">
+  <a href="#_4" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         到期续期扫描
@@ -548,7 +563,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#_4" class="md-nav__link">
+  <a href="#_5" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         去重与审计
@@ -570,7 +585,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#_5" class="md-nav__link">
+  <a href="#_6" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         手动触发
@@ -840,6 +855,17 @@
   <a href="#_2" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
+        全局调度（串行跑全量）
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
         调度参数（内置默认）
       </span>
     </span>
@@ -859,7 +885,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#_3" class="md-nav__link">
+  <a href="#_4" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         到期续期扫描
@@ -870,7 +896,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#_4" class="md-nav__link">
+  <a href="#_5" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         去重与审计
@@ -892,7 +918,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#_5" class="md-nav__link">
+  <a href="#_6" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         手动触发
@@ -932,8 +958,32 @@
 
 <h1 id="_1">定时调度与自动续期<a class="headerlink" href="#_1" title="Permanent link">&para;</a></h1>
 <p>每条流水线最多挂一份调度，调度由两种触发器组成，可单独或同时使用：
-<strong>cron 定时触发</strong>与<strong>到期续期扫描</strong>。启用的调度必须至少配置其一。</p>
-<h2 id="_2">调度参数（内置默认）<a class="headerlink" href="#_2" title="Permanent link">&para;</a></h2>
+<strong>cron 定时触发</strong>与<strong>到期续期扫描</strong>。启用的调度必须至少配置其一。
+此外还有一份与流水线级调度并存的全局调度（见下）。</p>
+<h2 id="_2">全局调度（串行跑全量）<a class="headerlink" href="#_2" title="Permanent link">&para;</a></h2>
+<p>调度页顶部的「全局调度」卡片是一份单例 cron 配置：到点后按流水线 ID
+升序遍历全部<strong>启用</strong>的流水线，<strong>逐条等待终态再触发下一条</strong>——序列内
+任意时刻至多一条流水线在运行，从根本上消除调度侧的跨流水线并发
+（两条流水线同时跑 DNS-01 时可能同时更新同一挑战记录的值）。</p>
+<p>行为要点：</p>
+<ul>
+<li><strong>串行顺序</strong>：按流水线 ID 升序；序列启动时的流水线清单即本轮快照，
+  运行中新增/停用不影响当前序列。</li>
+<li><strong>跳过规则</strong>：停用的流水线跳过；<strong>运行中的流水线跳过</strong>（不等待其结束、
+  不阻塞后续成员）——手动触发的运行照常完成。</li>
+<li><strong>失败继续</strong>：成员启动失败或运行失败只落触发审计（detail 标注失败原因）
+  与日志，序列继续跑后续成员；<strong>全局触发点到点即推进</strong>——不因成员失败而
+  整序列重跑（已成功的成员不会被重复运行）。</li>
+<li><strong>防重叠</strong>：序列在独立后台任务中执行（不阻塞其他 cron 到点与续期扫描）；
+  上一轮序列未结束时，新到点只推进触发点、不启动第二个序列，也不堆积补跑。</li>
+<li><strong>停机补跑</strong>：<code>catch_up=true</code> 时重启装载补跑最近一次错过的触发点
+  （启动一次序列）；<code>false</code> 跳过。</li>
+<li><strong>触发来源</strong>：序列成员的运行历史与触发记录的来源为 <code>global</code>（展示为
+  「全局」），每次真实启动一条审计记录。</li>
+</ul>
+<p>全局调度与流水线级调度并存：某条流水线自己的 cron 到点不受影响，恰逢
+序列运行时被「运行中」检查拦下（下轮重试）。</p>
+<h2 id="_3">调度参数（内置默认）<a class="headerlink" href="#_3" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
 <tr>
@@ -976,7 +1026,7 @@
 <li>停机错过的触发点：默认跳过（<code>catch_up=false</code>）；<code>catch_up=true</code> 时重启
   装载会<strong>补跑最近一次</strong>错过点（仅此一次）并落审计记录。</li>
 </ul>
-<h2 id="_3">到期续期扫描<a class="headerlink" href="#_3" title="Permanent link">&para;</a></h2>
+<h2 id="_4">到期续期扫描<a class="headerlink" href="#_4" title="Permanent link">&para;</a></h2>
 <ul>
 <li>每小时扫一次证书库：<code>not_after &lt;= now + 30 天</code> 且未吊销的证书进入续期
   窗口。</li>
@@ -986,7 +1036,7 @@
 <li>到期状态判定比较的是<strong>时间点</strong>而非天数（刚过期 1 小时不会被「剩余 0 天」
   误判为还有一天）。<code>now == not_after</code> 瞬间按临期处理。</li>
 </ul>
-<h2 id="_4">去重与审计<a class="headerlink" href="#_4" title="Permanent link">&para;</a></h2>
+<h2 id="_5">去重与审计<a class="headerlink" href="#_5" title="Permanent link">&para;</a></h2>
 <p>两道去重：</p>
 <ol>
 <li><strong>运行中检查</strong>：流水线有 <code>running</code> 历史（含崩溃遗留）→ 跳过本次触发。</li>
@@ -1011,7 +1061,7 @@
 <li><code>GET /api/schedules/trigger-logs?pipeline_id=&amp;page=&amp;page_size=</code>：触发审计</li>
 </ul>
 <p>续期域名集合保存时规范化为小写、去重、排序（与证书域名同一套规则）。</p>
-<h2 id="_5">手动触发<a class="headerlink" href="#_5" title="Permanent link">&para;</a></h2>
+<h2 id="_6">手动触发<a class="headerlink" href="#_6" title="Permanent link">&para;</a></h2>
 <p><code>POST /api/pipelines/{id}/run</code> 与调度触发共用同一条执行链路（先落 running
 历史、跑完原地写终态），只是触发来源记为 <code>manual</code>。</p>
 
@@ -1121,10 +1171,11 @@
       
         
         
-      <script id="__config" type="application/json">{"annotate":null,"base":"..","features":["announce.dismiss","content.code.annotate","content.code.copy","content.code.select","content.footnote.tooltips","content.tabs.link","content.tooltips","navigation.footer","navigation.indexes","navigation.instant","navigation.instant.prefetch","navigation.path","navigation.sections","navigation.top","navigation.tracking","search.highlight"],"redirect":null,"search":"../assets/javascripts/workers/search.c47bb847.min.js","tags":null,"translations":{"clipboard.copied":"已复制","clipboard.copy":"复制","clipboard.error":"Could not copy to clipboard","search.result.more.one":"在该页上还有 1 个符合条件的结果","search.result.more.other":"在该页上还有 # 个符合条件的结果","search.result.none":"没有找到符合条件的结果","search.result.one":"找到 1 个符合条件的结果","search.result.other":"# 个符合条件的结果","search.result.placeholder":"键入以开始搜索","search.result.term.missing":"缺少","select.version":"选择当前版本"},"version":null}</script>
+      <script id="__config" type="application/json">{"annotate":null,"base":"..","features":["announce.dismiss","content.code.annotate","content.code.copy","content.code.select","content.footnote.tooltips","content.tabs.link","content.tooltips","navigation.footer","navigation.indexes","navigation.instant","navigation.instant.prefetch","navigation.path","navigation.sections","navigation.top","navigation.tracking","search.highlight"],"redirect":null,"search":"../assets/javascripts/workers/search.719e0d91.min.js","tags":null,"translations":{"clipboard.copied":"已复制","clipboard.copy":"复制","clipboard.error":"Could not copy to clipboard","search.result.more.one":"在该页上还有 1 个符合条件的结果","search.result.more.other":"在该页上还有 # 个符合条件的结果","search.result.none":"没有找到符合条件的结果","search.result.one":"找到 1 个符合条件的结果","search.result.other":"# 个符合条件的结果","search.result.placeholder":"键入以开始搜索","search.result.term.missing":"缺少","select.version":"选择当前版本"},"version":null}</script>
     
     
-      <script src="../assets/javascripts/bundle.10ee5ab6.min.js"></script>
+      <script src="../assets/javascripts/bundle.9e76c64c.min.js"></script>
+      
       
     
   </body>

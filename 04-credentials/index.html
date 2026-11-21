@@ -1,4 +1,6 @@
 
+
+
 <!doctype html>
 <html lang="zh" class="no-js">
   <head>
@@ -7,6 +9,7 @@
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
         <meta name="description" content="证书自动签发与部署系统：ACME 申请、流水线编排、自动续期与部署">
+      
       
       
       
@@ -22,7 +25,7 @@
       
       
       <link rel="icon" href="../assets/images/favicon.png">
-      <meta name="generator" content="zensical-0.0.72">
+      <meta name="generator" content="zensical-0.1.3">
     
     
       
@@ -33,12 +36,13 @@
       
         
       
-      <link rel="stylesheet" href="../assets/stylesheets/modern/main.4ab2de0c.min.css">
+      <link rel="stylesheet" href="../assets/stylesheets/modern/main.e2cf241e.min.css">
       
         
           
         
         <link rel="stylesheet" href="../assets/stylesheets/modern/palette.b60ce83d.min.css">
+      
       
       
 
@@ -482,6 +486,17 @@
     <span class="md-ellipsis">
       <span class="md-typeset">
         <code>cloud.aliyun</code> — 阿里云 DNS
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#dnsacme-dns-acme-dns" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>dns.acme-dns</code> — acme-dns（自建）
       </span>
     </span>
   </a>
@@ -976,6 +991,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#dnsacme-dns-acme-dns" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        <code>dns.acme-dns</code> — acme-dns（自建）
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#proxy_mode" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -1138,11 +1164,11 @@
 </tr>
 <tr>
 <td><code>zerossl</code></td>
-<td><code>https://acme.zerossl.com/v2/DV90</code>（要求 EAB，管理入口：<a href="https://app.zerossl.com/developer">https://app.zerossl.com/developer</a> ）</td>
+<td><code>https://acme.zerossl.com/v2/DV90</code>（要求 EAB，管理入口：https://app.zerossl.com/developer ）</td>
 </tr>
 <tr>
 <td><code>google</code> / <code>gts</code></td>
-<td><code>https://dv.acme-v02.api.pki.goog/directory</code>（要求 EAB，HMAC 文档：<a href="https://docs.cloud.google.com/certificate-manager/docs/public-ca-tutorial#request-key-hmac">https://docs.cloud.google.com/certificate-manager/docs/public-ca-tutorial#request-key-hmac</a> ）</td>
+<td><code>https://dv.acme-v02.api.pki.goog/directory</code>（要求 EAB，HMAC 文档：https://docs.cloud.google.com/certificate-manager/docs/public-ca-tutorial#request-key-hmac ）</td>
 </tr>
 <tr>
 <td><code>google-test</code> / <code>gts-test</code></td>
@@ -1150,7 +1176,7 @@
 </tr>
 <tr>
 <td><code>freessl</code> / <code>free-ssl</code></td>
-<td><code>https://acme.litessl.com/acme/v2/directory</code>（要求 EAB，管理入口：<a href="https://freessl.cn/automation/eab-manager">https://freessl.cn/automation/eab-manager</a> ）</td>
+<td><code>https://acme.litessl.com/acme/v2/directory</code>（要求 EAB，管理入口：https://freessl.cn/automation/eab-manager ）</td>
 </tr>
 </tbody>
 </table>
@@ -1293,10 +1319,55 @@ CA 账号，不会重复注册（也避免撞上 CA 的账号配额）。</p>
 </tr>
 </tbody>
 </table>
+<h3 id="dnsacme-dns-acme-dns"><code>dns.acme-dns</code> — acme-dns（自建）<a class="headerlink" href="#dnsacme-dns-acme-dns" title="Permanent link">&para;</a></h3>
+<p>面向自建 <a href="https://github.com/acme-dns/acme-dns">acme-dns</a> 服务（专为 ACME
+DNS-01 挑战设计的轻量 DNS 服务，凭据只管一个 subdomain 的 TXT 更新）。
+四个业务字段都取自 <code>POST {api_url}/register</code> 注册响应，原样粘贴：</p>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>api_url</code></td>
+<td>acme-dns 服务器基地址，如 <code>https://acmedns.asfd.cn</code></td>
+</tr>
+<tr>
+<td><code>username</code></td>
+<td>注册返回的 username（UUID）</td>
+</tr>
+<tr>
+<td><code>password</code></td>
+<td>注册返回的 password</td>
+</tr>
+<tr>
+<td><code>subdomain</code></td>
+<td>注册返回的 subdomain（UUID），TXT 恒写在该账号的 <code>fulldomain</code> 上</td>
+</tr>
+<tr>
+<td><code>proxy_mode</code></td>
+<td>出网代理模式：<code>direct</code> / <code>inherit</code> / <code>custom</code>（见下文「出网代理」）</td>
+</tr>
+<tr>
+<td><code>proxy_url</code></td>
+<td><code>proxy_mode=custom</code> 时的自定义代理（见下文「出网代理」）</td>
+</tr>
+</tbody>
+</table>
+<p>流水线接入与注意事项（domain-alias 模式、CNAME 建法、单账号并发限制）见
+<a href="../06-dns-providers/">DNS 提供商</a>的「acme-dns 凭据的接入」。</p>
+<p><strong>连通性测试的副作用</strong>：acme-dns 只有 <code>/update</code> 能验证凭据，测试会向该账号
+写入探针值并<strong>覆盖当前 TXT</strong>（无查询接口，无法先读后写回）。TXT 值只在挑战
+进行中有意义——挑战进行中请勿点「测试」，正常情况下下次挑战写入会覆盖探针值。
+测试分两段：<code>GET /health</code> 失败报「服务不可达」（网络层），探针失败报脱敏后的
+凭据原因（含 HTTP 状态与服务端错误码，不回显密码）。</p>
 <h3 id="proxy_mode">出网代理（<code>proxy_mode</code>）<a class="headerlink" href="#proxy_mode" title="Permanent link">&para;</a></h3>
-<p>八类凭据（DNS 提供商四类 <code>cloud.tencent</code> / <code>dns.tencent-eo</code> / <code>cloud.cloudflare</code> /
-<code>cloud.aliyun</code>、ACME 账号 <code>acme.account</code>、部署档案 <code>deploy.ssh</code> / <code>deploy.s3</code> /
-<code>deploy.webdav</code>）都用 <code>proxy_mode</code> 三态控制出网代理，用于提供商 API 不可直连的
+<p>九类凭据（DNS 提供商五类 <code>cloud.tencent</code> / <code>dns.tencent-eo</code> / <code>cloud.cloudflare</code> /
+<code>cloud.aliyun</code> / <code>dns.acme-dns</code>、ACME 账号 <code>acme.account</code>、部署档案 <code>deploy.ssh</code> /
+<code>deploy.s3</code> / <code>deploy.webdav</code>）都用 <code>proxy_mode</code> 三态控制出网代理，用于提供商 API 不可直连的
 网络环境（如国内访问 <code>api.cloudflare.com</code> 超时）。模式语义：</p>
 <table>
 <thead>
@@ -1730,10 +1801,11 @@ URL（webhook 经 <code>reqwest::Proxy</code>，邮件经 SOCKS5/HTTP-CONNECT �
       
         
         
-      <script id="__config" type="application/json">{"annotate":null,"base":"..","features":["announce.dismiss","content.code.annotate","content.code.copy","content.code.select","content.footnote.tooltips","content.tabs.link","content.tooltips","navigation.footer","navigation.indexes","navigation.instant","navigation.instant.prefetch","navigation.path","navigation.sections","navigation.top","navigation.tracking","search.highlight"],"redirect":null,"search":"../assets/javascripts/workers/search.c47bb847.min.js","tags":null,"translations":{"clipboard.copied":"已复制","clipboard.copy":"复制","clipboard.error":"Could not copy to clipboard","search.result.more.one":"在该页上还有 1 个符合条件的结果","search.result.more.other":"在该页上还有 # 个符合条件的结果","search.result.none":"没有找到符合条件的结果","search.result.one":"找到 1 个符合条件的结果","search.result.other":"# 个符合条件的结果","search.result.placeholder":"键入以开始搜索","search.result.term.missing":"缺少","select.version":"选择当前版本"},"version":null}</script>
+      <script id="__config" type="application/json">{"annotate":null,"base":"..","features":["announce.dismiss","content.code.annotate","content.code.copy","content.code.select","content.footnote.tooltips","content.tabs.link","content.tooltips","navigation.footer","navigation.indexes","navigation.instant","navigation.instant.prefetch","navigation.path","navigation.sections","navigation.top","navigation.tracking","search.highlight"],"redirect":null,"search":"../assets/javascripts/workers/search.719e0d91.min.js","tags":null,"translations":{"clipboard.copied":"已复制","clipboard.copy":"复制","clipboard.error":"Could not copy to clipboard","search.result.more.one":"在该页上还有 1 个符合条件的结果","search.result.more.other":"在该页上还有 # 个符合条件的结果","search.result.none":"没有找到符合条件的结果","search.result.one":"找到 1 个符合条件的结果","search.result.other":"# 个符合条件的结果","search.result.placeholder":"键入以开始搜索","search.result.term.missing":"缺少","select.version":"选择当前版本"},"version":null}</script>
     
     
-      <script src="../assets/javascripts/bundle.10ee5ab6.min.js"></script>
+      <script src="../assets/javascripts/bundle.9e76c64c.min.js"></script>
+      
       
     
   </body>
