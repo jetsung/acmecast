@@ -38,6 +38,13 @@ default:
 
 # ---- 组合 ----
 
+# 全量检查：依次复现 commit 与 push 两道钩子闸门——
+# pre-commit 阶段（文件卫生 + cargo fmt）与 pre-push 阶段（clippy + test，需 Docker）
+# 提交后、push 前跑一次，避免推送时才发现 pre-push 钩子失败
+@check:
+    prek run --all-files
+    prek run --all-files --stage pre-push
+
 # 同时启动后端与前端本地调试（Ctrl-C 一并退出；任一退出则整体结束）
 # 用 setsid 让每个子任务成为独立进程组长，退出时 kill -PID 整组击杀，
 # 避免 pnpm/vite 被孤儿化后继续占用 517x 端口。

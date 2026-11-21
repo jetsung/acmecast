@@ -181,4 +181,3 @@ CDN / WAF 等云资源引用。**国内站与国际站同构**：凭据的 `acco
 
 `credential_id: 5` 是 `deploy.ssh` 类型主机档案；路径与重载命令随部署输入给出。
 未配置 `ca_path` 时按 `fullchain_path` 同目录派生 `example.com.ca.cer`。
-

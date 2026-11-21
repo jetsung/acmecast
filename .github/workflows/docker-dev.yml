@@ -19,7 +19,7 @@ env:
 permissions:
   contents: read
   packages: write
-  
+
 jobs:
   build:
     strategy:
@@ -115,4 +115,3 @@ jobs:
           package-name: ${{ needs.build.outputs.package_name }}
           delete-untagged: true
           keep-n-tagged: 5
-
