@@ -83,6 +83,9 @@ pub struct AcmeApplyInput {
     #[schemars(default = "default_key_algorithm")]
     pub key_algorithm: CertKeyAlgorithm,
     /// 挑战类型。当前只支持 DNS-01——HTTP-01 的投放通道尚未提供。
+    /// 缺省即 DNS-01：新建流水线的表单预填，存量配置缺字段时同样回填。
+    #[serde(default = "default_challenge")]
+    #[schemars(default = "default_challenge")]
     pub challenge: DnsChallengeKind,
     /// ACME 账号凭据标识（`acme.account` 类型）。
     pub account_credential_id: i64,
@@ -139,6 +142,12 @@ fn default_true() -> bool {
 /// 变体生成 schema default）。
 fn default_key_algorithm() -> CertKeyAlgorithm {
     CertKeyAlgorithm::EcdsaP256
+}
+
+/// `challenge` 的 schema 缺省值：唯一支持的模式，新建流水线预填 DNS-01，
+/// 存量配置缺 `challenge` 字段时反序列化同样回填到这里。
+fn default_challenge() -> DnsChallengeKind {
+    DnsChallengeKind::Dns01
 }
 
 /// ACME 申请步骤。
@@ -400,6 +409,35 @@ impl PipelineStep for CertApplyStep {
                     "rsa2048": "RSA 2048",
                 }),
             );
+        }
+        // `challenge` 收窄为唯一值：HTTP-01 尚无投放通道（仅有材料计算能力），
+        // 输入层不再暴露 http-01——下拉恒为 DNS-01，schema enum 直接拒绝
+        // http-01 提交。协议层的 `ChallengeKind` 与 `ensure_kind_covers` 的
+        // HTTP-01 分支保留，未来恢复投放通道时只需放开这里。
+        if let Some(schemars::schema::Schema::Object(challenge)) = schema
+            .schema
+            .object
+            .as_mut()
+            .and_then(|object| object.properties.get_mut("challenge"))
+        {
+            let description = challenge
+                .metadata
+                .as_ref()
+                .and_then(|meta| meta.description.clone());
+            let mut node = schemars::schema::SchemaObject::default();
+            // 整体替换会丢掉 schemars 生成的 metadata（说明与缺省值）——重建：
+            // 保留原说明，唯一候选即缺省，`default` 供新建流水线的表单预填。
+            let metadata = node.metadata();
+            metadata.description = description;
+            metadata.default = Some(serde_json::json!("dns-01"));
+            node.enum_values = Some(vec![serde_json::json!("dns-01")]);
+            node.extensions.insert(
+                "x-enum-labels".to_owned(),
+                serde_json::json!({ "dns-01": "DNS-01" }),
+            );
+            // `challenge` 是 `Schema::Object` 内层的 `&mut Box<SchemaObject>`，
+            // 直接整体替换其内容。
+            *challenge = node;
         }
         Some(schema)
     }
@@ -1566,6 +1604,54 @@ mod tests {
             rendered["default"], "ecdsa_p256",
             "schema 应携带缺省值供表单预填：{rendered}"
         );
+    }
+
+    /// challenge 输入收窄为唯一值：HTTP-01 尚无投放通道，下拉恒为 DNS-01，
+    /// http-01 提交被 schema enum 拒绝。
+    #[test]
+    fn schema_narrows_challenge_to_dns01_only() {
+        use std::sync::Arc;
+
+        use super::CertApplyStep;
+        use acmecast_dns::DnsProviderRegistry;
+        use acmecast_pipeline::PipelineStep as _;
+
+        let step = CertApplyStep::new(Arc::new(DnsProviderRegistry::new()));
+        let schema = step.input_schema().expect("cert.apply 应声明输入结构");
+        let rendered = serde_json::to_value(&schema).expect("schema 应能序列化");
+        let challenge = &rendered["properties"]["challenge"];
+        assert_eq!(
+            challenge["enum"],
+            serde_json::json!(["dns-01"]),
+            "challenge 应只剩 dns-01 一个候选: {challenge}"
+        );
+        assert!(
+            challenge.get("oneOf").is_none() && challenge.get("anyOf").is_none(),
+            "schemars 的 oneOf 包裹应被替换掉: {challenge}"
+        );
+        assert_eq!(
+            challenge["x-enum-labels"]["dns-01"], "DNS-01",
+            "唯一候选应带展示名: {challenge}"
+        );
+        assert_eq!(
+            challenge["default"], "dns-01",
+            "缺省值应为 dns-01 供新建流水线的表单预填: {challenge}"
+        );
+        assert!(
+            challenge.get("description").is_some(),
+            "字段说明应保留: {challenge}"
+        );
+    }
+
+    /// 存量配置缺 `challenge` 字段时反序列化回填 DNS-01（serde default）。
+    #[test]
+    fn missing_challenge_field_deserializes_to_dns01() {
+        let input: AcmeApplyInput = serde_json::from_value(serde_json::json!({
+            "domains": ["example.com"],
+            "account_credential_id": 1,
+        }))
+        .expect("缺 challenge 应能反序列化");
+        assert_eq!(input.challenge, DnsChallengeKind::Dns01);
     }
 
     #[test]

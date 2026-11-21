@@ -49,7 +49,7 @@
 | 字段 | 类型 | 必需 | 说明 |
 |---|---|---|---|
 | `domains` | string[] | 是 | 域名集合；通配符（`*.example.com`）强制走 DNS-01 |
-| `challenge` | string | 是 | 挑战类型，当前只支持 `dns-01`（HTTP-01 尚无投放通道） |
+| `challenge` | string | 是 | 挑战类型，**固定为 `dns-01`**（输入已收窄为唯一值——HTTP-01 尚无投放通道，提交 `http-01` 会被校验拒绝） |
 | `key_algorithm` | string | 否（默认 `ecdsa_p256`） | 申请密钥与证书的算法：`ecdsa_p256` / `ecdsa_p384` / `ed25519` / `rsa2048`；密钥类型在签发时即固定，CA 是否接受所选算法以 CA 支持为准 |
 | `account_credential_id` | int | 是 | ACME 账号凭据标识（`acme.account` 类型） |
 | `dns_credential_id` | int | DNS-01 必填 | DNS 提供商凭据标识；提供商由凭据类型（`type_id`）决定（如 `cloud.cloudflare` 类型凭据 → Cloudflare 提供商）。留空时自动选择——遍历凭据库逐个探测 zone 托管 |

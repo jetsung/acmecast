@@ -565,7 +565,7 @@ mod tests {
             targets["ssh"]["schema"]["properties"]["bastion_credential_id"]["type"],
             serde_json::json!(["integer", "null"])
         );
-        // 腾讯云 SSL 变体：凭据引用、备注、重复开关、替换开关、资源类型与地域，schema 走同一注入通道。
+        // 腾讯云 SSL 变体：凭据引用、备注、选中证书 ID 与重复开关，schema 走同一注入通道。
         // display_name 显式声明 2 材料（fullchain+key）语义，与文件类目标 3 文件区分。
         assert_eq!(
             targets["tencent-ssl"]["display_name"],
@@ -573,20 +573,12 @@ mod tests {
         );
         assert!(targets["tencent-ssl"]["example"]["credential_id"].is_i64());
         assert_eq!(
-            targets["tencent-ssl"]["schema"]["properties"]["replace_existing"]["type"],
+            targets["tencent-ssl"]["schema"]["properties"]["repeatable"]["type"],
             "boolean"
         );
         assert_eq!(
             targets["tencent-ssl"]["schema"]["x-field-order"],
-            serde_json::json!([
-                "credential_id",
-                "alias",
-                "certificate_id",
-                "repeatable",
-                "replace_existing",
-                "resource_types",
-                "resource_regions"
-            ])
+            serde_json::json!(["credential_id", "alias", "certificate_id", "repeatable"])
         );
     }
 
