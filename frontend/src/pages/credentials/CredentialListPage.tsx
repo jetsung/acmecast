@@ -174,12 +174,21 @@ export function CredentialListPage() {
 
   const columns: TableColumnsType<CredentialRow> = [
     { title: "ID", dataIndex: "id", width: 90, sorter: false },
-    { title: "名称", dataIndex: "name" },
-    { title: "类型", dataIndex: "type_id", render: (value: string) => <Tag>{value}</Tag> },
+    {
+      title: "名称",
+      dataIndex: "name",
+      width: 160,
+      render: (value: string) => (
+        <Typography.Text ellipsis={{ tooltip: value }} style={{ maxWidth: "100%" }}>
+          {value}
+        </Typography.Text>
+      ),
+    },
+    { title: "类型", dataIndex: "type_id", width: 130, render: (value: string) => <Tag>{value}</Tag> },
     {
       title: "可用权限",
       dataIndex: "capabilities",
-      width: 140,
+      width: 110,
       render: (_: unknown, row) => {
         // 仅受控类型展示能力；非受控或能力为空显示占位。
         if (!isCapabilityControlled(row.type_id) || !row.capabilities?.length) {
@@ -196,7 +205,7 @@ export function CredentialListPage() {
     {
       title: "代理",
       dataIndex: "proxy_mode",
-      width: 120,
+      width: 90,
       render: (value: string) => {
         // 代理模式中文标签（列表即可辨认出网代理方式，不必逐条打开编辑弹窗）；
         // 与「可用权限」列一致用纯文本左对齐，不用 Tag。
@@ -210,8 +219,15 @@ export function CredentialListPage() {
     {
       title: "备注",
       dataIndex: "remark",
+      width: 220,
       render: (value: string | null | undefined) =>
-        value && value.trim() !== "" ? value : <Typography.Text type="secondary">—</Typography.Text>,
+        value && value.trim() !== "" ? (
+          <Typography.Text ellipsis={{ tooltip: value }} style={{ maxWidth: "100%" }}>
+            {value}
+          </Typography.Text>
+        ) : (
+          <Typography.Text type="secondary">—</Typography.Text>
+        ),
     },
     {
       title: "更新时间",
@@ -223,7 +239,7 @@ export function CredentialListPage() {
       title: "操作",
       width: 260,
       render: (_, row) => (
-        <Space>
+        <Space wrap>
           <Button size="small" onClick={() => openEditor(row)}>
             编辑
           </Button>
@@ -261,6 +277,10 @@ export function CredentialListPage() {
         loading={isFetching}
         columns={columns}
         dataSource={credentials?.items ?? []}
+        // 显式 fixed 布局：antd v6 的 scroll.x 不再隐式启用，auto 布局下列宽
+        // 会被长内容重新分配，窄表头（可用权限/代理）被压成竖排折行。
+        tableLayout="fixed"
+        scroll={{ x: 1260 }}
         pagination={{
           current: page,
           pageSize,
@@ -461,7 +481,7 @@ function CredentialEditorModal({
     <Modal
       open={open}
       title={editingId === null ? "新建凭据" : "编辑凭据"}
-      width={720}
+      width="min(720px, 96vw)"
       onCancel={onClose}
       onOk={() => form.submit()}
       okButtonProps={{ disabled: okDisabled }}
@@ -484,10 +504,7 @@ function CredentialEditorModal({
           <Select
             disabled={editingId !== null}
             placeholder="选择类型"
-            options={types.map((item) => ({
-              value: item.type_id,
-              label: item.display_name,
-            }))}
+            options={groupedTypeOptions(types)}
             onChange={(value) => onTypeSelect(value)}
           />
         </Form.Item>

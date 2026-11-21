@@ -274,7 +274,7 @@ export function CertificateDetailPage() {
           <Descriptions.Item label="生效时间">{formatTime(cert.not_before)}</Descriptions.Item>
           <Descriptions.Item label="到期时间">{formatTime(cert.not_after)}</Descriptions.Item>
           <Descriptions.Item label="指纹">
-            <Typography.Text code copyable>{cert.fingerprint}</Typography.Text>
+            <Typography.Text code copyable style={{ wordBreak: "break-all", whiteSpace: "normal" }}>{cert.fingerprint}</Typography.Text>
           </Descriptions.Item>
           <Descriptions.Item label="签发账号凭据">
             {cert.acme_account_access_id ? `#${cert.acme_account_access_id}` : "未绑定（手动上传）"}
@@ -314,7 +314,7 @@ export function CertificateDetailPage() {
           </Descriptions.Item>
           <Descriptions.Item label="CA 证书">
             <Space>
-              <Typography.Text code copyable>{(cert as unknown as { ca_path?: string | null }).ca_path ?? "-"}</Typography.Text>
+              <Typography.Text code copyable style={{ wordBreak: "break-all", whiteSpace: "normal" }}>{(cert as unknown as { ca_path?: string | null }).ca_path ?? "-"}</Typography.Text>
               {(cert as unknown as { ca_path?: string | null }).ca_path && (
                 <>
                   <Button size="small" loading={downloading === "ca"} onClick={() => doDownload("ca")}>下载</Button>
@@ -325,14 +325,14 @@ export function CertificateDetailPage() {
           </Descriptions.Item>
           <Descriptions.Item label="完整证书链">
             <Space>
-              <Typography.Text code copyable>{(cert as unknown as { fullchain_path?: string | null }).fullchain_path ?? cert.cert_pem_path}</Typography.Text>
+              <Typography.Text code copyable style={{ wordBreak: "break-all", whiteSpace: "normal" }}>{(cert as unknown as { fullchain_path?: string | null }).fullchain_path ?? cert.cert_pem_path}</Typography.Text>
               <Button size="small" loading={downloading === "fullchain"} onClick={() => doDownload("fullchain")}>下载</Button>
               <Button size="small" loading={downloading === "fullchain"} onClick={() => doCopy("fullchain")}>复制</Button>
             </Space>
           </Descriptions.Item>
           <Descriptions.Item label="私钥">
             <Space>
-              <Typography.Text code copyable>{(cert as unknown as { key_path?: string | null }).key_path ?? cert.key_pem_path}</Typography.Text>
+              <Typography.Text code copyable style={{ wordBreak: "break-all", whiteSpace: "normal" }}>{(cert as unknown as { key_path?: string | null }).key_path ?? cert.key_pem_path}</Typography.Text>
               <Button size="small" loading={downloading === "key"} onClick={() => doDownload("key")}>下载</Button>
               <Button size="small" loading={downloading === "key"} onClick={() => doCopy("key")}>复制</Button>
             </Space>

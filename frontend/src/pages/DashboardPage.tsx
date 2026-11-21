@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { Col, Row, Table, Tag } from "antd";
+import { Col, Row, Table, Tag, Typography } from "antd";
 import type { TableColumnsType } from "antd";
 import {
   SafetyCertificateOutlined,
@@ -56,7 +56,12 @@ export function DashboardPage() {
     {
       title: "域名",
       dataIndex: "domains",
-      render: (domains: string[]) => domains.join(", "),
+      width: 220,
+      render: (domains: string[]) => (
+        <Typography.Text ellipsis={{ tooltip: domains.join(", ") }} style={{ maxWidth: "100%" }}>
+          {domains.join(", ")}
+        </Typography.Text>
+      ),
     },
     {
       title: "到期",
@@ -79,8 +84,8 @@ export function DashboardPage() {
         title="仪表盘"
         description="证书有效期与流水线运行的总体概况"
       />
-      <Row gutter={16} style={{ marginBottom: 24 }}>
-        <Col span={8}>
+      <Row gutter={[16, 16]} style={{ marginBottom: 24 }}>
+        <Col xs={24} sm={12} lg={8}>
           <StatCard
             title="有效证书"
             value={
@@ -96,7 +101,7 @@ export function DashboardPage() {
             tone={{ bg: "#e8f7ef", color: "#16a05d" }}
           />
         </Col>
-        <Col span={8}>
+        <Col xs={24} sm={12} lg={8}>
           <StatCard
             title="30 天内到期"
             value={active.filter((cert) => new Date(cert.not_after).getTime() <= soonThreshold).length}
@@ -105,7 +110,7 @@ export function DashboardPage() {
             valueColor="#e8830c"
           />
         </Col>
-        <Col span={8}>
+        <Col xs={24} sm={12} lg={8}>
           <StatCard
             title="最近失败运行"
             value={(histories?.items ?? []).filter((item) => item.status === "failed").length}
@@ -123,6 +128,8 @@ export function DashboardPage() {
           dataSource={expiringSoon}
           pagination={false}
           size="small"
+          tableLayout="fixed"
+          scroll={{ x: 440 }}
         />
       </Panel>
 
@@ -152,11 +159,13 @@ export function DashboardPage() {
             render: (source: string) =>
               ({ manual: "手动", cron: "定时", renewal: "续期" })[source] ?? source,
           },
-          { title: "开始时间", dataIndex: "started_at", render: (value: string) => formatTime(value) },
+          { title: "开始时间", dataIndex: "started_at", width: 180, render: (value: string) => formatTime(value) },
         ]}
         dataSource={histories?.items ?? []}
         pagination={false}
         size="small"
+        tableLayout="fixed"
+        scroll={{ x: 480 }}
       />
       </Panel>
     </div>

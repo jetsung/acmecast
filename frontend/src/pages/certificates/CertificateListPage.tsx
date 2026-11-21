@@ -229,6 +229,7 @@ export function CertificateListPage() {
     {
       title: "域名",
       dataIndex: "domains",
+      width: 240,
       render: (domains: string[], row) => {
         // 悬浮展示关键详情,数据全部来自列表行已有字段,无需额外请求。
         const info: Array<[string, ReactNode]> = [
@@ -252,7 +253,18 @@ export function CertificateListPage() {
             }
             overlayInnerStyle={TOOLTIP_OVERLAY_INNER_STYLE}
           >
-            <span>{domains.join(", ")}</span>
+            {/* 单行省略兜底：超宽域名字符串在窄屏不再把行折成多段。 */}
+            <span
+              style={{
+                display: "block",
+                maxWidth: "100%",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {domains.join(", ")}
+            </span>
           </Tooltip>
         );
       },
@@ -345,7 +357,8 @@ export function CertificateListPage() {
         const canDelete = isRevoked || isArchived;
         return (
           // stopPropagation：避免点击操作触发行的跳转导航。
-          <Space onClick={(event) => event.stopPropagation()}>
+          // wrap：窄屏容器内按钮换行而不撑宽列。
+          <Space wrap onClick={(event) => event.stopPropagation()}>
             <DescriptionCell
               row={row}
               onSaved={() => void queryClient.invalidateQueries({ queryKey: ["certificates"] })}
@@ -422,6 +435,10 @@ export function CertificateListPage() {
           loading={isFetching}
           columns={columns}
           dataSource={data?.items ?? []}
+          // 显式 fixed 布局：antd v6 的 scroll.x 不再隐式启用，auto 布局下列宽
+          // 会被长内容重新分配，窄列（域名/状态等）被压成竖排折行。
+          tableLayout="fixed"
+          scroll={{ x: 1560 }}
           rowClassName={(row) => (row.revoked_at ? "table-row-revoked" : "")}
           onRow={(row) => ({ onClick: () => navigate(`/certificates/${row.id}`), style: { cursor: "pointer" } })}
           pagination={{

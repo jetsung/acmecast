@@ -85,9 +85,21 @@ export function HistoryListPage() {
     {
       title: "失败原因",
       dataIndex: "error_message",
-      ellipsis: true,
+      // 固定宽 + 单行省略：长错误文本（域名、路径、指引）不再按完整长度
+      // 撑宽表格，悬浮 tooltip 看全文。
+      width: 320,
       render: (value: string | null) =>
-        value ? <Typography.Text type="danger">{value}</Typography.Text> : "-",
+        value ? (
+          <Typography.Text
+            type="danger"
+            ellipsis={{ tooltip: value }}
+            style={{ maxWidth: "100%" }}
+          >
+            {value}
+          </Typography.Text>
+        ) : (
+          "-"
+        ),
     },
   ];
 
@@ -129,6 +141,10 @@ export function HistoryListPage() {
           loading={isFetching}
           columns={columns}
           dataSource={data?.items ?? []}
+          // 显式 fixed 布局：antd v6 的 scroll.x 不再隐式启用，auto 布局下列宽
+          // 会被长内容重新分配（失败原因列撑爆整表的残留路径）。
+          tableLayout="fixed"
+          scroll={{ x: 1100 }}
           onRow={(row) => ({
             onClick: () => navigate(`/histories/${row.id}`),
             style: { cursor: "pointer" },

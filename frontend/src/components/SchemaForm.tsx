@@ -45,6 +45,111 @@ export const TOOLTIP_OVERLAY_INNER_STYLE = {
   wordBreak: "break-word" as const,
 };
 
+/** 说明文本里行内代码的样式：浅灰底小圆角，与正文区分但不喧宾夺主。 */
+const INLINE_CODE_STYLE: React.CSSProperties = {
+  padding: "0 4px",
+  borderRadius: 4,
+  background: "rgba(0,0,0,0.06)",
+  fontSize: 12,
+  fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+};
+
+/** 行内标记解析：`` `code` `` → code 样式、`**bold**` → 加粗，其余原样。 */
+function renderInlineMarks(text: string, keyPrefix: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  const pattern = /`([^`]+)`|\*\*([^*]+)\*\*/g;
+  let last = 0;
+  let index = 0;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > last) {
+      nodes.push(text.slice(last, match.index));
+    }
+    if (match[1] !== undefined) {
+      nodes.push(
+        <code key={`${keyPrefix}-c${index++}`} style={INLINE_CODE_STYLE}>
+          {match[1]}
+        </code>,
+      );
+    } else {
+      nodes.push(<strong key={`${keyPrefix}-b${index++}`}>{match[2]}</strong>);
+    }
+    last = match.index + match[0].length;
+  }
+  if (last < text.length) {
+    nodes.push(text.slice(last));
+  }
+  return nodes;
+}
+
+/**
+ * 字段说明的轻量渲染。后端 description 来自 Rust doc comment，带 Markdown
+ * 标记（行内代码、粗体、`- ` 列表）——Tooltip 直出会把标记符号原样露出来。
+ * 不引 markdown 依赖，只处理 doc comment 实际用到的子集，渲染成与证书页
+ * 域名列一致的紧凑浮层排版：段落分行、列表成点、行内代码着色。
+ */
+function renderDescription(text: string): ReactNode {
+  const lines = text.split("\n");
+  const blocks: ReactNode[] = [];
+  let listItems: ReactNode[][] = [];
+  let listOrdered = false;
+  let listKey = 0;
+
+  const flushList = () => {
+    if (listItems.length === 0) return;
+    const items = listItems;
+    listItems = [];
+    const key = `list-${listKey++}`;
+    if (listOrdered) {
+      blocks.push(
+        <ol key={key} style={{ margin: "2px 0", paddingLeft: 20 }}>
+          {items.map((item, i) => (
+            <li key={i}>{item}</li>
+          ))}
+        </ol>,
+      );
+    } else {
+      blocks.push(
+        <ul key={key} style={{ margin: "2px 0", paddingLeft: 20 }}>
+          {items.map((item, i) => (
+            <li key={i}>{item}</li>
+          ))}
+        </ul>,
+      );
+    }
+  };
+
+  lines.forEach((raw, i) => {
+    const line = raw.trim();
+    // 空行断段（也断列表）
+    if (line === "") {
+      flushList();
+      return;
+    }
+    const unordered = line.match(/^[-*]\s+(.*)$/);
+    const ordered = line.match(/^(\d+)[.)、]\s+(.*)$/);
+    if (unordered) {
+      if (listOrdered) flushList();
+      listItems.push(renderInlineMarks(unordered[1], `l${i}`));
+      return;
+    }
+    if (ordered) {
+      if (!listOrdered && listItems.length > 0) flushList();
+      listOrdered = true;
+      listItems.push(renderInlineMarks(ordered[2], `l${i}`));
+      return;
+    }
+    flushList();
+    blocks.push(
+      <div key={`p${i}`} style={{ marginBottom: 4 }}>
+        {renderInlineMarks(line, `p${i}`)}
+      </div>,
+    );
+  });
+  flushList();
+  return <div>{blocks}</div>;
+}
+
 interface JsonSchemaNode {
   type?: string | string[];
   format?: string;
@@ -497,7 +602,11 @@ export function SchemaForm({ schema, form, namePrefix = [], disabled }: SchemaFo
                 <Form.Item
                   name={path}
                   label={labelInfo.label}
-                  tooltip={labelInfo.tooltip ? { title: labelInfo.tooltip, overlayInnerStyle: TOOLTIP_OVERLAY_INNER_STYLE } : undefined}
+                  tooltip={
+                    labelInfo.tooltip
+                      ? { title: labelInfo.tooltip, overlayInnerStyle: TOOLTIP_OVERLAY_INNER_STYLE }
+                      : undefined
+                  }
                   rules={rules}
                   valuePropName={node.type === "boolean" ? "checked" : "value"}
                 >
@@ -533,21 +642,24 @@ function fieldLabel(
   node: SchemaObject,
   name: string,
   values: Record<string, unknown>,
-): { label: ReactNode; tooltip?: string } {
+): { label: ReactNode; tooltip?: ReactNode } {
   const labelText = node["x-label"] ?? name;
   const helpLinks = node["x-help-links"] as
     | Array<{ value: string; url: string; label: string }>
     | undefined;
   const links = helpLinks?.filter((l) => String(l.value) === String(values[name] ?? "")) ?? [];
   if (links.length === 0) {
-    return { label: labelText, tooltip: node.description };
+    return { label: labelText, tooltip: node.description ? renderDescription(node.description) : undefined };
   }
   return {
     label: (
       <>
         {labelText}
         {node.description && (
-          <Tooltip title={node.description} overlayInnerStyle={TOOLTIP_OVERLAY_INNER_STYLE}>
+          <Tooltip
+            title={renderDescription(node.description)}
+            overlayInnerStyle={TOOLTIP_OVERLAY_INNER_STYLE}
+          >
             <QuestionCircleOutlined style={{ marginLeft: 4, color: "rgba(0,0,0,0.45)" }} />
           </Tooltip>
         )}
@@ -777,7 +889,11 @@ function ObjectFieldGroup({
                 <Form.Item
                   name={childPath}
                   label={child["x-label"] ?? name}
-                  tooltip={child.description ? { title: child.description, overlayInnerStyle: TOOLTIP_OVERLAY_INNER_STYLE } : undefined}
+                  tooltip={
+                    child.description
+                      ? { title: renderDescription(child.description), overlayInnerStyle: TOOLTIP_OVERLAY_INNER_STYLE }
+                      : undefined
+                  }
                   rules={rules}
                   valuePropName={childType === "boolean" ? "checked" : "value"}
                 >

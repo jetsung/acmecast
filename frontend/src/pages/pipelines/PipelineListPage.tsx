@@ -185,7 +185,7 @@ export function PipelineListPage() {
       render: (value: string | null | undefined) =>
         value && value.trim() !== "" ? (
           <Tooltip title={value} overlayInnerStyle={TOOLTIP_OVERLAY_INNER_STYLE}>
-            <Typography.Text ellipsis style={{ maxWidth: 420 }}>
+            <Typography.Text ellipsis style={{ maxWidth: "100%" }}>
               {value}
             </Typography.Text>
           </Tooltip>
@@ -212,7 +212,7 @@ export function PipelineListPage() {
       title: "操作",
       width: 280,
       render: (_, row) => (
-        <Space>
+        <Space wrap>
           <Button size="small" loading={runningId === row.id} onClick={() => runNow(row)}>
             立即运行
           </Button>
@@ -252,6 +252,10 @@ export function PipelineListPage() {
           loading={isFetching}
           columns={columns}
           dataSource={data?.items ?? []}
+          // 显式 fixed 布局：antd v6 的 scroll.x 不再隐式启用，auto 布局下列宽
+          // 会被长内容重新分配，窄列被压成竖排折行。
+          tableLayout="fixed"
+          scroll={{ x: 1340 }}
           pagination={{
             current: page,
             pageSize,

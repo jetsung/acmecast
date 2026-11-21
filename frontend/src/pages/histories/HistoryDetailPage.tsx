@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Alert, Card, Descriptions, Space, Spin, Tag, Typography } from "antd";
+import { Alert, Card, Descriptions, Grid, Space, Spin, Tag, Typography } from "antd";
 import type { components } from "@/api/schema";
 import { Link, useParams } from "react-router";
 import { client } from "@/api/client";
@@ -46,6 +46,9 @@ const LEVEL_COLOR: Record<string, string> = {
 /** 运行详情：通过 SSE 实时订阅增量日志与终态，失败时降级单次拉取。 */
 export function HistoryDetailPage() {
   const { id } = useParams();
+  // 断点未就绪（jsdom / 首帧）按桌面处理；窄屏 Descriptions 退为单列。
+  const screens = Grid.useBreakpoint();
+  const isDesktop = screens.lg ?? true;
   const historyId = Number(id);
   const queryClient = useQueryClient();
   const [fallbackWarning, setFallbackWarning] = useState(false);
@@ -246,9 +249,11 @@ export function HistoryDetailPage() {
       )}
 
       <Card style={{ marginBottom: 24 }}>
-        <Descriptions bordered size="small" column={2}>
+        <Descriptions bordered size="small" column={isDesktop ? 2 : 1}>
           <Descriptions.Item label="流水线"><Link to={`/pipelines/${history.pipeline_id}`}>#{history.pipeline_id}</Link></Descriptions.Item>
-          <Descriptions.Item label="触发来源">{history.trigger_source}</Descriptions.Item>
+          <Descriptions.Item label="触发来源">
+            {TRIGGER_SOURCE_LABEL[history.trigger_source] ?? history.trigger_source}
+          </Descriptions.Item>
           <Descriptions.Item label="开始">{formatTime(history.started_at)}</Descriptions.Item>
           <Descriptions.Item label="结束">{formatTime(history.finished_at)}</Descriptions.Item>
         </Descriptions>
@@ -282,7 +287,11 @@ export function HistoryDetailPage() {
               return (
                 <div key={index}>
                   <Typography.Text
-                    style={{ color: LEVEL_COLOR[log.level] ?? undefined, fontFamily: "monospace" }}
+                    style={{
+                      color: LEVEL_COLOR[log.level] ?? undefined,
+                      fontFamily: "monospace",
+                      wordBreak: "break-word",
+                    }}
                   >
                     [{formatTime(log.created_at)}] {log.message}
                   </Typography.Text>

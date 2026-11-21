@@ -396,6 +396,37 @@ describe("凭据编辑弹窗", () => {
     expect(labels[labels.length - 1]).toBe("private_key");
   });
 
+  it("类型下拉按用途分组：证书签发商 / 部署服务 / DNS·部署", async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: /新\s*建/ }));
+
+    const typeSelect = await waitFor(() => {
+      const el = document.querySelector("#type_id");
+      expect(el).toBeTruthy();
+      return el as HTMLElement;
+    });
+    fireEvent.mouseDown(typeSelect);
+    const typeDropdown = await waitFor(() => {
+      const el = document.querySelector(
+        ".ant-select-dropdown:not(.ant-select-dropdown-hidden)",
+      );
+      expect(el).toBeTruthy();
+      return el!;
+    });
+
+    // 分组标题按声明顺序渲染；空组（DNS 提供商 / 通知在 mock 里没有成员）不出现。
+    const groups = Array.from(
+      typeDropdown.querySelectorAll(".ant-select-item-group"),
+    ).map((node) => node.textContent);
+    expect(groups).toEqual(["证书签发商", "部署服务", "DNS / 部署"]);
+    // 选项仍在各自分组下：证书签发商组里有 ACME 账号。
+    const optionTitles = Array.from(
+      typeDropdown.querySelectorAll(".ant-select-item-option"),
+    ).map((node) => node.getAttribute("title"));
+    expect(optionTitles).toContain("ACME 账号");
+    expect(optionTitles).toContain("SSH 主机");
+  });
+
   it("acme.account：ca 固定半宽独占一行，directory_url/credentials 各占整行，EAB 密钥对同行半宽", async () => {
     await openEditorForRow(1);
 

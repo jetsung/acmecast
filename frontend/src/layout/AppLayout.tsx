@@ -1,6 +1,7 @@
-import { Avatar, Button, Layout, Menu, Tooltip, Typography } from "antd";
+import { Avatar, Button, Grid, Layout, Menu, Tooltip, Typography } from "antd";
 import {
   DashboardOutlined,
+  MenuOutlined,
   SafetyCertificateOutlined,
   PartitionOutlined,
   HistoryOutlined,
@@ -9,6 +10,7 @@ import {
   LogoutOutlined,
 } from "@ant-design/icons";
 import { Outlet, useLocation, useNavigate } from "react-router";
+import { useState } from "react";
 import { useAuthStore } from "@/auth/store";
 
 const { Sider, Header, Content } = Layout;
@@ -52,11 +54,20 @@ function Brand() {
   );
 }
 
-/** 受保护区域的整体布局：浅色侧边导航 + 顶栏用户区 + 内容画布。 */
+/** 受保护区域的整体布局：浅色侧边导航 + 顶栏用户区 + 内容画布。
+ *
+ * 窄屏（<lg）侧栏收起为覆盖式抽屉，由顶栏汉堡按钮开合；内容区不再让出
+ * 侧栏宽度、padding 收紧——小视口下的可用空间全部还给列表与表单。
+ */
 export function AppLayout() {
   const navigate = useNavigate();
   const location = useLocation();
   const username = useAuthStore((state) => state.username);
+  // 断点未就绪（jsdom / 首帧）按桌面处理，保持既有布局不变。
+  const screens = Grid.useBreakpoint();
+  const isDesktop = screens.lg ?? true;
+  // 窄屏下侧栏的开合状态；切回桌面时无条件展开（collapsed 取 false）。
+  const [navOpen, setNavOpen] = useState(false);
 
   const selected = NAV_ITEMS.filter(
     (item) => location.pathname.startsWith(item.key) && item.key !== "/",
@@ -76,6 +87,8 @@ export function AppLayout() {
     <Layout style={{ minHeight: "100vh" }}>
       <Sider
         width={SIDER_WIDTH}
+        collapsed={isDesktop ? false : !navOpen}
+        collapsedWidth={0}
         style={{
           position: "fixed",
           top: 0,
@@ -83,20 +96,25 @@ export function AppLayout() {
           height: "100vh",
           overflowY: "auto",
           overflowX: "hidden",
-          zIndex: 9,
+          zIndex: 20,
           borderRight: "1px solid #edf0f7",
         }}
       >
         <Brand />
         <Menu
           mode="inline"
+          inlineCollapsed={false}
           selectedKeys={selected}
           items={NAV_ITEMS}
-          onClick={(entry) => navigate(entry.key)}
+          onClick={(entry) => {
+            navigate(entry.key);
+            // 窄屏点完导航即收起抽屉，把空间还给内容。
+            setNavOpen(false);
+          }}
           style={{ borderInlineEnd: "none", paddingBlock: 4 }}
         />
       </Sider>
-      <Layout style={{ marginLeft: SIDER_WIDTH }}>
+      <Layout style={{ marginLeft: isDesktop ? SIDER_WIDTH : 0 }}>
         <Header
           style={{
             display: "flex",
@@ -108,9 +126,19 @@ export function AppLayout() {
             zIndex: 10,
           }}
         >
-          <Typography.Text strong style={{ fontSize: 15 }}>
-            {current?.label}
-          </Typography.Text>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {!isDesktop && (
+              <Button
+                type="text"
+                aria-label="导航开关"
+                icon={<MenuOutlined style={{ color: "#8a93a6" }} />}
+                onClick={() => setNavOpen((open) => !open)}
+              />
+            )}
+            <Typography.Text strong style={{ fontSize: 15 }}>
+              {current?.label}
+            </Typography.Text>
+          </div>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <Avatar size={28} style={{ background: "#4f63f2", fontSize: 14 }}>
               {(username ?? "A").slice(0, 1).toUpperCase()}
@@ -126,7 +154,7 @@ export function AppLayout() {
             </Tooltip>
           </div>
         </Header>
-        <Content style={{ padding: 24 }}>
+        <Content style={{ padding: isDesktop ? 24 : 12 }}>
           <div style={{ margin: "0 auto" }}>
             <Outlet />
           </div>
