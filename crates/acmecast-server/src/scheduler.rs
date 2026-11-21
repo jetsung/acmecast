@@ -187,16 +187,18 @@ pub fn spawn_scheduler(
 ) -> JoinHandle<()> {
     let cipher = cipher.cloned();
     tokio::spawn(async move {
-        let launcher = PipelineRunLauncher::new(
-            Arc::clone(&steps),
-            &db,
-            credential_registry,
-            cipher.as_ref(),
-            notifier,
-            redis,
-        )
-        .with_run_control(run_control);
-        let engine = SchedulerEngine::new(&db, &launcher, SchedulerConfig::default());
+        let launcher = Arc::new(
+            PipelineRunLauncher::new(
+                Arc::clone(&steps),
+                &db,
+                credential_registry,
+                cipher.as_ref(),
+                notifier,
+                redis,
+            )
+            .with_run_control(run_control),
+        );
+        let engine = SchedulerEngine::new(&db, launcher, SchedulerConfig::default());
 
         if let Err(error) = engine.load(chrono::Utc::now()).await {
             tracing::error!(%error, "调度装载失败，本进程内调度不可用");

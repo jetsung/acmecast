@@ -4,7 +4,7 @@
 //! 引擎的所有判定方法都显式接收 `now`，测试因此不需要等待真实时间——
 //! 每个场景都把时钟拨到想验证的位置，直接调用 `tick`／`scan_expiring`／`load`。
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use acmecast_pipeline::{HistoryRecord, HistoryRepository};
 use acmecast_scheduler::{
@@ -67,9 +67,9 @@ async fn database() -> DatabaseConnection {
 
 fn make_engine<'a>(
     db: &'a DatabaseConnection,
-    launcher: &'a RecordingLauncher,
+    launcher: &'a Arc<RecordingLauncher>,
 ) -> SchedulerEngine<'a> {
-    SchedulerEngine::new(db, launcher, SchedulerConfig::default())
+    SchedulerEngine::new(db, Arc::clone(launcher) as _, SchedulerConfig::default())
 }
 
 /// 落一条流水线并返回主键——调度与触发记录都以它为外键。
@@ -161,7 +161,7 @@ async fn make_trigger_due(db: &DatabaseConnection, pipeline_id: i64, due_at: Dat
 #[tokio::test]
 async fn a_due_cron_schedule_triggers_its_pipeline_as_scheduled() {
     let db = database().await;
-    let launcher = RecordingLauncher::default();
+    let launcher = Arc::new(RecordingLauncher::default());
     let engine = make_engine(&db, &launcher);
 
     let pipeline_id = a_pipeline(&db, "nightly").await;
@@ -241,7 +241,7 @@ async fn an_invalid_cron_is_rejected_on_save() {
 #[tokio::test]
 async fn a_certificate_within_the_renewal_window_triggers_its_pipeline() {
     let db = database().await;
-    let launcher = RecordingLauncher::default();
+    let launcher = Arc::new(RecordingLauncher::default());
     let engine = make_engine(&db, &launcher);
 
     let now = Utc::now();
@@ -280,7 +280,7 @@ async fn a_certificate_within_the_renewal_window_triggers_its_pipeline() {
 #[tokio::test]
 async fn a_certificate_outside_the_window_does_not_trigger() {
     let db = database().await;
-    let launcher = RecordingLauncher::default();
+    let launcher = Arc::new(RecordingLauncher::default());
     let engine = make_engine(&db, &launcher);
 
     let now = Utc::now();
@@ -314,7 +314,7 @@ async fn a_certificate_outside_the_window_does_not_trigger() {
 #[tokio::test]
 async fn a_running_pipeline_is_not_triggered_again() {
     let db = database().await;
-    let launcher = RecordingLauncher::default();
+    let launcher = Arc::new(RecordingLauncher::default());
     let engine = make_engine(&db, &launcher);
 
     let now = Utc::now();
@@ -352,7 +352,7 @@ async fn a_running_pipeline_is_not_triggered_again() {
 #[tokio::test]
 async fn repeated_hits_within_the_dedup_window_trigger_once() {
     let db = database().await;
-    let launcher = RecordingLauncher::default();
+    let launcher = Arc::new(RecordingLauncher::default());
     let engine = make_engine(&db, &launcher);
 
     let now = Utc::now();
@@ -404,7 +404,7 @@ async fn repeated_hits_within_the_dedup_window_trigger_once() {
 #[tokio::test]
 async fn schedules_survive_a_restart_and_are_reloaded() {
     let db = database().await;
-    let launcher = RecordingLauncher::default();
+    let launcher = Arc::new(RecordingLauncher::default());
 
     let pipeline_id = a_pipeline(&db, "reload").await;
     a_cron_schedule(&db, pipeline_id, "0 3 * * *", false).await;
@@ -438,7 +438,7 @@ async fn schedules_survive_a_restart_and_are_reloaded() {
 #[tokio::test]
 async fn a_stopped_service_skips_missed_triggers_by_default() {
     let db = database().await;
-    let launcher = RecordingLauncher::default();
+    let launcher = Arc::new(RecordingLauncher::default());
 
     // 停机一晚：触发点落在 8 小时前。
     let pipeline_id = a_pipeline(&db, "nightly").await;
@@ -470,7 +470,7 @@ async fn a_stopped_service_skips_missed_triggers_by_default() {
 #[tokio::test]
 async fn catch_up_runs_the_last_missed_trigger_once() {
     let db = database().await;
-    let launcher = RecordingLauncher::default();
+    let launcher = Arc::new(RecordingLauncher::default());
 
     let pipeline_id = a_pipeline(&db, "catch-up").await;
     a_cron_schedule(&db, pipeline_id, "0 3 * * *", true).await;
@@ -562,7 +562,7 @@ async fn trigger_history_is_listed_newest_first_with_its_source() {
 #[tokio::test]
 async fn a_failed_launch_keeps_the_trigger_due_for_retry() {
     let db = database().await;
-    let launcher = RecordingLauncher::failing();
+    let launcher = Arc::new(RecordingLauncher::failing());
     let engine = make_engine(&db, &launcher);
 
     let pipeline_id = a_pipeline(&db, "retry").await;
@@ -583,7 +583,7 @@ async fn a_failed_launch_keeps_the_trigger_due_for_retry() {
     );
 
     // 换成正常启动器后，同一触发点可以再次尝试。
-    let working = RecordingLauncher::default();
+    let working = Arc::new(RecordingLauncher::default());
     make_engine(&db, &working)
         .tick(now + Duration::minutes(1))
         .await
@@ -596,7 +596,7 @@ async fn a_failed_launch_keeps_the_trigger_due_for_retry() {
 #[tokio::test]
 async fn a_failed_renewal_launch_is_recorded_and_throttled() {
     let db = database().await;
-    let launcher = RecordingLauncher::failing();
+    let launcher = Arc::new(RecordingLauncher::failing());
     let engine = make_engine(&db, &launcher);
 
     let now = Utc::now();
@@ -652,7 +652,7 @@ async fn a_failed_renewal_launch_is_recorded_and_throttled() {
 #[tokio::test]
 async fn multiple_certs_matching_one_pipeline_trigger_it_once_per_scan() {
     let db = database().await;
-    let launcher = RecordingLauncher::default();
+    let launcher = Arc::new(RecordingLauncher::default());
     let engine = make_engine(&db, &launcher);
 
     let now = Utc::now();

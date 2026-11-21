@@ -11,10 +11,13 @@ import { PageHeader } from "@/components/PageHeader";
 type ScheduleRow = components["schemas"]["ScheduleResponse"];
 type TriggerLogRow = components["schemas"]["TriggerLogResponse"];
 type PipelineSummary = components["schemas"]["PipelineSummaryResponse"];
+type GlobalScheduleRow = components["schemas"]["GlobalScheduleResponse"];
 
-const TRIGGER_SOURCE_LABEL: Record<string, string> = {
-  cron: "cron",
-  renewal: "续期",
+const TRIGGER_SOURCE_LABEL: Record<string, { label: string; color: string }> = {
+  manual: { label: "手动", color: "blue" },
+  cron: { label: "定时", color: "purple" },
+  renewal: { label: "续期", color: "cyan" },
+  global: { label: "全局", color: "geekblue" },
 };
 
 /** cron 前置校验（3.3）：无法解析时给出提示；能解析则预览下一次触发。 */
@@ -31,6 +34,110 @@ function cronPreview(expr: string): { error?: string; next?: string } {
   } catch (error) {
     return { error: error instanceof Error ? error.message : "表达式无法解析" };
   }
+}
+
+/**
+ * 全局调度卡片（global-schedule spec）：单例 cron 配置，到点按流水线 ID
+ * 升序串行运行全部启用的流水线。草稿态直接在卡片上编辑，保存走全局端点。
+ */
+function GlobalScheduleCard({ onSaved }: { onSaved: () => void }) {
+  const { message } = App.useApp();
+  const [saving, setSaving] = useState(false);
+  const [cron, setCron] = useState("");
+  const [enabled, setEnabled] = useState(false);
+  const [catchUp, setCatchUp] = useState(false);
+
+  const { data: globalSchedule } = useQuery({
+    queryKey: ["global-schedule"],
+    queryFn: async () => {
+      const result = await client.GET("/api/schedules/global", {});
+      return unwrapData<GlobalScheduleRow>(result);
+    },
+  });
+
+  // 数据到达后回填草稿（保存刷新后草稿重置为已保存值，编辑弹窗同口径）。
+  useEffect(() => {
+    if (globalSchedule) {
+      setCron(globalSchedule.cron ?? "");
+      setEnabled(globalSchedule.enabled);
+      setCatchUp(globalSchedule.catch_up);
+    }
+  }, [globalSchedule]);
+
+  const preview = cron.trim() ? cronPreview(cron) : null;
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const result = await client.POST("/api/schedules/global", {
+        body: { cron: cron.trim() || null, enabled, catch_up: catchUp },
+      });
+      if (result.error !== undefined) {
+        const errorBody = result.error as { error?: { message?: string } };
+        message.error(errorBody?.error?.message ?? "保存失败");
+        return;
+      }
+      message.success("全局调度已保存");
+      onSaved();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Card
+      size="small"
+      title="全局调度"
+      extra={
+        <Switch
+          size="small"
+          checked={enabled}
+          checkedChildren="启用"
+          unCheckedChildren="停用"
+          aria-label="全局调度启停开关"
+          onChange={(checked) => setEnabled(checked)}
+        />
+      }
+      style={{ marginBottom: 24 }}
+    >
+      <Space direction="vertical" style={{ width: "100%" }}>
+        <Typography.Text type="secondary">
+          到点后按流水线 ID 升序串行运行全部启用的流水线（前一条跑完才开始下一条）；停用的流水线与运行中的流水线会被跳过，成员失败不中断序列。
+        </Typography.Text>
+        <Space wrap>
+          <Input
+            style={{ width: 280 }}
+            placeholder="cron 表达式（分 时 日 月 周）"
+            value={cron}
+            onChange={(event) => setCron(event.target.value)}
+            aria-label="全局调度 cron"
+          />
+          <Switch
+            checked={catchUp}
+            checkedChildren="补跑"
+            unCheckedChildren="跳过"
+            aria-label="全局调度停机补跑开关"
+            onChange={(checked) => setCatchUp(checked)}
+          />
+          <Button type="primary" loading={saving} onClick={() => void save()}>
+            保存
+          </Button>
+        </Space>
+        <Space wrap>
+          <Typography.Text type="secondary">
+            下次触发：{formatTime(globalSchedule?.next_trigger_at ?? null)}
+          </Typography.Text>
+          <Typography.Text type="secondary">
+            上次触发：{formatTime(globalSchedule?.last_triggered_at ?? null)}
+          </Typography.Text>
+        </Space>
+        {preview?.error && <Typography.Text type="danger">{preview.error}</Typography.Text>}
+        {preview?.next && (
+          <Typography.Text type="secondary">下次触发时刻：{preview.next}</Typography.Text>
+        )}
+      </Space>
+    </Card>
+  );
 }
 
 /** 调度配置页（3.3）：按流水线新建/编辑调度，并查看运行态与触发记录。 */
@@ -190,6 +297,10 @@ export function ScheduleConfigPage() {
         }
       />
 
+      <GlobalScheduleCard
+        onSaved={() => void queryClient.invalidateQueries({ queryKey: ["global-schedule"] })}
+      />
+
       <Typography.Title level={5}>已有调度</Typography.Title>
       {schedules?.length ? (
         <Space direction="vertical" style={{ width: "100%", marginBottom: 24 }}>
@@ -264,6 +375,10 @@ export function ScheduleConfigPage() {
           loading={triggerLogs === undefined}
           dataSource={triggerLogs?.items ?? []}
           locale={{ emptyText: "暂无触发记录" }}
+          // 显式 fixed 布局：antd v6 的 scroll.x 不再隐式启用，auto 布局下列宽
+          // 会被长内容重新分配，窄列（来源等）被压成竖排折行。
+          tableLayout="fixed"
+          scroll={{ x: 980 }}
           pagination={{
             current: triggerLogs?.page ?? triggerPage,
             pageSize: triggerPageSize,
@@ -283,23 +398,37 @@ export function ScheduleConfigPage() {
             {
               title: "触发时间",
               dataIndex: "triggered_at",
+              width: 200,
               render: (value: string) => formatTime(value),
             },
             {
               title: "流水线",
               dataIndex: "pipeline_id",
+              width: 110,
               render: (value: number) => renderTriggerPipeline(value),
             },
             {
               title: "来源",
               dataIndex: "source",
-              render: (value: string) => (
-                <Tag color={value === "cron" ? "blue" : "cyan"}>
-                  {TRIGGER_SOURCE_LABEL[value] ?? value}
-                </Tag>
-              ),
+              width: 110,
+              render: (value: string) => {
+                const meta = TRIGGER_SOURCE_LABEL[value] ?? { label: value, color: "default" };
+                return <Tag color={meta.color}>{meta.label}</Tag>;
+              },
             },
-            { title: "说明", dataIndex: "detail", ellipsis: true },
+            {
+              title: "说明",
+              dataIndex: "detail",
+              width: 260,
+              render: (value: string | null | undefined) =>
+                value && value.trim() !== "" ? (
+                  <Typography.Text ellipsis={{ tooltip: value }} style={{ maxWidth: "100%" }}>
+                    {value}
+                  </Typography.Text>
+                ) : (
+                  <Typography.Text type="secondary">—</Typography.Text>
+                ),
+            },
           ]}
         />
       </Card>
@@ -395,7 +524,7 @@ function ScheduleEditorModal({
       cancelText="取消"
       confirmLoading={saving}
       destroyOnHidden
-      width={640}
+      width="min(640px, 96vw)"
     >
       <Form form={form} layout="vertical" onFinish={onSave} initialValues={{ enabled: true, catch_up: false }}>
         <Form.Item

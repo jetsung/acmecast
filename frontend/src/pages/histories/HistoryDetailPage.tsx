@@ -29,6 +29,14 @@ function tencentOutput(output: unknown): { certIds: string[]; skipped: boolean }
   return { certIds, skipped };
 }
 
+/** 触发来源的展示名：与运行历史列表（SOURCE_LABEL）同口径，缺省回退原值。 */
+const TRIGGER_SOURCE_LABEL: Record<string, string> = {
+  manual: "手动",
+  cron: "定时",
+  renewal: "续期",
+  global: "全局",
+};
+
 const LEVEL_COLOR: Record<string, string> = {
   info: "#1677ff",
   warn: "#faad14",
@@ -223,7 +231,7 @@ export function HistoryDetailPage() {
             {history.status}
           </Tag>
         }
-        description={`流水线 #${history.pipeline_id} · 触发来源 ${history.trigger_source}`}
+        description={`流水线 #${history.pipeline_id} · 触发来源 ${TRIGGER_SOURCE_LABEL[history.trigger_source] ?? history.trigger_source}`}
       />
 
       {fallbackWarning && (

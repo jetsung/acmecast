@@ -92,6 +92,10 @@ pub(crate) fn routes() -> Router<HttpState> {
         .route("/api/schedules", get(list_schedules).post(create_schedule))
         .route("/api/schedules/{pipeline_id}", delete(delete_schedule))
         .route("/api/schedules/trigger-logs", get(list_trigger_logs))
+        .route(
+            "/api/schedules/global",
+            get(get_global_schedule).post(save_global_schedule),
+        )
         .route("/api/tasks", get(list_tasks))
         .route("/api/tasks/{type_id}/schema", get(task_schema))
         .route("/api/histories", get(list_histories))
@@ -2251,6 +2255,80 @@ async fn delete_schedule(
         .map_err(ApiError::from)?;
     tracing::info!(pipeline_id, logs_removed, "调度已删除，触发记录已清理");
     Ok(ApiResponse::new(serde_json::json!({ "deleted": true })))
+}
+
+/// 全局调度响应（`global-schedule` spec）：单例配置与触发点推进字段。
+#[derive(Debug, Serialize, ToSchema)]
+pub(crate) struct GlobalScheduleResponse {
+    /// cron 表达式原文。
+    pub cron: Option<String>,
+    /// 是否启用。
+    pub enabled: bool,
+    /// 停机补跑策略。
+    pub catch_up: bool,
+    /// 上次触发时间。
+    pub last_triggered_at: Option<DateTime<Utc>>,
+    /// 下次预计触发时间。
+    pub next_trigger_at: Option<DateTime<Utc>>,
+    /// 更新时间。
+    pub updated_at: DateTime<Utc>,
+}
+
+/// 全局调度保存请求（upsert 单例）。
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub(crate) struct GlobalScheduleSaveRequest {
+    /// cron 表达式（5 或 6 段）；启用时必填。
+    #[serde(default)]
+    pub cron: Option<String>,
+    /// 是否启用。
+    #[serde(default)]
+    pub enabled: bool,
+    /// 停机补跑策略：追赶最近一次。
+    #[serde(default)]
+    pub catch_up: bool,
+}
+
+fn global_schedule_response(
+    config: acmecast_store::repository::GlobalScheduleConfig,
+) -> GlobalScheduleResponse {
+    GlobalScheduleResponse {
+        cron: config.cron,
+        enabled: config.enabled,
+        catch_up: config.catch_up,
+        last_triggered_at: config.last_triggered_at,
+        next_trigger_at: config.next_trigger_at,
+        updated_at: config.updated_at,
+    }
+}
+
+/// 查询全局调度（`GET /api/schedules/global`）。
+///
+/// 未创建时返回默认形态（停用、无 cron）而非 404——调度页在首次配置前
+/// 就能渲染全局卡片。
+async fn get_global_schedule(
+    State(state): State<HttpState>,
+) -> Result<ApiResponse<GlobalScheduleResponse>, ApiError> {
+    let config = acmecast_store::repository::GlobalScheduleRepository::new(&state.app.db)
+        .get_or_default()
+        .await
+        .map_err(ApiError::from)?;
+    Ok(ApiResponse::new(global_schedule_response(config)))
+}
+
+/// 保存全局调度（`POST /api/schedules/global`，upsert 单例）。
+async fn save_global_schedule(
+    State(state): State<HttpState>,
+    ApiJson(request): ApiJson<GlobalScheduleSaveRequest>,
+) -> Result<ApiResponse<GlobalScheduleResponse>, ApiError> {
+    let config = acmecast_store::repository::GlobalScheduleRepository::new(&state.app.db)
+        .save(acmecast_store::repository::GlobalScheduleInput {
+            cron: request.cron,
+            enabled: request.enabled,
+            catch_up: request.catch_up,
+        })
+        .await
+        .map_err(ApiError::from)?;
+    Ok(ApiResponse::new(global_schedule_response(config)))
 }
 
 /// 触发记录查询参数。

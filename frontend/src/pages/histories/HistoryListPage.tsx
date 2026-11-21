@@ -15,6 +15,7 @@ const SOURCE_LABEL: Record<string, { label: string; color: string }> = {
   manual: { label: "手动", color: "blue" },
   cron: { label: "定时", color: "purple" },
   renewal: { label: "续期", color: "cyan" },
+  global: { label: "全局", color: "geekblue" },
 };
 
 const STATUS_TAG: Record<string, { label: string; color: string }> = {

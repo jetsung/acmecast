@@ -4,6 +4,7 @@
 //! 这样「同一域名集合去重更新」之类的规则只有一处实现，不会在多个调用点漂移。
 
 pub mod cert;
+pub mod global_schedule;
 pub mod pipeline;
 pub mod schedule;
 pub mod trigger_log;
@@ -12,6 +13,7 @@ pub use cert::{
     CertInput, CertPage, CertQuery, CertRepository, CertSort, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE,
     SaveOutcome,
 };
+pub use global_schedule::{GlobalScheduleConfig, GlobalScheduleInput, GlobalScheduleRepository};
 pub use pipeline::{
     Pipeline, PipelineInput, PipelineRepository, PipelineStep, PipelineStepInput, PipelineSummary,
 };

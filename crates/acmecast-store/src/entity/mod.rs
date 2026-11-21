@@ -10,6 +10,7 @@
 pub mod cert;
 pub mod credential;
 pub mod deployment;
+pub mod global_schedule;
 pub mod history;
 pub mod history_log;
 pub mod pipeline;
@@ -21,6 +22,7 @@ pub mod trigger_log;
 pub use cert::{Entity as Cert, Model as CertModel};
 pub use credential::{Entity as Credential, Model as CredentialModel};
 pub use deployment::{Entity as Deployment, Model as DeploymentModel, TargetRef};
+pub use global_schedule::{Entity as GlobalSchedule, Model as GlobalScheduleModel};
 pub use history::{Entity as History, Model as HistoryModel, RunStatus};
 pub use history_log::{Entity as HistoryLog, Level as LogLevel, Model as LogModel};
 pub use pipeline::{Entity as Pipeline, Model as PipelineModel, TriggerSource};

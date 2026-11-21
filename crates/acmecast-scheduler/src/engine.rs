@@ -12,7 +12,7 @@
 //! 所有判定方法都显式接收 `now` 而不是内部取当前时间：时钟是测试的
 //! 最大不确定性来源，把它交到调用方手里，行为才可复现。
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
 use sea_orm::DatabaseConnection;
@@ -21,7 +21,8 @@ use tokio::sync::watch;
 use acmecast_store::entity::CertModel;
 use acmecast_store::entity::pipeline::TriggerSource;
 use acmecast_store::repository::{
-    CertRepository, ScheduleRepository, TriggerLogInput, TriggerLogRepository,
+    CertRepository, GlobalScheduleRepository, PipelineRepository, ScheduleRepository,
+    TriggerLogInput, TriggerLogRepository, next_cron_trigger,
 };
 
 use crate::config::SchedulerConfig;
@@ -32,18 +33,26 @@ use crate::launcher::{LaunchRequest, PipelineLauncher};
 #[derive(Debug)]
 pub struct SchedulerEngine<'a> {
     db: &'a DatabaseConnection,
-    launcher: &'a dyn PipelineLauncher,
+    /// Arc 而非引用：全局序列需要 `tokio::spawn` 一个独立任务（长序列不能
+    /// 阻塞调度循环的其他触发），spawn 要求 `'static`——引用借不出来。
+    launcher: Arc<dyn PipelineLauncher>,
     config: SchedulerConfig,
     /// 上次到期扫描的时间；`None` 表示启动后还没扫过。
     last_scan_at: Mutex<Option<DateTime<Utc>>>,
+    /// 全局序列防重叠标志（`global-schedule` spec）：`true` 表示上一轮
+    /// 串行序列仍在运行。Arc 以便随序列任务 move 出去后复位。
+    global_running: Arc<Mutex<bool>>,
 }
 
 impl<'a> SchedulerEngine<'a> {
     /// 组装引擎。
+    ///
+    /// `launcher` 收 `Arc`：全局序列任务要把启动器带进 `tokio::spawn`，
+    /// 引用借不出 `'static` 边界。
     #[must_use]
     pub fn new(
         db: &'a DatabaseConnection,
-        launcher: &'a dyn PipelineLauncher,
+        launcher: Arc<dyn PipelineLauncher>,
         config: SchedulerConfig,
     ) -> Self {
         Self {
@@ -51,6 +60,7 @@ impl<'a> SchedulerEngine<'a> {
             launcher,
             config,
             last_scan_at: Mutex::new(None),
+            global_running: Arc::new(Mutex::new(false)),
         }
     }
 
@@ -129,6 +139,44 @@ impl<'a> SchedulerEngine<'a> {
             }
         }
 
+        // 全局调度装载（global-schedule spec）：与流水线级同一套骨架——
+        // 触发点已在未来则保留；catch_up 补跑最近一次错过的触发点（启动
+        // 一次序列，受防重叠约束），否则跳过错过的点直接排到未来。
+        let global = GlobalScheduleRepository::new(self.db)
+            .get_or_default()
+            .await?;
+        if global.enabled && global.cron.is_some() {
+            let cron = global.cron.as_deref().expect("enabled 时必有 cron");
+            if global.next_trigger_at.is_none_or(|next| next <= now) {
+                let next = next_cron_trigger(cron, now);
+                if global.catch_up {
+                    match self.start_global_sequence(now) {
+                        Ok(true) => {
+                            GlobalScheduleRepository::new(self.db)
+                                .mark_triggered(Some(Some(now)), next)
+                                .await?;
+                        }
+                        Ok(false) => {
+                            // 防重叠拦下：没有真触发，只推进触发点。
+                            GlobalScheduleRepository::new(self.db)
+                                .mark_triggered(Some(None), next)
+                                .await?;
+                        }
+                        Err(err) => {
+                            tracing::error!(
+                                error = %err,
+                                "全局调度补跑序列启动失败，保留原触发点"
+                            );
+                        }
+                    }
+                } else if next.is_some() {
+                    GlobalScheduleRepository::new(self.db)
+                        .mark_triggered(Some(None), next)
+                        .await?;
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -138,6 +186,7 @@ impl<'a> SchedulerEngine<'a> {
     /// 传入确定的 `now` 逐轮驱动。
     pub async fn tick(&self, now: DateTime<Utc>) -> Result<()> {
         self.run_cron_due(now).await?;
+        self.run_global_due(now).await?;
 
         let scan_due = {
             let last = self.locked_last_scan();
@@ -215,6 +264,78 @@ impl<'a> SchedulerEngine<'a> {
         }
 
         Ok(())
+    }
+
+    /// 全局调度到点处理（global-schedule spec）。
+    ///
+    /// 到点即推进触发点（成员失败不整序列重跑，见 design D3），序列在独立
+    /// 任务中执行；防重叠标志置位期间只推进不启动，不堆积补跑。
+    async fn run_global_due(&self, now: DateTime<Utc>) -> Result<()> {
+        let global = GlobalScheduleRepository::new(self.db)
+            .get_or_default()
+            .await?;
+        if !global.enabled {
+            return Ok(());
+        }
+        let Some(cron) = global.cron.as_deref() else {
+            return Ok(());
+        };
+        if !global.next_trigger_at.is_some_and(|next| next <= now) {
+            return Ok(());
+        }
+
+        let next = next_cron_trigger(cron, now);
+        if next.is_none() {
+            tracing::warn!(
+                cron = %cron,
+                "全局调度触发点已消费，但该 cron 表达式推算不出下一次触发时刻，调度将停摆"
+            );
+        }
+        GlobalScheduleRepository::new(self.db)
+            .mark_triggered(Some(Some(now)), next)
+            .await?;
+
+        match self.start_global_sequence(now) {
+            Ok(true) => {
+                tracing::info!("全局串行序列已启动");
+            }
+            Ok(false) => {
+                // 防重叠：上一轮序列仍在运行，本轮只推进触发点（已在上方推进）。
+                tracing::debug!("上一轮全局序列仍在运行，跳过本次到点启动");
+            }
+            Err(err) => {
+                tracing::error!(error = %err, "全局串行序列启动失败");
+            }
+        }
+
+        Ok(())
+    }
+
+    /// 尝试启动全局串行序列。
+    ///
+    /// 返回是否真正启动；防重叠标志置位时返回 `false`（上一轮仍在运行）。
+    /// 启动 = spawn 独立任务（长序列不能阻塞调度循环的其他触发），任务结束
+    /// 时自行复位防重叠标志。
+    fn start_global_sequence(&self, now: DateTime<Utc>) -> Result<bool> {
+        if *self.locked_global_running() {
+            return Ok(false);
+        }
+        *self.locked_global_running() = true;
+
+        let db = self.db.clone();
+        let launcher = Arc::clone(&self.launcher);
+        let global_running = Arc::clone(&self.global_running);
+        tokio::spawn(async move {
+            let outcome = run_global_sequence(&db, launcher.as_ref(), now).await;
+            if let Err(err) = outcome {
+                tracing::error!(error = %err, "全局串行序列执行异常");
+            }
+            *global_running
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = false;
+            tracing::info!("全局串行序列结束");
+        });
+        Ok(true)
     }
 
     /// 到期扫描触发（9.3）：把剩余有效期不足阈值的证书找出来，
@@ -440,4 +561,84 @@ impl<'a> SchedulerEngine<'a> {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+
+    /// 取全局防重叠锁。中毒语义与 [`Self::locked_last_scan`] 相同。
+    fn locked_global_running(&self) -> std::sync::MutexGuard<'_, bool> {
+        self.global_running
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+/// 全局串行序列（global-schedule spec）。
+///
+/// 按流水线 ID 升序遍历全部**启用**的流水线：运行中的成员跳过（不等待、
+/// 不阻塞后续成员），每条真正启动后落一条来源为 `global` 的审计记录，
+/// **逐条等待终态**——`PipelineLauncher::launch` 的实现同步等到运行结束，
+/// for 循环因此天然串行。成员失败（启动报错或运行失败）只记日志与审计，
+/// 不中断序列——序列的目的是全量错峰，单条失败不该拖住其余成员。
+///
+/// 触发点已由调用方在启动序列前推进：本函数的失败不会导致整轮重跑。
+async fn run_global_sequence(
+    db: &DatabaseConnection,
+    launcher: &dyn PipelineLauncher,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    // 启动时的流水线清单即本轮快照：运行中新增/停用不影响当前序列。
+    let mut pipelines = PipelineRepository::new(db).list().await?;
+    pipelines.sort_by_key(|pipeline| pipeline.id);
+
+    for pipeline in pipelines {
+        if !pipeline.enabled {
+            continue;
+        }
+        // 与 cron 触发同一道运行中检查：并发运行同一流水线没有任何好处，
+        // 序列也不等待手工触发的运行结束——跳过并继续。
+        if acmecast_pipeline::HistoryRepository::new(db)
+            .has_running(pipeline.id)
+            .await?
+        {
+            tracing::debug!(pipeline_id = pipeline.id, "流水线仍在运行中，全局序列跳过");
+            continue;
+        }
+        let detail = format!("全局调度串行序列：流水线 {}", pipeline.name);
+        match launcher
+            .launch(LaunchRequest {
+                pipeline_id: pipeline.id,
+                source: TriggerSource::Global,
+                detail: Some(detail.clone()),
+            })
+            .await
+        {
+            Ok(()) => {
+                TriggerLogRepository::new(db)
+                    .record(TriggerLogInput {
+                        pipeline_id: pipeline.id,
+                        source: TriggerSource::Global,
+                        detail: Some(detail),
+                        triggered_at: now,
+                    })
+                    .await?;
+            }
+            Err(err) => {
+                // 「试过但失败」是审计需要知道的事（与续期触发的口径一致）；
+                // 失败不中断序列。
+                tracing::error!(
+                    pipeline_id = pipeline.id,
+                    error = %err,
+                    "全局序列成员失败，继续后续成员"
+                );
+                TriggerLogRepository::new(db)
+                    .record(TriggerLogInput {
+                        pipeline_id: pipeline.id,
+                        source: TriggerSource::Global,
+                        detail: Some(format!("{detail}；失败：{err}")),
+                        triggered_at: now,
+                    })
+                    .await?;
+            }
+        }
+    }
+
+    Ok(())
 }

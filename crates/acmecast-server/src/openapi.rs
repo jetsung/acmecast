@@ -56,6 +56,8 @@ use crate::response::ApiResponse;
         list_schedules,
         create_schedule,
         delete_schedule,
+        get_global_schedule,
+        save_global_schedule,
         list_trigger_logs,
         history_logs,
         history_events,
@@ -82,6 +84,8 @@ use crate::response::ApiResponse;
             crate::handlers::ScheduleResponse,
             crate::handlers::TriggerLogResponse,
             crate::handlers::TriggerLogQueryParams,
+            crate::handlers::GlobalScheduleResponse,
+            crate::handlers::GlobalScheduleSaveRequest,
             crate::handlers::CredentialRequest,
             crate::handlers::CredentialResponse,
             crate::handlers::CredentialDetailResponse,
@@ -207,6 +211,14 @@ fn create_schedule() {}
 /// 删除调度的文档占位函数。
 #[utoipa::path(delete, path = "/api/schedules/{pipeline_id}", params(("pipeline_id" = i64, Path, description = "调度绑定的流水线标识")), responses((status = 200, body = ApiResponse<serde_json::Value>, description = "删除成功"), (status = 404, body = crate::response::ApiErrorBody, description = "not_found：调度不存在")), security(("bearerAuth" = [])))]
 fn delete_schedule() {}
+
+/// 查询全局调度的文档占位函数。
+#[utoipa::path(get, path = "/api/schedules/global", responses((status = 200, body = ApiResponse<crate::handlers::GlobalScheduleResponse>, description = "全局调度（未创建时返回默认形态）")), security(("bearerAuth" = [])))]
+fn get_global_schedule() {}
+
+/// 保存全局调度的文档占位函数。
+#[utoipa::path(post, path = "/api/schedules/global", request_body = crate::handlers::GlobalScheduleSaveRequest, responses((status = 200, body = ApiResponse<crate::handlers::GlobalScheduleResponse>, description = "全局调度"), (status = 400, body = crate::response::ApiErrorBody)), security(("bearerAuth" = [])))]
+fn save_global_schedule() {}
 /// 触发审计分页查询的文档占位函数。
 #[utoipa::path(get, path = "/api/schedules/trigger-logs", params(("pipeline_id" = Option<i64>, Query, description = "按流水线过滤"), ("page" = Option<u64>, Query, description = "页码"), ("page_size" = Option<u64>, Query, description = "每页条数")), responses((status = 200, body = ApiResponse<PageResponse<crate::handlers::TriggerLogResponse>>, description = "触发审计分页列表")), security(("bearerAuth" = [])))]
 fn list_trigger_logs() {}

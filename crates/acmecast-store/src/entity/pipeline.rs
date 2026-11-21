@@ -75,6 +75,8 @@ pub enum TriggerSource {
     Cron,
     /// 由到期扫描触发的续期。
     Renewal,
+    /// 由全局调度触发的串行序列成员。
+    Global,
 }
 
 impl TriggerSource {
@@ -85,6 +87,7 @@ impl TriggerSource {
             Self::Manual => "manual",
             Self::Cron => "cron",
             Self::Renewal => "renewal",
+            Self::Global => "global",
         }
     }
 
@@ -94,6 +97,7 @@ impl TriggerSource {
             "manual" => Some(Self::Manual),
             "cron" => Some(Self::Cron),
             "renewal" => Some(Self::Renewal),
+            "global" => Some(Self::Global),
             _ => None,
         }
     }
@@ -109,6 +113,7 @@ mod tests {
             TriggerSource::Manual,
             TriggerSource::Cron,
             TriggerSource::Renewal,
+            TriggerSource::Global,
         ] {
             assert_eq!(TriggerSource::parse(source.as_str()), Some(source));
         }

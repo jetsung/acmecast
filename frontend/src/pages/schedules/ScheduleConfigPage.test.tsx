@@ -91,6 +91,21 @@ function defaultGetImplementation(path: string) {
           response: new Response(),
         };
       }
+      if (path === "/api/schedules/global") {
+        return {
+          data: {
+            data: {
+              cron: "0 3 * * *",
+              enabled: true,
+              catch_up: false,
+              last_triggered_at: null,
+              next_trigger_at: "2026-12-01T03:00:00Z",
+              updated_at: "2026-11-20T00:00:00Z",
+            },
+          },
+          response: new Response(),
+        };
+      }
       if (path.startsWith("/api/schedules/trigger-logs")) {
         return { data: { data: TRIGGER_LOGS }, response: new Response() };
       }
@@ -162,11 +177,11 @@ describe("已有调度展示", () => {
     renderPage();
 
     await screen.findByText("流水线 #1");
-    // 渲染了时间值（本地时区格式）而不是占位符。
-    expect(screen.getAllByText(/下次触发：/)[0].textContent).not.toMatch(/：\s*-\s*$/);
-    expect(screen.getAllByText(/上次触发：/)[0].textContent).not.toMatch(/：\s*-\s*$/);
+    // 全局调度卡片排在最前（未触发过 → 占位符），已有调度的时间断言从 [1] 起。
+    expect(screen.getAllByText(/下次触发：/)[1].textContent).not.toMatch(/：\s*-\s*$/);
+    expect(screen.getAllByText(/上次触发：/)[1].textContent).not.toMatch(/：\s*-\s*$/);
     // 纯 cron 调度从未触发过：上次触发显示占位符而不是报错。
-    expect(screen.getAllByText(/上次触发：/)[1].textContent).toMatch(/上次触发：\s*-\s*$/);
+    expect(screen.getAllByText(/上次触发：/)[2].textContent).toMatch(/上次触发：\s*-\s*$/);
   });
 
   it("展示触发记录列表，含时间、来源与说明", async () => {
@@ -481,6 +496,33 @@ describe("删除调度", () => {
 
     await waitFor(() => {
       expect(screen.getByText("调度不存在")).toBeTruthy();
+    });
+  });
+});
+
+describe("全局调度卡片", () => {
+  it("回填 cron 与启停状态并展示下次触发时间", async () => {
+    renderPage();
+
+    // 全局卡片先于「已有调度」列表渲染。
+    await screen.findByText("全局调度");
+    const cronInput = await screen.findByDisplayValue("0 3 * * *");
+    expect(cronInput).toBeTruthy();
+    expect(screen.getAllByText(/下次触发：/)[0].textContent).not.toMatch(/：\s*-\s*$/);
+  });
+
+  it("保存走全局调度端点", async () => {
+    renderPage();
+    await screen.findByText("全局调度");
+    // 等数据到达且 useEffect 回填草稿后再保存。
+    await screen.findByDisplayValue("0 3 * * *");
+
+    fireEvent.click(screen.getByRole("button", { name: /保\s*存/ }));
+    await waitFor(() => {
+      expect(mocks.post).toHaveBeenCalledWith(
+        "/api/schedules/global",
+        expect.objectContaining({ body: { cron: "0 3 * * *", enabled: true, catch_up: false } }),
+      );
     });
   });
 });

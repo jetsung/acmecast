@@ -350,6 +350,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/schedules/global": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** 查询全局调度的文档占位函数。 */
+        get: operations["get_global_schedule"];
+        put?: never;
+        /** 保存全局调度的文档占位函数。 */
+        post: operations["save_global_schedule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/schedules/trigger-logs": {
         parameters: {
             query?: never;
@@ -609,6 +627,33 @@ export interface components {
                 remark: string;
                 /** @description 凭据类型。 */
                 type_id: string;
+                /**
+                 * Format: date-time
+                 * @description 更新时间。
+                 */
+                updated_at: string;
+            };
+        };
+        /** @description 统一成功响应。 */
+        ApiResponse_GlobalScheduleResponse: {
+            /** @description 全局调度响应（`global-schedule` spec）：单例配置与触发点推进字段。 */
+            data: {
+                /** @description 停机补跑策略。 */
+                catch_up: boolean;
+                /** @description cron 表达式原文。 */
+                cron?: string | null;
+                /** @description 是否启用。 */
+                enabled: boolean;
+                /**
+                 * Format: date-time
+                 * @description 上次触发时间。
+                 */
+                last_triggered_at?: string | null;
+                /**
+                 * Format: date-time
+                 * @description 下次预计触发时间。
+                 */
+                next_trigger_at?: string | null;
                 /**
                  * Format: date-time
                  * @description 更新时间。
@@ -1060,6 +1105,7 @@ export interface components {
                  *     `{ "cert_ids": string[], "skipped_write": boolean }`：
                  *     - `cert_ids` 为本次上传或更新涉及的腾讯云证书 ID 列表，跳过写入时为空数组；
                  *     - `skipped_write` 标识是否因指纹一致跳过写入。
+                 *
                  *     无结构化输出时为 `null`。
                  */
                 output?: unknown;
@@ -1339,6 +1385,39 @@ export interface components {
             /** @description 类型标识。 */
             type_id: string;
         };
+        /** @description 全局调度响应（`global-schedule` spec）：单例配置与触发点推进字段。 */
+        GlobalScheduleResponse: {
+            /** @description 停机补跑策略。 */
+            catch_up: boolean;
+            /** @description cron 表达式原文。 */
+            cron?: string | null;
+            /** @description 是否启用。 */
+            enabled: boolean;
+            /**
+             * Format: date-time
+             * @description 上次触发时间。
+             */
+            last_triggered_at?: string | null;
+            /**
+             * Format: date-time
+             * @description 下次预计触发时间。
+             */
+            next_trigger_at?: string | null;
+            /**
+             * Format: date-time
+             * @description 更新时间。
+             */
+            updated_at: string;
+        };
+        /** @description 全局调度保存请求（upsert 单例）。 */
+        GlobalScheduleSaveRequest: {
+            /** @description 停机补跑策略：追赶最近一次。 */
+            catch_up?: boolean;
+            /** @description cron 表达式（5 或 6 段）；启用时必填。 */
+            cron?: string | null;
+            /** @description 是否启用。 */
+            enabled?: boolean;
+        };
         /** @description 步骤日志响应。 */
         HistoryLogResponse: {
             /** Format: date-time */
@@ -1354,6 +1433,7 @@ export interface components {
              *     `{ "cert_ids": string[], "skipped_write": boolean }`：
              *     - `cert_ids` 为本次上传或更新涉及的腾讯云证书 ID 列表，跳过写入时为空数组；
              *     - `skipped_write` 标识是否因指纹一致跳过写入。
+             *
              *     无结构化输出时为 `null`。
              */
             output?: unknown;
@@ -2927,6 +3007,58 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponse_ScheduleResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorBody"];
+                };
+            };
+        };
+    };
+    get_global_schedule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description 全局调度（未创建时返回默认形态） */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_GlobalScheduleResponse"];
+                };
+            };
+        };
+    };
+    save_global_schedule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GlobalScheduleSaveRequest"];
+            };
+        };
+        responses: {
+            /** @description 全局调度 */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponse_GlobalScheduleResponse"];
                 };
             };
             400: {
