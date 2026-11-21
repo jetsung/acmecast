@@ -89,6 +89,8 @@
 |---|---|---|
 | GET | `/api/schedules` | 全部调度（含上次/下次触发时间） |
 | POST | `/api/schedules` | 创建；`{pipeline_id, cron?, enabled=true, catch_up?, renewal_domains?}`，cron 非法保存即拒 |
+| GET | `/api/schedules/global` | 查询全局调度（未创建时返回默认停用形态） |
+| POST | `/api/schedules/global` | 保存全局调度（upsert 单例；body `{cron, enabled, catch_up}`，启用时 cron 必填） |
 | GET | `/api/schedules/trigger-logs` | 触发审计；query：`pipeline_id` `page` `page_size` |
 
 ## 错误码映射

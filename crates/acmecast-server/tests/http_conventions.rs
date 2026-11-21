@@ -30,7 +30,7 @@ use utoipa::OpenApi;
 /// `/api/openapi.json` 与 `/swagger-ui` 由 `SwaggerUi` 挂载、与文档本身
 /// 同源生成，不在此列。这份清单就是「端点变更后文档同步」的守护：
 /// 新增路由而忘记补文档时，这里会失败提醒。
-const KNOWN_API_PATHS: [&str; 26] = [
+const KNOWN_API_PATHS: [&str; 27] = [
     "/api/login",
     "/api/pipelines",
     "/api/pipelines/{id}",
@@ -56,6 +56,7 @@ const KNOWN_API_PATHS: [&str; 26] = [
     "/api/schedules",
     "/api/schedules/{pipeline_id}",
     "/api/schedules/trigger-logs",
+    "/api/schedules/global",
     "/healthz",
 ];
 

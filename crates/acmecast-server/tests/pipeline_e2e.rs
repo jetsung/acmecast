@@ -475,9 +475,11 @@ async fn the_full_pipeline_applies_stores_and_deploys_a_certificate() {
     assert_eq!(remaining, 0, "挑战 TXT 记录应在完成后清理：{snapshot:?}");
 }
 
-/// zone 推导失败必须早于任何 DNS 调用：注册域本身（`skiy.net`）剥第一段
-/// 只剩 TLD，历史上一度被推导成 `net` 拿去查 Cloudflare 才报错
-/// （histories/26）。现在要早失败并提示显式配置，错误里带上域名。
+/// zone 推导失败必须早于任何 DNS 调用：无点单标签（`com`）不符合
+/// R4 的合法 zone 形态，无法推导。历史上一度把注册域 `skiy.net`
+/// 推导成 `net` 拿去查 Cloudflare 才报错（histories/26）；R3 起二级域
+/// 推导为自身，无法推导的场景收窄为无点等非法形态，仍要求早失败
+/// 并提示显式配置，错误里带上域名。
 #[tokio::test(flavor = "multi_thread")]
 async fn zone_derivation_failure_fails_before_any_dns_call() {
     let pebble = match start_pebble() {
@@ -517,14 +519,14 @@ async fn zone_derivation_failure_fails_before_any_dns_call() {
         .register(CertApplyStep::new(Arc::clone(&dns_registry)))
         .expect("cert.apply 不应重复");
 
-    // 注册域本身不给 dns_zone：推导不出 zone，应在任何 DNS 调用前失败。
+    // 无点单标签不给 dns_zone：R4 下推导不出 zone，应在任何 DNS 调用前失败。
     let definition = PipelineDefinition {
         id: 1,
         steps: vec![acmecast_pipeline::StepDefinition {
             order_index: 0,
             type_id: "cert.apply".to_owned(),
             input: serde_json::json!({
-                "domains": ["skiy.net"],
+                "domains": ["com"],
                 "challenge": "dns-01",
                 "account_credential_id": account_id,
                 "dns_provider": "memory",
@@ -548,7 +550,7 @@ async fn zone_derivation_failure_fails_before_any_dns_call() {
     );
     let failure = outcome.failure.as_ref().expect("应有失败详情");
     assert!(
-        failure.reason.contains("skiy.net"),
+        failure.reason.contains("com"),
         "失败原因应包含授权域名：{}",
         failure.reason
     );
@@ -889,14 +891,14 @@ async fn renewal_scan_triggers_a_single_reissue() {
         .expect("流水线应能保存");
 
     // 首次签发：手动触发一次，建立「当前已部署的证书」。
-    let launcher = acmecast_server::scheduler::PipelineRunLauncher::new(
+    let launcher = std::sync::Arc::new(acmecast_server::scheduler::PipelineRunLauncher::new(
         Arc::clone(&steps),
         &db,
         Arc::clone(&credential_registry),
         Some(&cipher),
         None,
         None,
-    );
+    ));
     launcher
         .launch(acmecast_scheduler::LaunchRequest {
             pipeline_id,
@@ -935,7 +937,7 @@ async fn renewal_scan_triggers_a_single_reissue() {
     // 阈值调大到 90 天：pebble 刚签的证书（约 30 天有效期）立即进入续期窗口。
     let engine = acmecast_scheduler::SchedulerEngine::new(
         &db,
-        &launcher,
+        launcher.clone(),
         acmecast_scheduler::SchedulerConfig {
             renewal_threshold: chrono::Duration::days(90),
             ..Default::default()
@@ -1082,14 +1084,14 @@ async fn three_consecutive_reissues_archive_each_previous_active_certificate() {
         .expect("流水线应能保存");
 
     // 首次签发：手动触发，建立基线证书。
-    let launcher = acmecast_server::scheduler::PipelineRunLauncher::new(
+    let launcher = std::sync::Arc::new(acmecast_server::scheduler::PipelineRunLauncher::new(
         Arc::clone(&steps),
         &db,
         Arc::clone(&credential_registry),
         Some(&cipher),
         None,
         None,
-    );
+    ));
     launcher
         .launch(acmecast_scheduler::LaunchRequest {
             pipeline_id,
@@ -1119,7 +1121,7 @@ async fn three_consecutive_reissues_archive_each_previous_active_certificate() {
     // 阈值调大到 90 天：pebble 刚签的证书立即进入续期窗口，每次扫描都会重签。
     let engine = acmecast_scheduler::SchedulerEngine::new(
         &db,
-        &launcher,
+        launcher.clone(),
         acmecast_scheduler::SchedulerConfig {
             renewal_threshold: chrono::Duration::days(90),
             ..Default::default()
@@ -1422,13 +1424,18 @@ async fn revocation_updates_ca_and_local_state() {
         "contacts 描述应说明前缀可省略并由服务端补全：{contacts_description}"
     );
 
-    // dns_zone 应携带「多域名必填」条件扩展：前端 SchemaForm 据此在
-    // domains ≥ 2 时联动必填（多 zone 语义要求用户显式配置）。
+    // dns_zone 应携带条件必填扩展：前端 SchemaForm 据此在 domains ≥ 2
+    // 或 dns_alias 非空白（domain-alias 模式）时联动必填。
     let dns_zone = &schema_body["data"]["properties"]["dns_zone"];
     assert_eq!(
         dns_zone["x-required-when"],
-        serde_json::json!({ "MinItems": { "field": "domains", "count": 2 } }),
-        "dns_zone 应携带多域名必填条件：{dns_zone}"
+        serde_json::json!({
+            "Or": [
+                { "MinItems": { "field": "domains", "count": 2 } },
+                { "Not": { "Empty": "dns_alias" } }
+            ]
+        }),
+        "dns_zone 应携带多域名或别名模式的必填条件：{dns_zone}"
     );
     assert!(
         dns_zone["description"]
@@ -1482,7 +1489,7 @@ async fn revocation_updates_ca_and_local_state() {
     assert!(
         !data_dir
             .path()
-            .join("certs/ssl/revoke.acmecast.test.cert.pem")
+            .join("certs/ssl/revoke.acmecast.test.fullchain.cer")
             .exists(),
         "扁平活跃中的原文件不应保留"
     );
@@ -1491,14 +1498,20 @@ async fn revocation_updates_ca_and_local_state() {
         data_dir.path().join("certs/ssl").exists(),
         "扁平活跃目录应保留（内含其他证书）"
     );
-    assert!(
-        data_dir.path().join(&stored.cert_pem_path).is_file(),
-        "吊销目录里应有证书链"
-    );
-    assert!(
-        data_dir.path().join(&stored.key_pem_path).is_file(),
-        "吊销目录里应有私钥"
-    );
+    // 三文件新布局落盘的 .fullchain.cer/.ca.cer/.key 应原样移入吊销目录；
+    // cert_pem_path/key_pem_path 是旧布局虚拟路径，本就不落盘。
+    for suffix in ["fullchain.cer", "ca.cer", "key"] {
+        assert!(
+            data_dir
+                .path()
+                .join(format!(
+                    "certs/revoked/{}/revoke.acmecast.test.{suffix}",
+                    stored.fingerprint
+                ))
+                .is_file(),
+            "吊销目录里应有 {suffix}"
+        );
+    }
 
     let download = send(
         &app,
@@ -1542,7 +1555,15 @@ async fn revocation_updates_ca_and_local_state() {
     let body = json(response).await;
     assert_eq!(body["data"]["revoked_now"], false, "重复吊销应幂等：{body}");
 
-    // 无账号标识的记录（手动上传）：明确报错而非静默跳过。
+    // 无账号标识的记录（手动上传）：有材料时明确报错而非静默跳过。
+    // 材料检查在账号检查之前——这里写入可读的 PEM 让材料存在，走到账号检查。
+    let manual_pem = data_dir.path().join("certs/manual.pem");
+    std::fs::create_dir_all(manual_pem.parent().unwrap()).expect("应能创建目录");
+    std::fs::write(
+        &manual_pem,
+        "-----BEGIN CERTIFICATE-----\nmanual placeholder\n-----END CERTIFICATE-----\n",
+    )
+    .expect("应能写入手动证书材料");
     acmecast_store::repository::CertRepository::new(&db)
         .save(CertInput {
             domains: vec!["manual.acmecast.test".to_owned()],
@@ -1582,6 +1603,55 @@ async fn revocation_updates_ca_and_local_state() {
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     let body = json(response).await;
     assert_eq!(body["error"]["code"], "missing_account");
+
+    // 材料缺失且无账号的孤儿记录：降级为本地标记吊销终态（让孤儿可删除），
+    // 不再报 missing_account。
+    acmecast_store::repository::CertRepository::new(&db)
+        .save(CertInput {
+            domains: vec!["orphan.acmecast.test".to_owned()],
+            cert_pem_path: "certs/orphan.pem".to_owned(),
+            key_pem_path: "keys/orphan.pem".to_owned(),
+            cert_path: None,
+            ca_path: None,
+            fullchain_path: None,
+            key_path: None,
+            fingerprint: "sha256:orphan".to_owned(),
+            issuer: None,
+            not_before: chrono::Utc::now() - chrono::Duration::days(1),
+            not_after: chrono::Utc::now() + chrono::Duration::days(90),
+            acme_account_access_id: None,
+            key_algorithm: None,
+            description: None,
+        })
+        .await
+        .expect("孤儿证书应能入库");
+    let orphan = acmecast_store::repository::CertRepository::new(&db)
+        .list(CertQuery {
+            domain: Some("orphan.acmecast.test".to_owned()),
+            ..Default::default()
+        })
+        .await
+        .expect("应能查询证书");
+    let orphan_id = orphan.items[0].id;
+    let response = send(
+        &app,
+        json_request(
+            "POST",
+            &format!("/api/certificates/{orphan_id}/revoke"),
+            &serde_json::json!({}),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK, "孤儿记录应降级吊销");
+    let body = json(response).await;
+    assert_eq!(
+        body["data"]["revoked_now"], true,
+        "孤儿记录应本地吊销：{body}"
+    );
+    assert_eq!(
+        body["data"]["material_missing"], true,
+        "降级吊销应标注材料缺失：{body}"
+    );
 }
 
 // ---- 11.x DNS 提供商自动选择 ----

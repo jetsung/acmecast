@@ -374,10 +374,10 @@ async fn run_suite(db: DatabaseConnection) {
     );
 
     // ---- 调度引擎扫描在方言上的等价行为（仅读路径） ----
-    let launcher = NoopLauncher;
+    let launcher = std::sync::Arc::new(NoopLauncher);
     let engine = SchedulerEngine::new(
         &db,
-        &launcher,
+        launcher.clone(),
         acmecast_scheduler::SchedulerConfig {
             renewal_threshold: chrono::Duration::days(90),
             ..Default::default()
