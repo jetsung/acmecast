@@ -334,6 +334,7 @@ async fn an_existing_certificate_is_replaced() {
     let (chain, key) = self_signed_pem("example.com");
     let mut transport_responses = vec![describe_page(1, &[("example.com", "OLD1")])];
     transport_responses.extend(deployed_resources_per_type(&[("clb", 1)]));
+    transport_responses.push(upload_ok("CERTNEW"));
     transport_responses.push(update_ok());
     let transport = ScriptedTransport::new(transport_responses);
     let target = TencentSslTarget::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
@@ -348,25 +349,31 @@ async fn an_existing_certificate_is_replaced() {
         .await
         .expect("替换部署应成功");
 
-    assert_eq!(outcome.paths, vec!["OLD1".to_owned()], "原证书 ID 保持不变");
+    assert_eq!(
+        outcome.paths,
+        vec!["CERTNEW".to_owned()],
+        "paths 记新证书 ID"
+    );
 
     let requests = transport.requests();
-    assert_eq!(requests.len(), 9, "应按查询、按类型抓取、更新的顺序调用");
     assert_eq!(
-        requests[8].headers["X-TC-Action"],
+        requests.len(),
+        10,
+        "应按查询、按类型抓取、上传、更新的顺序调用"
+    );
+    assert_eq!(requests[8].headers["X-TC-Action"], "UploadCertificate");
+    assert_eq!(
+        requests[9].headers["X-TC-Action"],
         "UpdateCertificateInstance"
     );
-    let payload = requests[8].body.as_ref().expect("更新应有请求体");
+    let payload = requests[9].body.as_ref().expect("更新应有请求体");
     assert_eq!(
         payload["OldCertificateId"],
         json!("OLD1"),
         "更新应携带原证书 ID"
     );
-    assert_eq!(
-        payload["Repeatable"],
-        json!(false),
-        "repeatable 按界面输入透传（默认 false）"
-    );
+    assert_eq!(payload["CertificateId"], json!("CERTNEW"));
+    assert!(payload.get("Repeatable").is_none());
     // UpdateCertificateInstance 的判定：是否真发了这个 Action，而不是
     // 旧的 DeleteCertificates——按 Action 名区分即可。
 }
@@ -413,6 +420,7 @@ async fn a_failed_update_does_not_fail_the_deployment() {
     let (chain, key) = self_signed_pem("example.com");
     let mut transport_responses = vec![describe_page(1, &[("example.com", "OLD1")])];
     transport_responses.extend(deployed_resources_per_type(&[("clb", 1)]));
+    transport_responses.push(upload_ok("CERTNEW"));
     transport_responses.push(update_fail("资源不存在或不可用"));
     let transport = ScriptedTransport::new(transport_responses);
     let target = TencentSslTarget::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
@@ -427,7 +435,7 @@ async fn a_failed_update_does_not_fail_the_deployment() {
         .await
         .expect("单张更新失败只告警、不阻塞整体部署");
 
-    assert_eq!(outcome.paths, vec!["OLD1".to_owned()]);
+    assert_eq!(outcome.paths, vec!["CERTNEW".to_owned()]);
 }
 
 // ---- 需求：跳过写入时不产生云端变更 ----
@@ -529,6 +537,7 @@ async fn the_lookup_paginates_past_the_first_page() {
         describe_page(1001, &[("example.com", "OLD9")]),
     ];
     transport_responses.extend(deployed_resources_per_type(&[("clb", 1)]));
+    transport_responses.push(upload_ok("CERTNEW"));
     transport_responses.push(update_ok());
     let transport = ScriptedTransport::new(transport_responses);
     let target = TencentSslTarget::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
@@ -543,17 +552,18 @@ async fn the_lookup_paginates_past_the_first_page() {
         .await
         .expect("分页后的同域名证书应被找到并替换");
 
-    assert_eq!(outcome.paths, vec!["OLD9".to_owned()]);
+    assert_eq!(outcome.paths, vec!["CERTNEW".to_owned()]);
 
     let requests = transport.requests();
-    assert_eq!(requests.len(), 10);
+    assert_eq!(requests.len(), 11);
     assert_eq!(requests[1].body.as_ref().unwrap()["Offset"], 1000);
     assert_eq!(
-        requests[9].headers["X-TC-Action"],
+        requests[10].headers["X-TC-Action"],
         "UpdateCertificateInstance"
     );
-    let payload = requests[9].body.as_ref().expect("更新应有请求体");
+    let payload = requests[10].body.as_ref().expect("更新应有请求体");
     assert_eq!(payload["OldCertificateId"], json!("OLD9"));
+    assert_eq!(payload["CertificateId"], json!("CERTNEW"));
 }
 
 #[tokio::test]
@@ -602,8 +612,9 @@ fn the_schema_keeps_the_declared_field_order() {
     let target = TencentSslTarget::with_transport(ScriptedTransport::new(vec![]));
     let rendered = serde_json::to_string(&target.input_schema()).unwrap();
     assert!(
-        rendered
-            .contains(r#""x-field-order":["credential_id","alias","certificate_id","repeatable"]"#),
+        rendered.contains(
+            r#""x-field-order":["credential_id","alias","certificate_id","repeatable","delete_old"]"#
+        ),
         "应注入声明顺序（certificate_id 紧跟 alias）: {rendered}"
     );
 }
@@ -673,6 +684,7 @@ async fn resource_types_come_from_cloud_bindings() {
     let (chain, key) = self_signed_pem("example.com");
     let mut transport_responses = vec![describe_page(1, &[("example.com", "OLD1")])];
     transport_responses.extend(deployed_resources_per_type(&[("clb", 3), ("cdn", 0)]));
+    transport_responses.push(upload_ok("CERTNEW"));
     transport_responses.push(update_ok());
     let transport = ScriptedTransport::new(transport_responses);
     let target = TencentSslTarget::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
@@ -688,7 +700,11 @@ async fn resource_types_come_from_cloud_bindings() {
         .expect("未填 resource_types 时应按云端绑定填充");
 
     let requests = transport.requests();
-    assert_eq!(requests.len(), 9, "查询 1 + 按类型抓取 7 + 更新 1");
+    assert_eq!(
+        requests.len(),
+        10,
+        "查询 1 + 按类型抓取 7 + 上传 1 + 更新 1"
+    );
     assert_eq!(
         requests[1].headers["X-TC-Action"], "DescribeDeployedResources",
         "未填 resource_types 时应按类型逐个抓取旧证书绑定"
@@ -697,17 +713,18 @@ async fn resource_types_come_from_cloud_bindings() {
     assert_eq!(fetched["CertificateIds"], json!(["OLD1"]));
     assert_eq!(fetched["ResourceType"], json!("clb"));
 
-    let payload = requests[8].body.as_ref().expect("更新应有请求体");
+    let payload = requests[9].body.as_ref().expect("更新应有请求体");
     assert_eq!(
         payload["ResourceTypes"],
         json!(["clb"]),
         "Count>0 的类型进入 ResourceTypes，Count=0 的跳过"
     );
     assert_eq!(
-        payload["Repeatable"],
-        json!(false),
-        "repeatable 按界面输入透传（默认 false）"
+        payload["CertificateId"],
+        json!("CERTNEW"),
+        "更新传预上传的新证书 ID"
     );
+    assert!(payload.get("Repeatable").is_none());
     assert!(payload.get("ResourceTypesRegions").is_none());
 }
 
@@ -764,6 +781,7 @@ async fn antiddos_binding_maps_to_ddos() {
     let (chain, key) = self_signed_pem("example.com");
     let mut transport_responses = vec![describe_page(1, &[("example.com", "OLD1")])];
     transport_responses.extend(deployed_resources_per_type(&[("antiddos", 1), ("clb", 2)]));
+    transport_responses.push(upload_ok("CERTNEW"));
     transport_responses.push(update_ok());
     let transport = ScriptedTransport::new(transport_responses);
     let target = TencentSslTarget::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
@@ -779,16 +797,11 @@ async fn antiddos_binding_maps_to_ddos() {
         .expect("antiddos 绑定应映射为 ddos");
 
     let requests = transport.requests();
-    let payload = requests[8].body.as_ref().expect("更新应有请求体");
+    let payload = requests[9].body.as_ref().expect("更新应有请求体");
     assert_eq!(
         payload["ResourceTypes"],
         json!(["clb", "ddos"]),
         "antiddos→ddos 映射后与 clb 一起传入（按查询顺序收集）"
-    );
-    assert_eq!(
-        payload["Repeatable"],
-        json!(false),
-        "repeatable 按界面输入透传（默认 false）"
     );
 }
 
@@ -803,10 +816,11 @@ async fn multiple_existing_certificates_are_updated_one_by_one() {
         2,
         &[("example.com", "OLD1"), ("example.com", "OLD2")],
     )];
-    // 每张证书分别解析最终 ResourceTypes：抓取 7 次 → 更新 1 次，逐张交替。
+    // 旧证书的 ResourceTypes 先逐张解析（7×2），再预上传一次、逐张更新。
     transport_responses.extend(deployed_resources_per_type(&[("clb", 1)]));
+    transport_responses.extend(deployed_resources_per_type(&[("clb", 1)]));
+    transport_responses.push(upload_ok("CERTNEW"));
     transport_responses.push(update_ok());
-    transport_responses.extend(deployed_resources_per_type(&[("clb", 1)]));
     transport_responses.push(update_fail("资源不存在"));
     let transport = ScriptedTransport::new(transport_responses);
 
@@ -824,24 +838,22 @@ async fn multiple_existing_certificates_are_updated_one_by_one() {
 
     assert_eq!(
         outcome.paths,
-        vec!["OLD1".to_owned(), "OLD2".to_owned()],
-        "paths 记录更新的全部证书 ID"
+        vec!["CERTNEW".to_owned()],
+        "paths 记预上传的新证书 ID"
     );
     let requests = transport.requests();
-    for (i, r) in requests.iter().enumerate() {
-        println!("req[{i}] = {}", r.headers["X-TC-Action"]);
-    }
     assert_eq!(
         requests.len(),
-        17,
-        "应查询 1 次 + 每张按类型抓取 7 次 + 更新 2 次"
+        18,
+        "应查询 1 次 + 每张按类型抓取 7 次 + 上传 1 次 + 更新 2 次"
     );
+    assert_eq!(requests[15].headers["X-TC-Action"], "UploadCertificate");
     assert_eq!(
-        requests[8].headers["X-TC-Action"],
+        requests[16].headers["X-TC-Action"],
         "UpdateCertificateInstance"
     );
     assert_eq!(
-        requests[16].headers["X-TC-Action"],
+        requests[17].headers["X-TC-Action"],
         "UpdateCertificateInstance"
     );
 }
@@ -914,6 +926,7 @@ async fn a_selected_certificate_id_falls_back_to_cloud_bindings() {
 
     let (chain, key) = self_signed_pem("example.com");
     let mut transport_responses = deployed_resources_per_type(&[("clb", 2), ("cdn", 1)]);
+    transport_responses.push(upload_ok("CERTNEW"));
     transport_responses.push(update_ok());
     let transport = ScriptedTransport::new(transport_responses);
     let target = TencentSslTarget::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
@@ -933,12 +946,16 @@ async fn a_selected_certificate_id_falls_back_to_cloud_bindings() {
 
     assert_eq!(
         outcome.paths,
-        vec!["PICKED".to_owned()],
-        "paths 即选中的证书 ID"
+        vec!["CERTNEW".to_owned()],
+        "paths 记预上传的新证书 ID"
     );
 
     let requests = transport.requests();
-    assert_eq!(requests.len(), 8, "按类型抓取 7 + 更新 1，不发起同域名查询");
+    assert_eq!(
+        requests.len(),
+        9,
+        "按类型抓取 7 + 上传 1 + 更新 1，不发起同域名查询"
+    );
     assert_eq!(
         requests[0].headers["X-TC-Action"], "DescribeDeployedResources",
         "未填 resource_types 时应先抓取选中证书的绑定"
@@ -946,35 +963,37 @@ async fn a_selected_certificate_id_falls_back_to_cloud_bindings() {
     let fetched = requests[0].body.as_ref().expect("抓取应有请求体");
     assert_eq!(fetched["CertificateIds"], json!(["PICKED"]));
     assert_eq!(
-        requests[7].headers["X-TC-Action"], "UpdateCertificateInstance",
-        "应走更新接口而非上传新证书"
+        requests[7].headers["X-TC-Action"], "UploadCertificate",
+        "更新前应先预上传新证书（备注名受控）"
     );
-    let payload = requests[7].body.as_ref().expect("更新应有请求体");
+    assert_eq!(
+        requests[8].headers["X-TC-Action"], "UpdateCertificateInstance",
+        "应走更新接口切换云资源"
+    );
+    let payload = requests[8].body.as_ref().expect("更新应有请求体");
     assert_eq!(payload["OldCertificateId"], json!("PICKED"));
+    assert_eq!(payload["CertificateId"], json!("CERTNEW"));
     assert_eq!(
         payload["ResourceTypes"],
         json!(["clb", "cdn"]),
         "按云端绑定填充 ResourceTypes"
     );
-    assert_eq!(
-        payload["Repeatable"],
-        json!(false),
-        "repeatable 按界面输入透传（未填默认 false）"
-    );
+    assert!(payload.get("Repeatable").is_none());
     assert!(payload.get("ResourceTypesRegions").is_none());
-    assert_eq!(payload["CertificatePublicKey"], chain);
-    assert_eq!(payload["CertificatePrivateKey"], key);
+    assert!(payload.get("CertificatePublicKey").is_none());
+    assert!(payload.get("CertificatePrivateKey").is_none());
 }
 
 #[tokio::test]
 async fn a_selected_certificate_id_passes_repeatable_through() {
-    // 选中证书 ID = 替换模式：Repeatable 按界面输入透传给
-    // UpdateCertificateInstance（该接口支持此参数）。
+    // 选中证书 ID = 替换模式：Repeatable 透传给预上传的
+    // UploadCertificate（重复性由上传控制，更新调用不再上传内容）。
     let (db, store, cipher) = setup().await;
     let id = seed_credential(db, &cipher, "cloud.tencent", tencent_fields(None)).await;
 
     let (chain, key) = self_signed_pem("example.com");
     let mut transport_responses = deployed_resources_per_type(&[("clb", 2)]);
+    transport_responses.push(upload_ok("CERTNEW"));
     transport_responses.push(update_ok());
     let transport = ScriptedTransport::new(transport_responses);
     let target = TencentSslTarget::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
@@ -994,13 +1013,15 @@ async fn a_selected_certificate_id_passes_repeatable_through() {
         .expect("选中证书 ID 且 repeatable=true 的部署应成功");
 
     let requests = transport.requests();
-    let payload = requests[7].body.as_ref().expect("更新应有请求体");
+    let upload = requests[7].body.as_ref().expect("上传应有请求体");
     assert_eq!(
-        payload["Repeatable"],
+        upload["Repeatable"],
         json!(true),
-        "repeatable 按界面输入透传（true）"
+        "repeatable 透传给预上传的 UploadCertificate"
     );
+    let payload = requests[8].body.as_ref().expect("更新应有请求体");
     assert_eq!(payload["ResourceTypes"], json!(["clb"]));
+    assert!(payload.get("Repeatable").is_none());
 }
 
 #[tokio::test]
@@ -1027,6 +1048,104 @@ async fn a_blank_certificate_id_falls_back_to_the_upload_flow() {
     let requests = transport.requests();
     assert_eq!(requests.len(), 2, "应按查询、上传的原流程调用");
     assert_eq!(requests[1].headers["X-TC-Action"], "UploadCertificate");
+}
+
+#[tokio::test]
+async fn blank_alias_defaults_to_acmecast_alias() {
+    // 备注名留空：云端证书带默认备注 from AcmeCast，便于回溯上传来源。
+    let (db, store, cipher) = setup().await;
+    let id = seed_credential(db, &cipher, "cloud.tencent", tencent_fields(None)).await;
+
+    let (chain, key) = self_signed_pem("example.com");
+    let transport = ScriptedTransport::new(vec![describe_page(0, &[]), upload_ok("CERTNEW")]);
+    let target = TencentSslTarget::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
+
+    target
+        .deploy(
+            &json!({ "credential_id": id }),
+            &materials(&chain, &key),
+            &store,
+            DeployMode::Write,
+        )
+        .await
+        .expect("备注留空的上传应成功");
+
+    let requests = transport.requests();
+    let payload = requests[1].body.as_ref().expect("上传应有请求体");
+    assert_eq!(
+        payload["Alias"],
+        json!("from AcmeCast"),
+        "备注留空时应默认 from AcmeCast"
+    );
+}
+
+#[tokio::test]
+async fn delete_old_removes_the_replaced_certificate() {
+    // delete_old=true：替换成功后调 DeleteCertificate 清掉旧证书；
+    // 删除失败仅告警，不影响部署结果。
+    let (db, store, cipher) = setup().await;
+    let id = seed_credential(db, &cipher, "cloud.tencent", tencent_fields(None)).await;
+
+    let (chain, key) = self_signed_pem("example.com");
+    let mut transport_responses = deployed_resources_per_type(&[("clb", 1)]);
+    transport_responses.push(upload_ok("CERTNEW"));
+    transport_responses.push(update_ok());
+    transport_responses.push(update_ok()); // DeleteCertificate 响应同构
+    let transport = ScriptedTransport::new(transport_responses);
+    let target = TencentSslTarget::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
+
+    let outcome = target
+        .deploy(
+            &json!({
+                "credential_id": id,
+                "certificate_id": "PICKED",
+                "delete_old": true
+            }),
+            &materials(&chain, &key),
+            &store,
+            DeployMode::Write,
+        )
+        .await
+        .expect("开启 delete_old 的替换部署应成功");
+
+    assert_eq!(outcome.paths, vec!["CERTNEW".to_owned()]);
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 10, "抓取 7 + 上传 1 + 更新 1 + 删除 1");
+    assert_eq!(requests[9].headers["X-TC-Action"], "DeleteCertificate");
+    let payload = requests[9].body.as_ref().expect("删除应有请求体");
+    assert_eq!(payload["CertificateId"], json!("PICKED"));
+}
+
+#[tokio::test]
+async fn delete_old_defaults_to_off() {
+    // delete_old 缺省：旧证书保留，不发删除调用。
+    let (db, store, cipher) = setup().await;
+    let id = seed_credential(db, &cipher, "cloud.tencent", tencent_fields(None)).await;
+
+    let (chain, key) = self_signed_pem("example.com");
+    let mut transport_responses = deployed_resources_per_type(&[("clb", 1)]);
+    transport_responses.push(upload_ok("CERTNEW"));
+    transport_responses.push(update_ok());
+    let transport = ScriptedTransport::new(transport_responses);
+    let target = TencentSslTarget::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
+
+    target
+        .deploy(
+            &json!({ "credential_id": id, "certificate_id": "PICKED" }),
+            &materials(&chain, &key),
+            &store,
+            DeployMode::Write,
+        )
+        .await
+        .expect("替换部署应成功");
+
+    let requests = transport.requests();
+    assert!(
+        requests
+            .iter()
+            .all(|r| r.headers["X-TC-Action"] != "DeleteCertificate"),
+        "未开 delete_old 时不应发起删除调用"
+    );
 }
 
 // ---- 需求：describe_certificates 全量分页与 label 口径 ----

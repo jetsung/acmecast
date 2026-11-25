@@ -55,7 +55,8 @@ pub struct TencentSslInput {
     /// 引用一张 `tencent` 类型凭据（腾讯云账号密钥，DNS 与 SSL 通用）。
     /// `tencent-eo` 不含 SSL 部署能力，不接受。
     pub credential_id: i64,
-    /// 上传到云端的证书备注名；不填则不设置。
+    /// 上传到云端的证书备注名；留空时默认 [`DEFAULT_ALIAS`]（便于回溯
+    /// 证书的来源是 AcmeCast）。
     #[serde(default)]
     pub alias: Option<String>,
     /// 云端已存在的证书 ID（可选）。
@@ -70,7 +71,16 @@ pub struct TencentSslInput {
     /// （`UpdateCertificateInstance`）都按界面输入透传该参数。
     #[serde(default)]
     pub repeatable: bool,
+    /// 替换成功后是否删除旧证书（`DeleteCertificate`）：`UpdateCertificateInstance`
+    /// 是「新证书入库 + 旧证书资源切换」，旧证书留在证书库里；开启后每次
+    /// 替换顺手清掉旧证书，避免同域名证书越积越多。删除失败仅记告警，
+    /// 不影响部署结果（资源已切到新证书）。
+    #[serde(default)]
+    pub delete_old: bool,
 }
+
+/// 备注名留空时的默认值：云端证书库里一眼看出该证书由 AcmeCast 上传。
+pub const DEFAULT_ALIAS: &str = "from AcmeCast";
 
 /// 替换时可同步切换的云资源类型清单（`ResourceTypes`，多选）。
 ///
@@ -206,15 +216,15 @@ impl TencentSslTarget {
         input: &TencentSslInput,
         materials: &CertMaterials,
     ) -> Result<String> {
-        let mut payload = json!({
+        let payload = json!({
             "CertificatePublicKey": materials.chain_pem,
             "CertificatePrivateKey": materials.key_pem,
             "CertificateType": "SVR",
             "Repeatable": input.repeatable,
+            // 备注名始终传递：留空时给默认值（`UpdateCertificateInstance`
+            // 路径不传内容、走预上传，云端不会替它补那个默认备注）。
+            "Alias": json!(input.alias_value().unwrap_or(DEFAULT_ALIAS)),
         });
-        if let Some(alias) = input.alias_value() {
-            payload["Alias"] = json!(alias);
-        }
 
         let body = self.call(credentials, "UploadCertificate", payload).await?;
         body["CertificateId"]
@@ -325,33 +335,45 @@ impl TencentSslTarget {
         Ok(deployed)
     }
 
-    /// 把 `OldCertificateId` 绑定的云资源切换到本次上传的新证书
+    /// 把 `OldCertificateId` 绑定的云资源切换到已上传的新证书
     /// （`UpdateCertificateInstance`，异步接口，返回 `DeployRecordId`）。
     ///
+    /// 新证书以 `CertificateId`（预上传返回的 ID）传入而非公私钥内容：
+    /// 接口的备注名只有 `UploadCertificate` 支持，走预上传才能让新证书
+    /// 带上受控的备注（[`DEFAULT_ALIAS`]），而不是云端替内容直传补的
+    /// "Certificate updated via upload certificate xxx"。
+    ///
     /// `resource_types` 来自旧证书的云端绑定（`DescribeDeployedResources`
-    /// 抓取，见 [`Self::resolve_resource_types`]）；`repeatable` 按界面输入
-    /// 透传（该接口支持此参数；存在相同重复证书时更新任务会失败）。接口
-    /// 没有 `Alias` 参数——备注名是 `UploadCertificate` 的，无法随更新
-    /// 传递。云端证书 ID 会变为新上传的证书 ID，旧证书内容保持不变、
-    /// 随后可人工下线。
+    /// 抓取，见 [`Self::resolve_resource_types`]）。`Repeatable` 不传——
+    /// 该参数只在上传内容时生效，重复性由预上传的 `UploadCertificate`
+    /// 控制。
     async fn update_certificate_instance(
         &self,
         credentials: &TencentCredentials,
-        materials: &CertMaterials,
-        certificate_id: &str,
+        old_certificate_id: &str,
+        new_certificate_id: &str,
         resource_types: &[String],
-        repeatable: bool,
     ) -> Result<()> {
         let payload = json!({
-            "OldCertificateId": certificate_id,
-            "CertificatePublicKey": materials.chain_pem,
-            "CertificatePrivateKey": materials.key_pem,
+            "OldCertificateId": old_certificate_id,
+            "CertificateId": new_certificate_id,
             "ResourceTypes": resource_types,
-            "Repeatable": repeatable,
         });
 
         self.call(credentials, "UpdateCertificateInstance", payload)
             .await?;
+        Ok(())
+    }
+
+    /// 删除云端证书（`DeleteCertificate`）。替换流程在资源切换成功后调用，
+    /// 清掉被替换的旧证书。
+    async fn delete_certificate(&self, credentials: &TencentCredentials, id: &str) -> Result<()> {
+        self.call(
+            credentials,
+            "DeleteCertificate",
+            json!({ "CertificateId": id }),
+        )
+        .await?;
         Ok(())
     }
 
@@ -470,7 +492,13 @@ impl DeploymentTarget for TencentSslTarget {
         // 就近位置。
         schema.schema.extensions.insert(
             "x-field-order".to_owned(),
-            json!(["credential_id", "alias", "certificate_id", "repeatable"]),
+            json!([
+                "credential_id",
+                "alias",
+                "certificate_id",
+                "repeatable",
+                "delete_old"
+            ]),
         );
         // credential_id 仅接受 cloud.tencent 凭据：前端据此过滤下拉，避免选到
         // dns.tencent-eo（EdgeOne 无 SSL 部署能力）或 deploy.ssh 等无关凭据。
@@ -489,6 +517,7 @@ impl DeploymentTarget for TencentSslTarget {
             "credential_id": 1,
             "alias": "acmecast example.com",
             "repeatable": false,
+            "delete_old": false,
         })
     }
 
@@ -512,23 +541,43 @@ impl DeploymentTarget for TencentSslTarget {
             resolve_tencent_credentials(input.credential_id, credentials).await?;
         let domain = primary_domain_of(materials)?;
 
-        // 选中证书 ID：替换模式——ResourceTypes 从该证书的云端绑定抓取
-        // （DescribeDeployedResources）；未绑定任何资源时以可读错误失败
-        // （提示先手动部署）。Repeatable 按界面输入透传。
+        // 选中证书 ID：替换模式——先预上传新证书（带备注），再把该证书
+        // 绑定的云资源切换到新证书（ResourceTypes 从旧证书的云端绑定抓取，
+        // DescribeDeployedResources；未绑定任何资源时以可读错误失败，
+        // 提示先手动部署）。
         if let Some(certificate_id) = input.certificate_id_value() {
             let resource_types = self
                 .resolve_resource_types(&tencent_credentials, certificate_id)
                 .await?;
+            let new_certificate_id = self
+                .upload_certificate(&tencent_credentials, &input, materials)
+                .await?;
             self.update_certificate_instance(
                 &tencent_credentials,
-                materials,
                 certificate_id,
+                &new_certificate_id,
                 &resource_types,
-                input.repeatable,
             )
             .await?;
-            tracing::info!("腾讯云 SSL：已替换选中证书 {certificate_id}（{domain}）");
-            return Ok(DeployOutcome::written(vec![certificate_id.to_owned()]));
+            tracing::info!(
+                "腾讯云 SSL：已替换选中证书 {certificate_id} → {new_certificate_id}（{domain}）"
+            );
+            if input.delete_old {
+                match self
+                    .delete_certificate(&tencent_credentials, certificate_id)
+                    .await
+                {
+                    Ok(()) => {
+                        tracing::info!("腾讯云 SSL：已删除旧证书 {certificate_id}（{domain}）");
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            "腾讯云 SSL：旧证书 {certificate_id} 删除失败，请人工处理（{domain}）：{error}"
+                        );
+                    }
+                }
+            }
+            return Ok(DeployOutcome::written(vec![new_certificate_id]));
         }
 
         // 未选证书 ID：查同域名证书——命中即替换（不再有「仅上传」开关），
@@ -537,36 +586,60 @@ impl DeploymentTarget for TencentSslTarget {
             .find_existing_certificates(&tencent_credentials, &domain)
             .await?;
 
-        // 有存量：逐张替换——resource_types 每张分别解析（用户填了统一用；
-        // 未填按各自绑定抓取），任一张失败记告警、不阻塞其他张与整体部署。
-        // 无存量：按上传流程处理。
+        // 有存量：先逐张解析 resource_types（全部解析成功后才预上传一次
+        // 新证书，供各张共用；解析失败属确定性输入问题——旧证书未绑定
+        // 资源需先在控制台手动部署——整体失败且不发上传），再逐张替换；
+        // 更新调用失败记告警、不阻塞其他张与整体部署。无存量：按上传
+        // 流程处理。
         let paths = if existing.is_empty() {
             let certificate_id = self
                 .upload_certificate(&tencent_credentials, &input, materials)
                 .await?;
             vec![certificate_id]
         } else {
-            let mut failures = Vec::new();
+            let mut resolved = Vec::new();
             for certificate_id in &existing {
-                // 抓取失败/为空属确定性输入问题（旧证书未绑定资源，需先在
-                // 控制台手动部署），整体失败并提示——静默跳过会让「部署
-                // 成功」变成什么都没发生的空转；仅更新调用失败按「告警不
-                // 阻塞」容错。
                 let resource_types = self
                     .resolve_resource_types(&tencent_credentials, certificate_id)
                     .await?;
+                resolved.push((certificate_id, resource_types));
+            }
+            let new_certificate_id = self
+                .upload_certificate(&tencent_credentials, &input, materials)
+                .await?;
+            let mut failures = Vec::new();
+            for (certificate_id, resource_types) in &resolved {
                 match self
                     .update_certificate_instance(
                         &tencent_credentials,
-                        materials,
                         certificate_id,
-                        &resource_types,
-                        input.repeatable,
+                        &new_certificate_id,
+                        resource_types,
                     )
                     .await
                 {
                     Ok(()) => {
-                        tracing::info!("腾讯云 SSL：已替换同域名证书 {certificate_id}（{domain}）");
+                        tracing::info!(
+                            "腾讯云 SSL：已替换同域名证书 {certificate_id} → {new_certificate_id}（{domain}）"
+                        );
+                        if input.delete_old {
+                            match self
+                                .delete_certificate(&tencent_credentials, certificate_id)
+                                .await
+                            {
+                                Ok(()) => {
+                                    tracing::info!(
+                                        "腾讯云 SSL：已删除旧证书 {certificate_id}（{domain}）"
+                                    );
+                                }
+                                Err(error) => {
+                                    failures.push(format!("删除旧证书 {certificate_id}: {error}"));
+                                    tracing::warn!(
+                                        "腾讯云 SSL：旧证书 {certificate_id} 删除失败，请人工处理（{domain}）：{error}"
+                                    );
+                                }
+                            }
+                        }
                     }
                     Err(error) => {
                         failures.push(format!("{certificate_id}: {error}"));
@@ -582,11 +655,11 @@ impl DeploymentTarget for TencentSslTarget {
                     failures.join("；")
                 );
             }
-            existing
+            vec![new_certificate_id]
         };
 
-        // paths 记云端证书 ID：本目标的「部署产物」就是证书库里那张证书，
-        // 部署历史凭它回溯（local 目标的 paths 是文件路径，语义随目标而异）。
+        // paths 记云端证书 ID：替换后生效的是预上传的新证书，部署历史凭
+        // 它回溯（local 目标的 paths 是文件路径，语义随目标而异）。
         Ok(DeployOutcome::written(paths))
     }
 }

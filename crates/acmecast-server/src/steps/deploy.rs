@@ -578,7 +578,13 @@ mod tests {
         );
         assert_eq!(
             targets["tencent-ssl"]["schema"]["x-field-order"],
-            serde_json::json!(["credential_id", "alias", "certificate_id", "repeatable"])
+            serde_json::json!([
+                "credential_id",
+                "alias",
+                "certificate_id",
+                "repeatable",
+                "delete_old"
+            ])
         );
     }
 
