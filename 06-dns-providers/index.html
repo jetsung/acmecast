@@ -1379,10 +1379,10 @@ CNAME 形态与字段对照：</p>
    （<code>fulldomain</code> 去掉 subdomain 段，如 <code>fulldomain = xxx.acme.example.org</code>
    则 <code>dns_zone: acme.example.org</code>）。</li>
 </ol>
-<p>示例：<code>fulldomain = 4104321c-….acme.666517.xyz</code>、授权域名 <code>test1.666517.xyz</code>：</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>_acme-challenge.test1.666517.xyz  CNAME  4104321c-….acme.666517.xyz.
+<p>示例：<code>fulldomain = 4104321c-….acme.example.edu</code>、授权域名 <code>test1.example.edu</code>：</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>_acme-challenge.test1.example.edu  CNAME  4104321c-….acme.example.edu.
 </span></code></pre></div>
-<p>流水线字段：<code>dns_alias: 4104321c-….acme.666517.xyz</code>、<code>dns_zone: acme.666517.xyz</code>。</p>
+<p>流水线字段：<code>dns_alias: 4104321c-….acme.example.edu</code>、<code>dns_zone: acme.example.edu</code>。</p>
 <p><strong>注意事项：</strong></p>
 <ul>
 <li><strong>同一账号同一时间只服务一个挑战</strong>：acme-dns 的 TXT 槽位是单账号单值的

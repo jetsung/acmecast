@@ -3024,9 +3024,9 @@
 <h4 id="r1">R1 通配符单域<a class="headerlink" href="#r1" title="Permanent link">&para;</a></h4>
 <p>当 <code>domains</code> 仅含一个元素且为 <code>*.xxx.xx</code> 形式时，<code>dns_zone</code> 缺省为剥离前缀 <code>*.</code> 后剩余的合法 zone。</p>
 <ul>
-<li>输入 <code>*.gcli.cn</code> → 推导 <code>gcli.cn</code></li>
+<li>输入 <code>*.example.org</code> → 推导 <code>example.org</code></li>
 <li>输入 <code>*.example.com</code> → 推导 <code>example.com</code></li>
-<li>输入 <code>*.x.idev.top</code> → 候选逐级为 <code>x.idev.top</code>、<code>idev.top</code>，取提供商侧首个已托管者；若均无，则回退 <code>x.idev.top</code> 并由创建阶段报错（不在此处吞错）。</li>
+<li>输入 <code>*.x.example.com</code> → 候选逐级为 <code>x.example.com</code>、<code>example.com</code>，取提供商侧首个已托管者；若均无，则回退 <code>x.example.com</code> 并由创建阶段报错（不在此处吞错）。</li>
 <li>若剥离后非合法 zone（如 <code>*.com</code>、<code>*.</code>、<code>*.example.</code>），视为无法推导，按 R4 处理。</li>
 </ul>
 <h4 id="r2">R2 非通配三级及以上单域<a class="headerlink" href="#r2" title="Permanent link">&para;</a></h4>
@@ -3039,7 +3039,7 @@
 <h4 id="r3">R3 单域且本身为二级域名<a class="headerlink" href="#r3" title="Permanent link">&para;</a></h4>
 <p>当 <code>domains</code> 仅含一个元素且本身就是二级域名（<code>xxx.xx</code>，恰含一个点）时，<code>dns_zone</code> 即其本身。</p>
 <ul>
-<li>输入 <code>skiy.net</code>、<code>example.com</code> → 推导自身 <code>skiy.net</code>、<code>example.com</code></li>
+<li>输入 <code>example.test</code>、<code>example.com</code> → 推导自身 <code>example.test</code>、<code>example.com</code></li>
 </ul>
 <h4 id="r4">R4 无法推导或多域必填<a class="headerlink" href="#r4" title="Permanent link">&para;</a></h4>
 <p>当无法通过 R1–R3 推导（如 <code>*.com</code>、空输入、非合法形态）或 <code>domains</code> 含多个域名时，<code>dns_zone</code> 为必填，缺失则在校验或执行期报错：</p>
@@ -3084,13 +3084,13 @@
 </thead>
 <tbody>
 <tr>
-<td><code>*.gcli.cn</code></td>
-<td><code>gcli.cn</code></td>
+<td><code>*.example.org</code></td>
+<td><code>example.org</code></td>
 <td>R1</td>
 </tr>
 <tr>
-<td><code>*.x.idev.top</code></td>
-<td><code>x.idev.top</code> 或其父域的已托管者</td>
+<td><code>*.x.example.com</code></td>
+<td><code>x.example.com</code> 或其父域的已托管者</td>
 <td>R1 + 逐级探测</td>
 </tr>
 <tr>
@@ -3104,8 +3104,8 @@
 <td>R2</td>
 </tr>
 <tr>
-<td><code>skiy.net</code></td>
-<td><code>skiy.net</code></td>
+<td><code>example.test</code></td>
+<td><code>example.test</code></td>
 <td>R3</td>
 </tr>
 <tr>
@@ -4584,7 +4584,7 @@
 <h3 id="id">按选中证书 ID 部署<a class="headerlink" href="#id" title="Permanent link">&para;</a></h3>
 <p><code>certificate_id</code> 非空时进入替换模式：跳过「同域名存在性判断 / 自动匹配」流程，直接以该值为 <code>OldCertificateId</code> 调用 <code>UpdateCertificateInstance</code>，把本次证书链与私钥作为新证书上传入云，并将选中证书绑定的云资源切换到新证书。<code>ResourceTypes</code> 从选中证书的云端绑定抓取（与同域名替换分支一致），抓取为空时报可读错误含手动部署链接。<code>Repeatable</code> 按输入透传，不携带 <code>Alias</code>。<code>certificate_id</code> 为空时走上传 + 同域名自动匹配替换流程。</p>
 <h3 id="_72">同步云端证书列表端点<a class="headerlink" href="#_72" title="Permanent link">&para;</a></h3>
-<p>控制台后端提供 HTTP 端点，按给定腾讯云凭据调用 <code>DescribeCertificates</code>（<a href="https://cloud.tencent.com/document/product/400/41671">接口文档</a>）拉取云端服务器证书列表，供部署表单的「证书 ID」下拉框同步填充。端点 MUST 接收凭据标识，按凭据 <code>account_site</code> 走对应站点端点，返回每张证书的标识与显示文本：<code>value</code> 为云端证书 ID，<code>label</code> 为「证书ID（域名）」或「证书ID（域名 - 别名）」（如 <code>a9ZwitUs (idev.top - idev)</code>）。端点 MUST 遍历全部分页不漏返回；对非 <code>cloud.tencent</code> 类型凭据 MUST 以可读的输入错误失败，不发起云端调用。</p>
+<p>控制台后端提供 HTTP 端点，按给定腾讯云凭据调用 <code>DescribeCertificates</code>（<a href="https://cloud.tencent.com/document/product/400/41671">接口文档</a>）拉取云端服务器证书列表，供部署表单的「证书 ID」下拉框同步填充。端点 MUST 接收凭据标识，按凭据 <code>account_site</code> 走对应站点端点，返回每张证书的标识与显示文本：<code>value</code> 为云端证书 ID，<code>label</code> 为「证书ID（域名）」或「证书ID（域名 - 别名）」（如 <code>a9ZwitUs (example.com - idev)</code>）。端点 MUST 遍历全部分页不漏返回；对非 <code>cloud.tencent</code> 类型凭据 MUST 以可读的输入错误失败，不发起云端调用。</p>
 <h3 id="id_1">部署表单证书 ID 下拉与同步交互<a class="headerlink" href="#id_1" title="Permanent link">&para;</a></h3>
 <p><code>tencent-ssl</code> 部署目标表单提供「证书 ID」下拉框控件：默认为空、单选、可清空选值。该字段 SHALL 独占一行但只占半列（<code>x-end-row</code>，右侧留空占位列），「同步」按钮 SHALL 位于下拉框右侧、与下拉框同处一行，下拉框占满该半宽列的剩余宽度。点击「同步」按钮调用同步云端证书列表端点（按当前所选 <code>credential_id</code>）拉取证书列表并填充下拉框选项；未选凭据或凭据非 <code>cloud.tencent</code> 时同步按钮 SHALL 提示无法同步且不发起请求。下拉框选中一个证书 ID 后，表单 SHALL 进入替换模式：把 <code>repeatable</code> 固定为 <code>false</code> 并禁用其开关（用户无法在选中期间改动）；清空证书 ID 选值后，开关恢复可编辑。<code>repeatable</code> SHALL 占半宽。下拉框选项的显示文本与同步端点返回的 <code>label</code> 一致。</p>
 <h3 id="_73">跳过写入时不产生云端变更<a class="headerlink" href="#_73" title="Permanent link">&para;</a></h3>

@@ -1015,8 +1015,8 @@
 <li><strong>记录已写进 Cloudflare，CA 却报 <code>No TXT record found</code></strong>：多半是
   <code>dns_zone</code> 配了委派目标 zone，但 CNAME 委派链没接好。此时错误会同时给出
   两个记录名——<strong>写入名</strong>（写在 <code>dns_zone</code> 下的那个，如
-  <code>_acme-challenge.666517.xyz</code>）与 <strong>CA 查询名</strong>（按授权域名派生的那个，如
-  <code>_acme-challenge.skiy.net</code>）。日志里的「写入挑战记录 …（CA 查询名 …，经 CNAME
+  <code>_acme-challenge.example.edu</code>）与 <strong>CA 查询名</strong>（按授权域名派生的那个，如
+  <code>_acme-challenge.example.test</code>）。日志里的「写入挑战记录 …（CA 查询名 …，经 CNAME
   委派）」也是这两个。用 <code>dig +short CNAME &lt;CA 查询名&gt;</code> 确认委派存在且指向
   写入名；查不到 CNAME 就是委派没建或已被同名 TXT/CNAME 盖住。</li>
 <li><strong>报「异值残留」</strong>：<code>_acme-challenge</code> 下有上次失败留下的旧 TXT 记录。

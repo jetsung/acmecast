@@ -1137,7 +1137,7 @@
 <td><code>dns_zone</code></td>
 <td>string</td>
 <td>否</td>
-<td>挑战记录写入的 DNS zone；缺省从主域名去掉第一段推导（<code>a.example.com</code> → <code>example.com</code>）。该字段同时决定写入的 zone 与记录名 <code>_acme-challenge.&lt;dns_zone&gt;</code>；挑战记录经 CNAME 委派到别处托管时（<code>_acme-challenge.skiy.net</code> CNAME 到 <code>_acme-challenge.666517.xyz</code>），填记录<strong>实际托管</strong>的 zone 即 <code>666517.xyz</code></td>
+<td>挑战记录写入的 DNS zone；缺省从主域名去掉第一段推导（<code>a.example.com</code> → <code>example.com</code>）。该字段同时决定写入的 zone 与记录名 <code>_acme-challenge.&lt;dns_zone&gt;</code>；挑战记录经 CNAME 委派到别处托管时（<code>_acme-challenge.example.test</code> CNAME 到 <code>_acme-challenge.example.edu</code>），填记录<strong>实际托管</strong>的 zone 即 <code>example.edu</code></td>
 </tr>
 <tr>
 <td><code>dns_alias</code></td>

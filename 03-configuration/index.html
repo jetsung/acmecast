@@ -1152,6 +1152,13 @@
 <td>未设置（直连）</td>
 <td>凭据 <code>proxy_mode=inherit</code> 与 DoH 回退共用，见下文「全局代理」</td>
 </tr>
+<tr>
+<td>调度时区</td>
+<td><code>scheduler.timezone</code></td>
+<td><code>ACMECAST_TIMEZONE</code></td>
+<td>服务器本地时区</td>
+<td>cron 触发点的解释时区（IANA 名，如 <code>Asia/Shanghai</code>）；全局调度与流水线级调度共用。缺省跟随操作系统时区：先读 <code>TZ</code> 环境变量（Docker 部署设 <code>TZ=Asia/Shanghai</code> 即可），再读 <code>/etc/localtime</code>，均不可得时回退 UTC</td>
+</tr>
 </tbody>
 </table>
 <h2 id="configtoml">安全相关环境变量（仅环境变量，不入 config.toml）<a class="headerlink" href="#configtoml" title="Permanent link">&para;</a></h2>
