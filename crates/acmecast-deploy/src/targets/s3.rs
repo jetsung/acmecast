@@ -465,16 +465,16 @@ mod tests {
     fn absolute_keys_join_with_the_prefix_via_a_single_slash() {
         use crate::targets::join_path;
         assert_eq!(
-            join_path("acme/", "/tmp/t3/_wildcard.w.idev.top.fullchain.cer"),
-            "acme/tmp/t3/_wildcard.w.idev.top.fullchain.cer"
+            join_path("acme/", "/tmp/t3/_wildcard.w.example.com.fullchain.cer"),
+            "acme/tmp/t3/_wildcard.w.example.com.fullchain.cer"
         );
         assert_eq!(
             format!(
                 "s3://{}/{}",
                 "backup",
-                join_path("acme/", "/tmp/t3/_wildcard.w.idev.top.key")
+                join_path("acme/", "/tmp/t3/_wildcard.w.example.com.key")
             ),
-            "s3://backup/acme/tmp/t3/_wildcard.w.idev.top.key"
+            "s3://backup/acme/tmp/t3/_wildcard.w.example.com.key"
         );
     }
 

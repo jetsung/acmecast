@@ -1154,8 +1154,8 @@ async fn delete_old_defaults_to_off() {
 async fn describe_certificates_collects_every_page() {
     let transport = ScriptedTransport::new(vec![
         // 第一页声称共有 1001 张：必须翻到第二页才算全量。
-        describe_page(1001, &[("idev.top", "CERTA")]),
-        describe_page(1001, &[("idev.top", "CERTB")]),
+        describe_page(1001, &[("example.com", "CERTA")]),
+        describe_page(1001, &[("example.com", "CERTB")]),
     ]);
     let target = TencentSslTarget::with_transport(Arc::clone(&transport) as Arc<dyn HttpTransport>);
     let credentials: acmecast_dns::providers::tencent::TencentCredentials =
@@ -1184,18 +1184,18 @@ async fn describe_certificates_collects_every_page() {
 #[test]
 fn cert_labels_keep_the_declared_format() {
     assert_eq!(
-        acmecast_deploy::format_cert_label("a9ZwitUs", "idev.top", Some("idev")),
-        "a9ZwitUs (idev.top - idev)",
+        acmecast_deploy::format_cert_label("a9ZwitUs", "example.com", Some("idev")),
+        "a9ZwitUs (example.com - idev)",
         "有别名：证书ID (域名 - 别名)"
     );
     assert_eq!(
-        acmecast_deploy::format_cert_label("a9ZwitUs", "idev.top", None),
-        "a9ZwitUs (idev.top)",
+        acmecast_deploy::format_cert_label("a9ZwitUs", "example.com", None),
+        "a9ZwitUs (example.com)",
         "无别名：证书ID (域名)"
     );
     assert_eq!(
-        acmecast_deploy::format_cert_label("a9ZwitUs", "idev.top", Some("   ")),
-        "a9ZwitUs (idev.top)",
+        acmecast_deploy::format_cert_label("a9ZwitUs", "example.com", Some("   ")),
+        "a9ZwitUs (example.com)",
         "空白别名按无别名处理"
     );
 }

@@ -79,6 +79,7 @@ docker build -f docker/CN.Dockerfile -t acmecast:dev .
 | `ACMECAST_DATABASE_URL` | 数据目录下 SQLite | 连接串（见下「数据库」） |
 | `ACMECAST_STATIC_DIR` | 未设置 | 前端静态资源目录；未设置时不托管（仅 API） |
 | `ACMECAST_BODY_LIMIT_BYTES` | `2097152` | 请求体体积上限 |
+| `ACMECAST_TIMEZONE` | 服务器本地时区 | cron 触发点的解释时区（IANA 名，如 `Asia/Shanghai`）；全局调度与流水线级调度共用，也可用 `config.toml` 的 `[scheduler] timezone` 配置。缺省跟随操作系统时区：先读标准 `TZ` 环境变量（Docker 部署设 `TZ=Asia/Shanghai` 即可），再读 `/etc/localtime`，均不可得时回退 UTC |
 
 ### 安全（部署前必须核对）
 

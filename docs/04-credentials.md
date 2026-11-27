@@ -113,7 +113,7 @@ DNS-01 挑战设计的轻量 DNS 服务，凭据只管一个 subdomain 的 TXT �
 
 | 字段 | 说明 |
 |---|---|
-| `api_url` | acme-dns 服务器基地址，如 `https://acmedns.asfd.cn` |
+| `api_url` | acme-dns 服务器基地址，如 `https://acmedns.example.net` |
 | `username` | 注册返回的 username（UUID） |
 | `password` | 注册返回的 password |
 | `subdomain` | 注册返回的 subdomain（UUID），TXT 恒写在该账号的 `fulldomain` 上 |

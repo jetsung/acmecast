@@ -25,6 +25,7 @@ acmecast-server 的配置合并优先级为 **内置默认 < config.toml < 环�
 | 请求体上限 | `server.body_limit_bytes` | `ACMECAST_BODY_LIMIT_BYTES` | `2097152`（2 MiB） | 超出返回 413 `payload_too_large`；env 须 > 0 |
 | 跳过 CA 证书校验 | `server.accept_invalid_acme_certs` | `ACMECAST_INSECURE_SKIP_VERIFY` | `false` | 仅供自建测试 CA（pebble 等）使用 |
 | 全局出网代理 | `proxy.url` | `ACMECAST_PROXY_URL` | 未设置（直连） | 凭据 `proxy_mode=inherit` 与 DoH 回退共用，见下文「全局代理」 |
+| 调度时区 | `scheduler.timezone` | `ACMECAST_TIMEZONE` | 服务器本地时区 | cron 触发点的解释时区（IANA 名，如 `Asia/Shanghai`）；全局调度与流水线级调度共用。缺省跟随操作系统时区：先读 `TZ` 环境变量（Docker 部署设 `TZ=Asia/Shanghai` 即可），再读 `/etc/localtime`，均不可得时回退 UTC |
 
 ## 安全相关环境变量（仅环境变量，不入 config.toml）
 

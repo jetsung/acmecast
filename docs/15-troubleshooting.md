@@ -28,8 +28,8 @@
 - **记录已写进 Cloudflare，CA 却报 `No TXT record found`**：多半是
   `dns_zone` 配了委派目标 zone，但 CNAME 委派链没接好。此时错误会同时给出
   两个记录名——**写入名**（写在 `dns_zone` 下的那个，如
-  `_acme-challenge.666517.xyz`）与 **CA 查询名**（按授权域名派生的那个，如
-  `_acme-challenge.skiy.net`）。日志里的「写入挑战记录 …（CA 查询名 …，经 CNAME
+  `_acme-challenge.example.edu`）与 **CA 查询名**（按授权域名派生的那个，如
+  `_acme-challenge.example.test`）。日志里的「写入挑战记录 …（CA 查询名 …，经 CNAME
   委派）」也是这两个。用 `dig +short CNAME <CA 查询名>` 确认委派存在且指向
   写入名；查不到 CNAME 就是委派没建或已被同名 TXT/CNAME 盖住。
 - **报「异值残留」**：`_acme-challenge` 下有上次失败留下的旧 TXT 记录。

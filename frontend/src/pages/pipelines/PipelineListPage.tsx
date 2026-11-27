@@ -173,9 +173,33 @@ export function PipelineListPage() {
       title: "名称",
       dataIndex: "name",
       width: 160,
-      render: (name: string, row) => (
-        <a onClick={() => navigate(`/pipelines/${row.id}`)}>{name}</a>
-      ),
+      render: (name: string, row) => {
+        const link = (
+          <a onClick={() => navigate(`/pipelines/${row.id}`)}>{name}</a>
+        );
+        // 悬浮显示该流水线绑定的域名列表（来自 cert.apply），数据全部来自
+        // 列表行已有字段，无额外请求；无域名时不弹层。
+        if (!row.domains?.length) return link;
+        return (
+          <Tooltip
+            title={
+              // 标签与域名列表拆为 flex 两栏：域名逐行显示时与「域名:」
+              // 冒号之后对齐，不与标签首字顶格。
+              <div style={{ display: "flex" }}>
+                <strong style={{ flexShrink: 0 }}>域名:</strong>
+                <span style={{ marginLeft: 4, minWidth: 0 }}>
+                  {row.domains.map((domain) => (
+                    <div key={domain}>{domain}</div>
+                  ))}
+                </span>
+              </div>
+            }
+            overlayInnerStyle={TOOLTIP_OVERLAY_INNER_STYLE}
+          >
+            {link}
+          </Tooltip>
+        );
+      },
     },
     {
       title: "描述",

@@ -233,6 +233,7 @@ async fn run(config_override: Option<&str>) -> Result<(), Box<dyn std::error::Er
         runtime.redis.clone(),
         std::sync::Arc::clone(&runtime.run_control),
         http_shutdown.clone(),
+        config.scheduler_tz,
     );
 
     let listener = TcpListener::bind(&config.listen_addr).await?;

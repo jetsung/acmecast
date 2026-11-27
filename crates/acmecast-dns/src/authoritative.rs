@@ -674,7 +674,7 @@ mod tests {
     #[async_trait]
     impl Authority for SplitAuthority {
         async fn name_server_ips(&self, zone: &str) -> Result<Vec<IpAddr>> {
-            if zone == "666517.xyz" {
+            if zone == "example.edu" {
                 Ok(vec!["10.0.0.2".parse().unwrap()])
             } else {
                 Ok(vec!["10.0.0.1".parse().unwrap()])
@@ -696,28 +696,28 @@ mod tests {
 
     #[tokio::test]
     async fn a_cname_across_zones_is_followed_to_the_delegation_target() {
-        // 流水线 #12 的真实形态：`_acme-challenge.skiy.net` CNAME 到
-        // `_acme-challenge.666517.xyz`。首跳 zone 是委派源（skiy.net），
-        // 记录写在委派目标（666517.xyz）下——两者 NS 各不相同。
+        // 流水线 #12 的真实形态：`_acme-challenge.example.test` CNAME 到
+        // `_acme-challenge.example.edu`。首跳 zone 是委派源（example.test），
+        // 记录写在委派目标（example.edu）下——两者 NS 各不相同。
         let inner = FakeAuthority::new(&[]);
         inner.cname_at(
             "10.0.0.1",
-            "_acme-challenge.skiy.net",
-            "_acme-challenge.666517.xyz.",
+            "_acme-challenge.example.test",
+            "_acme-challenge.example.edu.",
         );
         inner.answer(
             "10.0.0.2",
-            "_acme-challenge.666517.xyz",
+            "_acme-challenge.example.edu",
             &["challenge-value"],
         );
 
         let resolver = AuthoritativeResolver::with_authority(
-            "skiy.net",
+            "example.test",
             Arc::new(SplitAuthority { inner }) as Arc<dyn Authority>,
         );
 
         let values = resolver
-            .lookup_txt("_acme-challenge.skiy.net")
+            .lookup_txt("_acme-challenge.example.test")
             .await
             .expect("跨 zone 跟随 CNAME 应查到值");
         assert_eq!(values, vec!["challenge-value".to_owned()]);
@@ -726,17 +726,17 @@ mod tests {
     #[tokio::test]
     async fn a_missing_authority_names_the_query_in_the_error() {
         let resolver = AuthoritativeResolver::with_authority(
-            "skiy.net",
+            "example.test",
             Arc::new(FakeAuthority::new(&[])) as Arc<dyn Authority>,
         );
         let error = resolver
-            .lookup_txt("_acme-challenge.skiy.net")
+            .lookup_txt("_acme-challenge.example.test")
             .await
             .expect_err("无 NS 应报错");
         let message = error.to_string();
-        assert!(message.contains("skiy.net"), "错误应带 zone：{message}");
+        assert!(message.contains("example.test"), "错误应带 zone：{message}");
         assert!(
-            message.contains("_acme-challenge.skiy.net"),
+            message.contains("_acme-challenge.example.test"),
             "错误应带查询名：{message}"
         );
     }

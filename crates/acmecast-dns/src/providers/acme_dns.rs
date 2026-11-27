@@ -20,8 +20,8 @@
 //! # 接入方式
 //!
 //! 流水线走 domain-alias 模式：`dns_alias` 填注册返回的 `fulldomain`
-//! （如 `4104321c-….acme.666517.xyz`），`dns_zone` 填服务器 ACME zone
-//! （如 `acme.666517.xyz`），CNAME 形如
+//! （如 `4104321c-….acme.example.edu`），`dns_zone` 填服务器 ACME zone
+//! （如 `acme.example.edu`），CNAME 形如
 //! `_acme-challenge.<授权域名> → <fulldomain>`。
 
 use std::sync::Arc;
@@ -46,7 +46,7 @@ use crate::provider::{DnsProvider, TxtRecord, parse_credentials};
 /// （运行时从 fulldomain 取第一段推导 subdomain 是隐含约定，靠不住）。
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct AcmeDnsCredentials {
-    /// acme-dns 服务器基地址，如 `https://acmedns.asfd.cn`（尾部斜杠可省）。
+    /// acme-dns 服务器基地址，如 `https://acmedns.example.net`（尾部斜杠可省）。
     pub api_url: String,
     /// 注册返回的 username（UUID）。
     pub username: String,

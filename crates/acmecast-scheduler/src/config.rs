@@ -6,8 +6,15 @@
 use chrono::Duration;
 
 /// 调度器的运行参数。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SchedulerConfig {
+    /// cron 触发点的解释时区（见 specs：cron 触发点按可配置时区判定）。
+    ///
+    /// cron 表达式中的「时」「分」按它解释，触发点存储仍为 UTC 时刻。
+    /// 由 `AppConfig::scheduler_tz` 从配置解析，引擎与 HTTP 保存路径共享
+    /// 同一份，保证两边口径一致。
+    pub tz: chrono_tz::Tz,
+
     /// cron 检查周期。
     ///
     /// 引擎每隔这么久醒来检查一次「有没有调度到达触发点」。它决定 cron
@@ -38,6 +45,8 @@ pub struct SchedulerConfig {
 impl Default for SchedulerConfig {
     fn default() -> Self {
         Self {
+            // 未显式配置时按服务器本地时区；探测失败回退 UTC（core 里已 warn）。
+            tz: acmecast_core::config::resolve_tz(None),
             tick_interval: Duration::seconds(30),
             scan_interval: Duration::hours(1),
             renewal_threshold: Duration::days(30),

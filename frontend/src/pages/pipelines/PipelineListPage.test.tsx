@@ -348,3 +348,88 @@ describe("流水线列表描述列", () => {
     });
   });
 });
+
+describe("流水线列表名称列悬浮域名", () => {
+  it("悬浮名称显示该流水线的域名列表", async () => {
+    const { client } = await import("@/api/client");
+    vi.mocked(client.GET).mockResolvedValueOnce({
+      data: {
+        data: {
+          items: [
+            {
+              id: 21,
+              name: "with-domains",
+              description: null,
+              enabled: true,
+              step_count: 2,
+              domains: ["*.example.com", "example.com"],
+              created_at: "2026-10-01T00:00:00Z",
+              updated_at: "2026-10-01T00:00:00Z",
+            },
+          ],
+          total: 1,
+        },
+      },
+      response: new Response(),
+    } as never);
+    const { container } = renderPage();
+
+    const link = await screen.findByText("with-domains");
+    fireEvent.mouseEnter(link);
+
+    const tooltip = await screen.findByRole("tooltip");
+    expect(tooltip.textContent).toContain("域名");
+    expect(tooltip.textContent).toContain("*.example.com");
+    expect(tooltip.textContent).toContain("example.com");
+
+    // 布局结构：「域名:」标签与域名列表分属 flex 两栏节点，域名逐行显示时
+    // 与「域名:」冒号之后对齐，不与标签首字顶格。
+    const entry = Array.from(tooltip.querySelectorAll<HTMLElement>("div")).find(
+      (el) => el.style.display === "flex",
+    );
+    expect(entry).toBeDefined();
+    const label = entry!.querySelector("strong");
+    expect(label?.textContent).toBe("域名:");
+    const valueNode = label?.nextElementSibling;
+    expect(valueNode?.tagName).toBe("SPAN");
+    expect(valueNode?.textContent).toContain("*.example.com");
+
+    // 数据全部来自列表行，未因悬浮发起额外请求。
+    expect(client.GET).toHaveBeenCalledTimes(1);
+    void container;
+  });
+
+  it("无域名的流水线悬浮名称不弹层", async () => {
+    const { client } = await import("@/api/client");
+    vi.mocked(client.GET).mockResolvedValueOnce({
+      data: {
+        data: {
+          items: [
+            {
+              id: 22,
+              name: "no-domains",
+              description: null,
+              enabled: true,
+              step_count: 1,
+              domains: [],
+              created_at: "2026-10-01T00:00:00Z",
+              updated_at: "2026-10-01T00:00:00Z",
+            },
+          ],
+          total: 1,
+        },
+      },
+      response: new Response(),
+    } as never);
+    renderPage();
+
+    const link = await screen.findByText("no-domains");
+    fireEvent.mouseEnter(link);
+
+    // 留出弹层挂载窗口：若误包 Tooltip，这里会出现 tooltip 节点。
+    await sleep(100);
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    // 链接跳转行为不受影响（仍是链接元素）。
+    expect(link.closest("a")).toBeTruthy();
+  });
+});

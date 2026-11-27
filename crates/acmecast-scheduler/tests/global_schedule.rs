@@ -7,7 +7,7 @@
 use std::sync::{Arc, Mutex};
 
 use acmecast_pipeline::{HistoryRecord, HistoryRepository};
-use acmecast_scheduler::{LaunchRequest, PipelineLauncher, SchedulerEngine};
+use acmecast_scheduler::{LaunchRequest, PipelineLauncher, SchedulerConfig, SchedulerEngine};
 use acmecast_store::entity::history::RunStatus;
 use acmecast_store::entity::pipeline::TriggerSource;
 use acmecast_store::migrate;
@@ -108,11 +108,14 @@ async fn a_running_run(db: &DatabaseConnection, pipeline_id: i64) {
 /// 保存启用的全局调度，并把触发点拨到过去（下一次 tick 即到点）。
 async fn a_due_global_schedule(db: &DatabaseConnection, now: DateTime<Utc>) {
     let repo = GlobalScheduleRepository::new(db);
-    repo.save(GlobalScheduleInput {
-        cron: Some("0 3 * * *".to_owned()),
-        enabled: true,
-        catch_up: false,
-    })
+    repo.save(
+        GlobalScheduleInput {
+            cron: Some("0 3 * * *".to_owned()),
+            enabled: true,
+            catch_up: false,
+        },
+        chrono_tz::UTC,
+    )
     .await
     .expect("全局调度应能保存");
     // 触发点拨到过去：下一次 tick 即视为到点。
@@ -379,11 +382,14 @@ async fn catch_up_starts_the_sequence_after_a_restart_gap() {
 
     a_pipeline(&db, "member", true).await;
     let repo = GlobalScheduleRepository::new(&db);
-    repo.save(GlobalScheduleInput {
-        cron: Some("0 3 * * *".to_owned()),
-        enabled: true,
-        catch_up: true,
-    })
+    repo.save(
+        GlobalScheduleInput {
+            cron: Some("0 3 * * *".to_owned()),
+            enabled: true,
+            catch_up: true,
+        },
+        chrono_tz::UTC,
+    )
     .await
     .expect("全局调度应能保存");
     // 触发点拨到过去：load 视为「停机跨过了最近一次触发点」。
@@ -402,6 +408,112 @@ async fn catch_up_starts_the_sequence_after_a_restart_gap() {
     let global = repo.get_or_default().await.expect("全局调度应能读回");
     assert!(
         global.next_trigger_at.is_some_and(|next| next > now),
+        "补跑后触发点推进到未来：{global:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_global_schedule_fires_at_the_configured_local_time() {
+    // 东八区本地 03:00 == UTC 前一日 19:00：引擎按配置时区判定到点。
+    let db = database().await;
+    let launcher = Arc::new(RecordingLauncher::default());
+    a_pipeline(&db, "only", true).await;
+    let repo = GlobalScheduleRepository::new(&db);
+    repo.save(
+        GlobalScheduleInput {
+            cron: Some("0 3 * * *".to_owned()),
+            enabled: true,
+            catch_up: false,
+        },
+        chrono_tz::UTC,
+    )
+    .await
+    .expect("全局调度应能保存");
+
+    let due = DateTime::parse_from_rfc3339("2026-01-01T19:00:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    repo.mark_triggered(Some(None), Some(due))
+        .await
+        .expect("触发点应能拨到本地 03:00");
+
+    let engine = SchedulerEngine::new(
+        &db,
+        Arc::clone(&launcher) as _,
+        SchedulerConfig {
+            tz: chrono_tz::Asia::Shanghai,
+            ..Default::default()
+        },
+    );
+
+    // 本地 02:59：尚未到点，不启动序列。
+    engine
+        .tick(due - Duration::minutes(1))
+        .await
+        .expect("tick 应成功");
+    wait_for_requests(&launcher, 0).await;
+    assert!(launcher.requested().is_empty(), "本地 02:59 不应触发");
+
+    // 本地 03:00 过后：启动一次全局串行序列。
+    engine
+        .tick(due + Duration::minutes(1))
+        .await
+        .expect("tick 应成功");
+    wait_for_requests(&launcher, 1).await;
+    assert_eq!(
+        launcher.requested().len(),
+        1,
+        "本地 03:00 应启动一次全局序列"
+    );
+}
+
+#[tokio::test]
+async fn global_catch_up_runs_the_missed_local_trigger_once() {
+    // 停机补跑按配置时区判定：重启装载时补跑最近一次错过的本地触发点。
+    let db = database().await;
+    let launcher = Arc::new(RecordingLauncher::default());
+    a_pipeline(&db, "only", true).await;
+    let repo = GlobalScheduleRepository::new(&db);
+    repo.save(
+        GlobalScheduleInput {
+            cron: Some("0 3 * * *".to_owned()),
+            enabled: true,
+            catch_up: true,
+        },
+        chrono_tz::UTC,
+    )
+    .await
+    .expect("全局调度应能保存");
+
+    let missed = DateTime::parse_from_rfc3339("2026-01-01T19:00:00Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    repo.mark_triggered(Some(None), Some(missed))
+        .await
+        .expect("触发点应能拨到错过的本地时刻");
+
+    let engine = SchedulerEngine::new(
+        &db,
+        Arc::clone(&launcher) as _,
+        SchedulerConfig {
+            tz: chrono_tz::Asia::Shanghai,
+            ..Default::default()
+        },
+    );
+    engine
+        .load(missed + Duration::hours(1))
+        .await
+        .expect("装载应成功");
+
+    wait_for_requests(&launcher, 1).await;
+    assert_eq!(
+        launcher.requested().len(),
+        1,
+        "装载时应补跑错过的本地 03:00 触发点"
+    );
+    let global = repo.get_or_default().await.expect("查询应成功");
+    assert!(
+        global.next_trigger_at.is_some_and(|next| next > missed),
         "补跑后触发点推进到未来：{global:?}"
     );
 }

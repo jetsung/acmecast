@@ -98,7 +98,7 @@ pub struct AcmeApplyInput {
     /// DNS zone；显式配置优先。`domains` 配置多个域名时必须显式配置
     /// （各域名需同属该 zone）。留空时仅当「去掉第一段后仍是合法 zone」
     /// 才自动推导（`a.example.com` → `example.com`）；注册域本身
-    /// （`skiy.net`）与通配符注册域（`*.skiy.net`）无法可靠推导，
+    /// （`example.test`）与通配符注册域（`*.example.test`）无法可靠推导，
     /// 会在执行时报错要求显式配置。
     #[serde(default)]
     pub dns_zone: Option<String>,
@@ -961,8 +961,8 @@ impl CertApplyStep {
             .await
             .map_err(|e| domain_error("读取挑战材料", e))?;
         // 显式给了 zone 就用它；留空（未填或空串）则自动推导——
-        // 通配授权（`*.gcli.cn`）的 identifier 为 base domain（`gcli.cn`）+ wildcard 标记，
-        // 其 zone 即 base domain 本身；`*.x.idev.top` 则需在提供商中逐级探测父 zone。
+        // 通配授权（`*.example.org`）的 identifier 为 base domain（`example.org`）+ wildcard 标记，
+        // 其 zone 即 base domain 本身；`*.x.example.com` 则需在提供商中逐级探测父 zone。
         let zone = match input.dns_zone.as_deref().map(str::trim) {
             Some(zone) if !zone.is_empty() => zone.to_owned(),
             _ if authorization.wildcard => {
@@ -1307,9 +1307,9 @@ fn dns_alias_of(input: &AcmeApplyInput) -> Result<Option<String>> {
 ///   CA 按订单标识符查找，不知道记录存在哪个 zone。
 /// - **写入名**按选定 zone 派生为 `_acme-challenge.<zone>`，保证它**必然属于**
 ///   该 zone。让「写入名不得越出 zone」成为构造上的恒等式，而不是需要事后
-///   校验的约定：跨 zone CNAME 委派时（`*.skiy.net` 的挑战记录 CNAME 到
-///   `_acme-challenge.666517.xyz`），写入名是 `_acme-challenge.666517.xyz`，
-///   而 CA 查询名仍是 `_acme-challenge.skiy.net`。
+///   校验的约定：跨 zone CNAME 委派时（`*.example.test` 的挑战记录 CNAME 到
+///   `_acme-challenge.example.edu`），写入名是 `_acme-challenge.example.edu`，
+///   而 CA 查询名仍是 `_acme-challenge.example.test`。
 ///
 /// 两者相同时退化为 `TxtRecord::new`，既有同 zone 场景行为不变。
 ///
@@ -1337,11 +1337,11 @@ fn challenge_record(
 
 /// 从授权域名推导 DNS zone。
 ///
-/// - 输入含 `*.` 前缀的通配符时（`*.gcli.cn`、`*.example.com`），zone 即剥前缀后的
-///   剩余部分（`gcli.cn`、`example.com`），不经「去掉第一段」推导——这是通配符
-///   场景的可靠语义：`*.gcli.cn` 的 zone 就是 `gcli.cn`。
+/// - 输入含 `*.` 前缀的通配符时（`*.example.org`、`*.example.com`），zone 即剥前缀后的
+///   剩余部分（`example.org`、`example.com`），不经「去掉第一段」推导——这是通配符
+///   场景的可靠语义：`*.example.org` 的 zone 就是 `example.org`。
 /// - 非通配符时仍按「去掉第一段且剩余仍含点」推导（`a.example.com` → `example.com`）；
-///   注册域本身（`skiy.net`、`example.com`）返回 `None`，由调用点要求显式配置。
+///   注册域本身（`example.test`、`example.com`）返回 `None`，由调用点要求显式配置。
 /// - 输入为单段或无点时返回 `None`。
 fn zone_of(domain: &str) -> Option<String> {
     let trimmed = domain.trim();
@@ -1400,7 +1400,7 @@ async fn resolve_wildcard_zone(
         let Some(dot) = cur.find('.') else { break };
         let next = &cur[dot + 1..];
         if !next.contains('.') {
-            // 如 `idev.top` 已入候选，`top` 不应作为 zone
+            // 如 `example.com` 已入候选，`top` 不应作为 zone
             break;
         }
         cur = next;
@@ -1714,29 +1714,29 @@ mod tests {
         assert_eq!(zone_of("a.example.com").as_deref(), Some("example.com"));
         assert_eq!(zone_of("a.b.example.com").as_deref(), Some("b.example.com"));
 
-        // 通配符的两级域名：zone 即 base domain（`*.gcli.cn` → `gcli.cn`、`*.skiy.net` → `skiy.net`）。
-        assert_eq!(zone_of("*.gcli.cn").as_deref(), Some("gcli.cn"));
-        assert_eq!(zone_of("*.skiy.net").as_deref(), Some("skiy.net"));
+        // 通配符的两级域名：zone 即 base domain（`*.example.org` → `example.org`、`*.example.test` → `example.test`）。
+        assert_eq!(zone_of("*.example.org").as_deref(), Some("example.org"));
+        assert_eq!(zone_of("*.example.test").as_deref(), Some("example.test"));
         assert_eq!(zone_of("*.example.com").as_deref(), Some("example.com"));
 
         // 二级域本身（非通配符）按 SEPC R3 视为自身即 zone，可直接推导。
-        assert_eq!(zone_of("skiy.net").as_deref(), Some("skiy.net"));
+        assert_eq!(zone_of("example.test").as_deref(), Some("example.test"));
         assert_eq!(zone_of("example.com").as_deref(), Some("example.com"));
-        assert_eq!(zone_of("gcli.cn").as_deref(), Some("gcli.cn"));
+        assert_eq!(zone_of("example.org").as_deref(), Some("example.org"));
     }
 
     #[test]
     fn a_cname_delegated_zone_splits_the_two_record_names() {
-        // 流水线 #12 的真实配置：域名 *.skiy.net 的挑战记录 CNAME 委派到
-        // 666517.xyz 托管。写入名落在 dns_zone 下，CA 查询名留在授权域名一侧。
-        let record = challenge_record("666517.xyz", "skiy.net", None, "value");
+        // 流水线 #12 的真实配置：域名 *.example.test 的挑战记录 CNAME 委派到
+        // example.edu 托管。写入名落在 dns_zone 下，CA 查询名留在授权域名一侧。
+        let record = challenge_record("example.edu", "example.test", None, "value");
 
         assert_eq!(
-            record.name, "_acme-challenge.666517.xyz",
+            record.name, "_acme-challenge.example.edu",
             "写入名应在 dns_zone 下"
         );
         assert_eq!(
-            record.ca_name, "_acme-challenge.skiy.net",
+            record.ca_name, "_acme-challenge.example.test",
             "CA 查询名应按授权域名"
         );
         assert!(record.is_delegated());
@@ -1745,17 +1745,17 @@ mod tests {
             "_acme-challenge"
         );
         // 权威首跳要走委派源一侧，否则拿不到那条 CNAME。
-        assert_eq!(record.ca_zone(), "skiy.net");
+        assert_eq!(record.ca_zone(), "example.test");
     }
 
     #[test]
     fn a_same_zone_setup_keeps_both_names_identical() {
-        let record = challenge_record("skiy.net", "skiy.net", None, "value");
+        let record = challenge_record("example.test", "example.test", None, "value");
 
-        assert_eq!(record.name, "_acme-challenge.skiy.net");
-        assert_eq!(record.ca_name, "_acme-challenge.skiy.net");
+        assert_eq!(record.name, "_acme-challenge.example.test");
+        assert_eq!(record.ca_name, "_acme-challenge.example.test");
         assert!(!record.is_delegated());
-        assert_eq!(record.ca_zone(), "skiy.net");
+        assert_eq!(record.ca_zone(), "example.test");
     }
 
     #[test]
@@ -2070,27 +2070,34 @@ mod tests {
 
     #[tokio::test]
     async fn wildcard_second_level_probes_miss_fall_back_to_base_domain() {
-        // `*.asfd.cn` 探测全未命中时，zone 应回退为 `asfd.cn`（剥离 `*.`），
-        // 而非原始 identifier `*.asfd.cn`——后者会导致写入名 `_acme-challenge.*.asfd.cn`。
+        // `*.example.net` 探测全未命中时，zone 应回退为 `example.net`（剥离 `*.`），
+        // 而非原始 identifier `*.example.net`——后者会导致写入名 `_acme-challenge.*.example.net`。
         use super::resolve_wildcard_zone;
 
-        let zone = resolve_wildcard_zone(&AllNotFoundProvider, &serde_json::json!({}), "*.asfd.cn")
-            .await
-            .expect("探测全未命中应回退而非报错");
-        assert_eq!(zone, "asfd.cn");
+        let zone = resolve_wildcard_zone(
+            &AllNotFoundProvider,
+            &serde_json::json!({}),
+            "*.example.net",
+        )
+        .await
+        .expect("探测全未命中应回退而非报错");
+        assert_eq!(zone, "example.net");
     }
 
     #[tokio::test]
     async fn wildcard_multi_level_probes_miss_fall_back_to_most_specific_candidate() {
-        // `*.x.idev.top` 逐级探测（`x.idev.top` → `idev.top`）全未命中时，
-        // 回退到最具体候选 `x.idev.top`，而非原始 identifier `*.x.idev.top`。
+        // `*.x.example.com` 逐级探测（`x.example.com` → `example.com`）全未命中时，
+        // 回退到最具体候选 `x.example.com`，而非原始 identifier `*.x.example.com`。
         use super::resolve_wildcard_zone;
 
-        let zone =
-            resolve_wildcard_zone(&AllNotFoundProvider, &serde_json::json!({}), "*.x.idev.top")
-                .await
-                .expect("探测全未命中应回退而非报错");
-        assert_eq!(zone, "x.idev.top");
+        let zone = resolve_wildcard_zone(
+            &AllNotFoundProvider,
+            &serde_json::json!({}),
+            "*.x.example.com",
+        )
+        .await
+        .expect("探测全未命中应回退而非报错");
+        assert_eq!(zone, "x.example.com");
     }
 
     #[tokio::test]
@@ -2098,7 +2105,7 @@ mod tests {
         // 无论 identifier 形态如何，任何 fallback 路径的返回值都不得含 `*` 字符。
         use super::resolve_wildcard_zone;
 
-        for identifier in ["*.asfd.cn", "*.x.idev.top", "*.gcli.cn"] {
+        for identifier in ["*.example.net", "*.x.example.com", "*.example.org"] {
             let zone =
                 resolve_wildcard_zone(&AllNotFoundProvider, &serde_json::json!({}), identifier)
                     .await

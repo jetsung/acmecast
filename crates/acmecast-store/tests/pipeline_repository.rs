@@ -477,6 +477,36 @@ async fn list_reports_step_counts() {
     assert_eq!(summaries[1].step_count, 1);
 }
 
+#[tokio::test]
+async fn list_reports_apply_domains_and_empty_for_the_rest() {
+    let db = setup().await;
+    let repo = PipelineRepository::new(&db);
+
+    repo.save(
+        None,
+        pipeline("带域名", vec![step("cert.apply", &["*.example.com"])]),
+    )
+    .await
+    .unwrap();
+    repo.save(None, pipeline("无申请", vec![step("a", &[])]))
+        .await
+        .unwrap();
+
+    let summaries = repo.list().await.unwrap();
+    // 列表按主键降序：后保存的「无申请」在前。
+    assert_eq!(
+        summaries[0].domains,
+        Vec::<String>::new(),
+        "无 cert.apply 时域名为空"
+    );
+    // 保存归一化已把通配裸域补入库：列表概要如实返回补全后的集合。
+    assert_eq!(
+        summaries[1].domains,
+        vec!["*.example.com".to_owned(), "example.com".to_owned()],
+        "cert.apply 的域名应进列表概要"
+    );
+}
+
 // ---- 部署目录路径归一化 ----
 
 fn deploy_step(target: &str, config: serde_json::Value) -> PipelineStepInput {

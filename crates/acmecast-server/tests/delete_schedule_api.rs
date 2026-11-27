@@ -52,6 +52,7 @@ async fn seeded_app() -> axum::Router {
                 renewal_domains: None,
                 renewal_threshold_days: None,
             },
+            chrono_tz::UTC,
         )
         .await
         .expect("调度应能保存");

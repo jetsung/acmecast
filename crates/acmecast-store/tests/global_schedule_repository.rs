@@ -35,11 +35,14 @@ async fn save_upserts_a_single_row_and_computes_the_next_trigger() {
     let repo = GlobalScheduleRepository::new(&db);
 
     let first = repo
-        .save(GlobalScheduleInput {
-            cron: Some("0 3 * * *".to_owned()),
-            enabled: true,
-            catch_up: false,
-        })
+        .save(
+            GlobalScheduleInput {
+                cron: Some("0 3 * * *".to_owned()),
+                enabled: true,
+                catch_up: false,
+            },
+            chrono_tz::UTC,
+        )
         .await
         .expect("合法保存应成功");
     assert!(first.enabled);
@@ -47,11 +50,14 @@ async fn save_upserts_a_single_row_and_computes_the_next_trigger() {
 
     // 整体更新：换 cron、停用——还是同一行（id=1），不产生第二行。
     let second = repo
-        .save(GlobalScheduleInput {
-            cron: Some("0 4 * * *".to_owned()),
-            enabled: false,
-            catch_up: true,
-        })
+        .save(
+            GlobalScheduleInput {
+                cron: Some("0 4 * * *".to_owned()),
+                enabled: false,
+                catch_up: true,
+            },
+            chrono_tz::UTC,
+        )
         .await
         .expect("再次保存应成功");
     assert!(!second.enabled);
@@ -71,11 +77,14 @@ async fn enabled_without_cron_is_rejected() {
     let repo = GlobalScheduleRepository::new(&db);
 
     let error = repo
-        .save(GlobalScheduleInput {
-            cron: None,
-            enabled: true,
-            catch_up: false,
-        })
+        .save(
+            GlobalScheduleInput {
+                cron: None,
+                enabled: true,
+                catch_up: false,
+            },
+            chrono_tz::UTC,
+        )
         .await
         .expect_err("启用但无 cron 应被拒绝");
     let message = error.to_string();
@@ -91,11 +100,14 @@ async fn invalid_cron_is_rejected() {
     let repo = GlobalScheduleRepository::new(&db);
 
     let error = repo
-        .save(GlobalScheduleInput {
-            cron: Some("0 99 * * *".to_owned()),
-            enabled: true,
-            catch_up: false,
-        })
+        .save(
+            GlobalScheduleInput {
+                cron: Some("0 99 * * *".to_owned()),
+                enabled: true,
+                catch_up: false,
+            },
+            chrono_tz::UTC,
+        )
         .await
         .expect_err("非法 cron 应被拒绝");
     let message = error.to_string();
@@ -110,11 +122,14 @@ async fn mark_triggered_advances_the_trigger_point() {
     let db = setup().await;
     let repo = GlobalScheduleRepository::new(&db);
 
-    repo.save(GlobalScheduleInput {
-        cron: Some("0 3 * * *".to_owned()),
-        enabled: true,
-        catch_up: false,
-    })
+    repo.save(
+        GlobalScheduleInput {
+            cron: Some("0 3 * * *".to_owned()),
+            enabled: true,
+            catch_up: false,
+        },
+        chrono_tz::UTC,
+    )
     .await
     .expect("保存应成功");
 

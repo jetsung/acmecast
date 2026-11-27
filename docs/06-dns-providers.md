@@ -211,13 +211,13 @@ CNAME 形态与字段对照：
    （`fulldomain` 去掉 subdomain 段，如 `fulldomain = xxx.acme.example.org`
    则 `dns_zone: acme.example.org`）。
 
-示例：`fulldomain = 4104321c-….acme.666517.xyz`、授权域名 `test1.666517.xyz`：
+示例：`fulldomain = 4104321c-….acme.example.edu`、授权域名 `test1.example.edu`：
 
 ```text
-_acme-challenge.test1.666517.xyz  CNAME  4104321c-….acme.666517.xyz.
+_acme-challenge.test1.example.edu  CNAME  4104321c-….acme.example.edu.
 ```
 
-流水线字段：`dns_alias: 4104321c-….acme.666517.xyz`、`dns_zone: acme.666517.xyz`。
+流水线字段：`dns_alias: 4104321c-….acme.example.edu`、`dns_zone: acme.example.edu`。
 
 **注意事项：**
 

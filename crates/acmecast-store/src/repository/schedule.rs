@@ -84,10 +84,22 @@ pub fn parse_cron(expr: &str) -> Result<CronSchedule> {
 ///
 /// 供调度引擎推算 `next_trigger_at` 使用。与 [`parse_cron`] 不同，这里
 /// 把解析失败静默归为 `None`：配置在保存时已校验过，运行时再失败属于
-/// 理论上不可达的防御分支，不该让整个调度循环因此崩溃。
+///理论上不可达的防御分支，不该让整个调度循环因此崩溃。
+///
+/// `tz` 是触发点的解释时区（specs：cron 触发点按可配置时区判定）：cron
+/// 里的「时」「分」按它匹配，返回值仍是 UTC 时刻——存储口径不变。
 #[must_use]
-pub fn next_cron_trigger(expr: &str, after: DateTime<Utc>) -> Option<DateTime<Utc>> {
-    parse_cron(expr).ok()?.after(&after).next()
+pub fn next_cron_trigger(
+    expr: &str,
+    after: DateTime<Utc>,
+    tz: chrono_tz::Tz,
+) -> Option<DateTime<Utc>> {
+    let after_local = after.with_timezone(&tz);
+    parse_cron(expr)
+        .ok()?
+        .after(&after_local)
+        .next()
+        .map(|next| next.with_timezone(&Utc))
 }
 
 /// 调度配置仓储。
@@ -108,7 +120,12 @@ impl<'db> ScheduleRepository<'db> {
     /// cron 非法时拒绝保存（9.2）。`next_trigger_at` 在这里随保存算出初始值；
     /// 服务重启后引擎装载时会重算兜底——它本质是运行时缓存，持久化它只是
     /// 让「配置刚保存、引擎还没装载」的窗口里也能看到合理的下一次触发点。
-    pub async fn save(&self, pipeline_id: i64, input: ScheduleInput) -> Result<ScheduleConfig> {
+    pub async fn save(
+        &self,
+        pipeline_id: i64,
+        input: ScheduleInput,
+        tz: chrono_tz::Tz,
+    ) -> Result<ScheduleConfig> {
         // 空字符串与 None 同义：清空 cron 就是取消定时触发。
         let cron = input
             .cron
@@ -151,7 +168,7 @@ impl<'db> ScheduleRepository<'db> {
         let now = Utc::now();
         let next_trigger_at = cron
             .as_deref()
-            .and_then(|expr| next_cron_trigger(expr, now));
+            .and_then(|expr| next_cron_trigger(expr, now, tz));
 
         let existing = schedule::Entity::find()
             .filter(schedule::Column::PipelineId.eq(pipeline_id))
@@ -318,7 +335,7 @@ mod tests {
             .unwrap()
             .with_timezone(&Utc);
 
-        let next = next_cron_trigger("0 3 * * *", after).unwrap();
+        let next = next_cron_trigger("0 3 * * *", after, chrono_tz::UTC).unwrap();
         assert!(next > after);
         // 5 段 `0 3 * * *` 归一为「每天 03:00:00」——同日 03:00 还没到就落在今天。
         assert_eq!(
@@ -332,6 +349,35 @@ mod tests {
     #[test]
     fn garbage_cron_yields_no_trigger() {
         let now = Utc::now();
-        assert_eq!(next_cron_trigger("definitely not cron", now), None);
+        assert_eq!(
+            next_cron_trigger("definitely not cron", now, chrono_tz::UTC),
+            None
+        );
+    }
+
+    #[test]
+    fn trigger_point_follows_the_configured_timezone() {
+        let after = chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        // UTC：`0 3 * * *` 落在 UTC 03:00。
+        let utc_next = next_cron_trigger("0 3 * * *", after, chrono_tz::UTC).unwrap();
+        assert_eq!(
+            utc_next,
+            chrono::DateTime::parse_from_rfc3339("2026-01-01T03:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc)
+        );
+
+        // 东八区：同一表达式按本地 03:00 触发，即 UTC 前一日 19:00。
+        let shanghai_next =
+            next_cron_trigger("0 3 * * *", after, chrono_tz::Asia::Shanghai).unwrap();
+        assert_eq!(
+            shanghai_next,
+            chrono::DateTime::parse_from_rfc3339("2026-01-01T19:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc)
+        );
     }
 }

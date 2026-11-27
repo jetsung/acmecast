@@ -18,7 +18,6 @@ use acmecast_access::{CredentialStore, ResolvedCredential};
 use acmecast_cert::ca_pem_of;
 use async_trait::async_trait;
 use schemars::schema::RootSchema;
-use schemars::schema_for;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -90,6 +89,13 @@ pub struct SshInput {
     /// 留空表示不使用跳板。与 `credential_id` 不可引用同一份凭据。
     #[serde(default)]
     pub bastion_credential_id: Option<i64>,
+    /// 远端证书保存目录（如 `/srv/acme/ssl`，保存时归一化为带 `/` 后缀）。
+    ///
+    /// 三个路径字段填**文件名**（如 `example.cn.key`）时，执行时与该目录拼接为
+    /// 绝对路径；路径字段以 `/` 开头（绝对路径）时该目录对其不生效。留空时
+    /// 路径字段必须写绝对路径。
+    #[serde(default)]
+    pub deploy_dir: Option<String>,
     /// 目标主机。
     #[serde(default)]
     pub host: Option<String>,
@@ -181,6 +187,38 @@ pub struct ResolvedSshConfig {
     pub proxy_url: Option<String>,
     /// 跳板机配置；`None` 表示不走跳板，直连目标主机。
     pub bastion: Option<BastionConfig>,
+}
+
+/// 部署目录执行期归一化：去首尾空白后保证带尾 `/`；空白视为未提供。
+///
+/// 与保存层 `normalize_directory_value` 同口径——绝对路径的前导 `/` 是
+/// 文件系统语义的一部分，不剥。
+fn normalize_deploy_dir(raw: Option<&str>) -> Option<String> {
+    let trimmed = raw?.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(format!("{trimmed}/"))
+    }
+}
+
+/// 按部署目录解析一个路径字段。
+///
+/// 绝对路径（以 `/` 开头）原样使用、不与目录拼接；相对路径（文件名形态）
+/// 与 `deploy_dir` 拼接为绝对路径（衔接处恰好一个 `/`，内部连续 `/` 折叠）。
+/// 相对路径但目录未提供时报错并指向具体字段——文件名必须有落点。
+fn resolve_deploy_path(field: &str, raw: &str, deploy_dir: Option<&str>) -> Result<String> {
+    let value = raw.trim();
+    if value.starts_with('/') {
+        return Ok(value.to_owned());
+    }
+    let Some(dir) = deploy_dir else {
+        return Err(Error::invalid_input(
+            field,
+            "为相对路径但 deploy_dir（部署目录）未提供：请填写部署目录，或改用绝对路径",
+        ));
+    };
+    Ok(super::join_path(dir, value))
 }
 
 /// 把部署输入与可选的主机档案合并成完整的执行配置。
@@ -280,21 +318,31 @@ pub fn resolve_input(
         ));
     };
 
+    // 部署目录执行期兜底归一化（保存层已归一化，这里防 API 直调绕过）：
+    // 带尾 `/`，空白视为未提供。
+    let deploy_dir = normalize_deploy_dir(input.deploy_dir.as_deref());
     let fullchain_path = input
         .fullchain_path
         .clone()
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| missing_path("fullchain_path"))?;
+    let fullchain_path =
+        resolve_deploy_path("fullchain_path", &fullchain_path, deploy_dir.as_deref())?;
     // ca 路径可选：缺省或空白都表示「不写中间链文件」，不拦部署。
     let ca_path = input
         .ca_path
         .clone()
         .filter(|value| !value.trim().is_empty());
+    let ca_path = ca_path
+        .as_deref()
+        .map(|value| resolve_deploy_path("ca_path", value, deploy_dir.as_deref()))
+        .transpose()?;
     let key_path = input
         .key_path
         .clone()
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| missing_path("key_path"))?;
+    let key_path = resolve_deploy_path("key_path", &key_path, deploy_dir.as_deref())?;
 
     Ok(ResolvedSshConfig {
         host,
@@ -497,15 +545,32 @@ impl DeploymentTarget for SshTarget {
     }
 
     fn input_schema(&self) -> RootSchema {
-        schema_for!(SshInput)
+        use schemars::schema::Schema;
+
+        let mut schema = schemars::schema_for!(SshInput);
+        // 重载命令是 shell 脚本，可能很长：标注多行文本框（schemars 0.8
+        // 宏不支持任意扩展属性，注入在这里统一做，与 ssh_host 的
+        // `private_key` 同口径）。
+        if let Some(Schema::Object(reload_command)) = schema
+            .schema
+            .object
+            .as_mut()
+            .and_then(|object| object.properties.get_mut("reload_command"))
+        {
+            reload_command
+                .extensions
+                .insert("x-multiline".to_owned(), serde_json::Value::Bool(true));
+        }
+        schema
     }
 
     fn example_input(&self) -> Value {
         serde_json::json!({
             "credential_id": 1,
-            "fullchain_path": "/etc/ssl/example.com.fullchain.cer",
-            "ca_path": "/etc/ssl/example.com.ca.cer",
-            "key_path": "/etc/ssl/example.com.key",
+            "deploy_dir": "/srv/acme/ssl/",
+            "fullchain_path": "example.com.fullchain.cer",
+            "ca_path": "example.com.ca.cer",
+            "key_path": "example.com.key",
             "reload_command": "systemctl reload nginx"
         })
     }
@@ -1660,7 +1725,7 @@ mod tests {
         //
         // 只看属性名，不看整个 Schema 文本——`private_key`／`password` 会作为
         // 认证方式的 `kind` 枚举值出现，那是合法的，不能一概而论。
-        let schema = schema_for!(SshInput);
+        let schema = schemars::schema_for!(SshInput);
         let properties = &schema.schema.object.as_ref().expect("应是对象").properties;
 
         assert!(
@@ -1800,6 +1865,112 @@ mod tests {
         }))
         .expect("存量 cert_path 应经 alias 解析");
         assert_eq!(input.fullchain_path.as_deref(), Some("/srv/ssl/site.crt"));
+    }
+
+    #[test]
+    fn relative_file_names_are_joined_with_the_deploy_dir() {
+        // 保存层归一化后的典型形态：目录带尾 `/`，路径字段是文件名。
+        let input: SshInput = serde_json::from_value(serde_json::json!({
+            "credential_id": 1,
+            "deploy_dir": "/srv/acme/ssl/",
+            "fullchain_path": "example.cn.fullchain.cer",
+            "ca_path": "example.cn.ca.cer",
+            "key_path": "example.cn.key",
+        }))
+        .expect("应能解析");
+        let config = resolve_input(&input, Some(&profile()), None, None).expect("合并应成功");
+
+        assert_eq!(
+            config.fullchain_path,
+            "/srv/acme/ssl/example.cn.fullchain.cer"
+        );
+        assert_eq!(
+            config.ca_path,
+            Some("/srv/acme/ssl/example.cn.ca.cer".to_owned())
+        );
+        assert_eq!(config.key_path, "/srv/acme/ssl/example.cn.key");
+    }
+
+    #[test]
+    fn deploy_dir_without_trailing_slash_is_normalized_at_runtime() {
+        // 执行期兜底：API 直调绕过保存层时同样归一化为带尾 `/`。
+        let input: SshInput = serde_json::from_value(serde_json::json!({
+            "credential_id": 1,
+            "deploy_dir": "/srv/acme/ssl",
+            "fullchain_path": "site.fullchain.cer",
+            "key_path": "site.key",
+        }))
+        .expect("应能解析");
+        let config = resolve_input(&input, Some(&profile()), None, None).expect("合并应成功");
+
+        assert_eq!(config.fullchain_path, "/srv/acme/ssl/site.fullchain.cer");
+        assert_eq!(config.key_path, "/srv/acme/ssl/site.key");
+    }
+
+    #[test]
+    fn absolute_paths_ignore_the_deploy_dir() {
+        let input: SshInput = serde_json::from_value(serde_json::json!({
+            "credential_id": 1,
+            "deploy_dir": "/srv/acme/ssl/",
+            "fullchain_path": "/etc/ssl/custom.fullchain.cer",
+            "key_path": "/etc/ssl/custom.key",
+        }))
+        .expect("应能解析");
+        let config = resolve_input(&input, Some(&profile()), None, None).expect("合并应成功");
+
+        assert_eq!(config.fullchain_path, "/etc/ssl/custom.fullchain.cer");
+        assert_eq!(config.key_path, "/etc/ssl/custom.key");
+    }
+
+    #[test]
+    fn a_relative_path_without_deploy_dir_names_the_field() {
+        let input: SshInput = serde_json::from_value(serde_json::json!({
+            "credential_id": 1,
+            "fullchain_path": "example.cn.fullchain.cer",
+            "key_path": "/srv/ssl/site.key",
+        }))
+        .expect("应能解析");
+        let err =
+            resolve_input(&input, Some(&profile()), None, None).expect_err("相对路径缺目录应报错");
+        let text = err.to_string();
+        assert!(text.contains("fullchain_path"), "应指向具体字段: {text}");
+        assert!(text.contains("deploy_dir"), "应说明缺部署目录: {text}");
+
+        // ca_path 非空相对路径同样需要目录；空白仍表示跳过。
+        let input: SshInput = serde_json::from_value(serde_json::json!({
+            "credential_id": 1,
+            "fullchain_path": "/srv/ssl/site.fullchain.cer",
+            "ca_path": "site.ca.cer",
+            "key_path": "/srv/ssl/site.key",
+        }))
+        .expect("应能解析");
+        let err = resolve_input(&input, Some(&profile()), None, None)
+            .expect_err("ca 相对路径缺目录应报错");
+        assert!(err.to_string().contains("ca_path"), "{err}");
+    }
+
+    #[test]
+    fn a_joined_directory_path_still_gets_the_wildcard_fallback() {
+        // deploy_dir + 相对目录文件名：拼接后以 `/` 结尾仍触发按主域的
+        // 目录兜底（`resolve_remote_path` 在写入清单展开时生效）。
+        let input: SshInput = serde_json::from_value(serde_json::json!({
+            "credential_id": 1,
+            "deploy_dir": "/srv/acme/ssl/",
+            "fullchain_path": "sub/",
+            "key_path": "site.key",
+        }))
+        .expect("应能解析");
+        let config = resolve_input(&input, Some(&profile()), None, None).expect("合并应成功");
+        assert_eq!(config.fullchain_path, "/srv/acme/ssl/sub/");
+
+        // 兜底展开：目录形态 + 通配主域 → `_wildcard.example.com.fullchain.cer`。
+        assert_eq!(
+            resolve_remote_path(
+                &config.fullchain_path,
+                "_wildcard.example.com.fullchain.cer"
+            ),
+            "/srv/acme/ssl/sub/_wildcard.example.com.fullchain.cer"
+        );
     }
 
     #[test]

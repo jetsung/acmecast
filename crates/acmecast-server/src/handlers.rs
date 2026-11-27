@@ -867,6 +867,8 @@ pub(crate) struct PipelineSummaryResponse {
     pub notification_channels: Vec<i64>,
     /// 步骤数量。
     pub step_count: usize,
+    /// 该流水线 `cert.apply` 步骤设置的域名集合（无 `cert.apply` 时为空）。
+    pub domains: Vec<String>,
     /// 更新时间。
     pub updated_at: DateTime<Utc>,
 }
@@ -1295,6 +1297,7 @@ async fn list_pipelines(
             enabled: item.enabled,
             notification_channels: item.notification_channels,
             step_count: item.step_count,
+            domains: item.domains,
             updated_at: item.updated_at,
         })
         .collect();
@@ -2223,6 +2226,7 @@ async fn create_schedule(
                 renewal_domains: request.renewal_domains,
                 renewal_threshold_days: request.renewal_threshold_days,
             },
+            state.app.config.scheduler_tz,
         )
         .await
         .map_err(ApiError::from)?;
@@ -2272,6 +2276,8 @@ pub(crate) struct GlobalScheduleResponse {
     pub next_trigger_at: Option<DateTime<Utc>>,
     /// 更新时间。
     pub updated_at: DateTime<Utc>,
+    /// cron 触发点的解释时区（IANA 名）；前端 cron 预览按它对齐。
+    pub timezone: String,
 }
 
 /// 全局调度保存请求（upsert 单例）。
@@ -2290,6 +2296,7 @@ pub(crate) struct GlobalScheduleSaveRequest {
 
 fn global_schedule_response(
     config: acmecast_store::repository::GlobalScheduleConfig,
+    tz: chrono_tz::Tz,
 ) -> GlobalScheduleResponse {
     GlobalScheduleResponse {
         cron: config.cron,
@@ -2298,6 +2305,7 @@ fn global_schedule_response(
         last_triggered_at: config.last_triggered_at,
         next_trigger_at: config.next_trigger_at,
         updated_at: config.updated_at,
+        timezone: tz.name().to_owned(),
     }
 }
 
@@ -2312,7 +2320,10 @@ async fn get_global_schedule(
         .get_or_default()
         .await
         .map_err(ApiError::from)?;
-    Ok(ApiResponse::new(global_schedule_response(config)))
+    Ok(ApiResponse::new(global_schedule_response(
+        config,
+        state.app.config.scheduler_tz,
+    )))
 }
 
 /// 保存全局调度（`POST /api/schedules/global`，upsert 单例）。
@@ -2321,14 +2332,20 @@ async fn save_global_schedule(
     ApiJson(request): ApiJson<GlobalScheduleSaveRequest>,
 ) -> Result<ApiResponse<GlobalScheduleResponse>, ApiError> {
     let config = acmecast_store::repository::GlobalScheduleRepository::new(&state.app.db)
-        .save(acmecast_store::repository::GlobalScheduleInput {
-            cron: request.cron,
-            enabled: request.enabled,
-            catch_up: request.catch_up,
-        })
+        .save(
+            acmecast_store::repository::GlobalScheduleInput {
+                cron: request.cron,
+                enabled: request.enabled,
+                catch_up: request.catch_up,
+            },
+            state.app.config.scheduler_tz,
+        )
         .await
         .map_err(ApiError::from)?;
-    Ok(ApiResponse::new(global_schedule_response(config)))
+    Ok(ApiResponse::new(global_schedule_response(
+        config,
+        state.app.config.scheduler_tz,
+    )))
 }
 
 /// 触发记录查询参数。

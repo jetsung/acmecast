@@ -73,8 +73,8 @@ impl TxtRecord {
 
     /// 建一条记录，CA 查询名与写入名分别给定。
     ///
-    /// 跨 zone 的 CNAME 委派：`_acme-challenge.skiy.net` CNAME 到
-    /// `_acme-challenge.666517.xyz`，记录由 `666517.xyz` 托管——`name` 为后者、
+    /// 跨 zone 的 CNAME 委派：`_acme-challenge.example.test` CNAME 到
+    /// `_acme-challenge.example.edu`，记录由 `example.edu` 托管——`name` 为后者、
     /// `ca_name` 为前者。
     ///
     /// 同 zone 的父级委派（如 zone 推导为 `example.com`、CA 查
@@ -286,14 +286,14 @@ mod tests {
     #[test]
     fn a_delegated_record_keeps_both_names_apart() {
         let record = TxtRecord::delegated(
-            "666517.xyz",
-            "_acme-challenge.666517.xyz",
-            "_acme-challenge.skiy.net",
+            "example.edu",
+            "_acme-challenge.example.edu",
+            "_acme-challenge.example.test",
             "v",
             300,
         );
-        assert_eq!(record.name, "_acme-challenge.666517.xyz");
-        assert_eq!(record.ca_name, "_acme-challenge.skiy.net");
+        assert_eq!(record.name, "_acme-challenge.example.edu");
+        assert_eq!(record.ca_name, "_acme-challenge.example.test");
         assert!(record.is_delegated());
         // 写入名仍属于 zone，`relative_name` 在委派场景下照常成立。
         assert_eq!(
@@ -301,7 +301,7 @@ mod tests {
             "_acme-challenge"
         );
         // 权威首跳走委派源一侧：CNAME 记录本身在授权域名那里。
-        assert_eq!(record.ca_zone(), "skiy.net");
+        assert_eq!(record.ca_zone(), "example.test");
     }
 
     #[test]
@@ -328,9 +328,9 @@ mod tests {
         // 构造器已拦住「写入名不属于 zone」，这里直接造结构体字段验证
         // `relative_name` 对越界写入名的兜底报错（release 下断言不生效时的防线）。
         let record = TxtRecord {
-            zone: "666517.xyz".to_owned(),
-            name: "_acme-challenge.skiy.net".to_owned(),
-            ca_name: "_acme-challenge.skiy.net".to_owned(),
+            zone: "example.edu".to_owned(),
+            name: "_acme-challenge.example.test".to_owned(),
+            ca_name: "_acme-challenge.example.test".to_owned(),
             value: "v".to_owned(),
             ttl: 300,
         };

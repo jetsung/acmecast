@@ -1556,9 +1556,9 @@ mod tests {
 
     fn delegated_record() -> TxtRecord {
         TxtRecord::delegated(
-            "666517.xyz",
-            "_acme-challenge.666517.xyz",
-            "_acme-challenge.skiy.net",
+            "example.edu",
+            "_acme-challenge.example.edu",
+            "_acme-challenge.example.test",
             "value-1",
             60,
         )
@@ -1572,7 +1572,7 @@ mod tests {
         let provider = Publishes::always("value-1");
         // 只有 CA 查询名可见，解析器侧照常返回期望值。
         let resolver = NameAwareResolver {
-            visible_name: "_acme-challenge.skiy.net".to_owned(),
+            visible_name: "_acme-challenge.example.test".to_owned(),
             value: "value-1".to_owned(),
             queries: Mutex::new(Vec::new()),
         };
@@ -1595,7 +1595,7 @@ mod tests {
                 .queries
                 .lock()
                 .iter()
-                .all(|queried| queried == "_acme-challenge.skiy.net"),
+                .all(|queried| queried == "_acme-challenge.example.test"),
             "解析器查询必须用 CA 查询名，而非写入名"
         );
     }
@@ -1628,11 +1628,11 @@ mod tests {
             "错误应提示 CNAME 委派：{message}"
         );
         assert!(
-            message.contains("_acme-challenge.skiy.net"),
+            message.contains("_acme-challenge.example.test"),
             "错误应带 CA 查询名：{message}"
         );
         assert!(
-            message.contains("_acme-challenge.666517.xyz"),
+            message.contains("_acme-challenge.example.edu"),
             "错误应带写入名：{message}"
         );
     }
@@ -1643,7 +1643,7 @@ mod tests {
         // 不可见时，等待必须耗尽预算而非提前返回。
         let provider = Publishes::always("value-1");
         let resolver = NameAwareResolver {
-            visible_name: "_acme-challenge.666517.xyz".to_owned(), // 只认写入名
+            visible_name: "_acme-challenge.example.edu".to_owned(), // 只认写入名
             value: "value-1".to_owned(),
             queries: Mutex::new(Vec::new()),
         };

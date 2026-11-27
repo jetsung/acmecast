@@ -8,6 +8,8 @@
 //! 「哪些步骤被保留了、哪些是新增的」这类推断需要引入步骤身份，而身份一旦
 //! 传错就会静默改错定义；全量替换语义明确，代价只是多几条 INSERT。
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, QueryOrder, Set,
@@ -96,6 +98,8 @@ pub struct PipelineSummary {
     pub step_count: usize,
     /// 最后更新时间。
     pub updated_at: DateTime<Utc>,
+    /// 该流水线 `cert.apply` 步骤设置的域名集合（无 `cert.apply` 时为空）。
+    pub domains: Vec<String>,
 }
 
 /// 流水线定义仓储。
@@ -115,8 +119,9 @@ impl<'db> PipelineRepository<'db> {
     ///
     /// 步骤集合被替换为本次输入的内容；返回流水线主键。
     pub async fn save(&self, id: Option<i64>, mut input: PipelineInput) -> Result<i64> {
-        // 目录写法的补全发生在校验与入库之前：前端回显的必须是部署实际
-        // 使用的路径，否则「表单里是目录、日志里是文件」会让排障多绕一圈。
+        // 归一化发生在校验与入库之前：前端回显的必须是部署实际使用的
+        // 配置，否则「表单里是目录、日志里是文件」会让排障多绕一圈。
+        normalize_apply_domains(&mut input.steps);
         normalize_deploy_inputs(&mut input.steps);
         let name = input.name.trim();
         if name.is_empty() {
@@ -252,16 +257,46 @@ impl<'db> PipelineRepository<'db> {
             .all(self.db)
             .await?;
 
+        // 一次性取全部步骤：同时产出 step_count 与首个 cert.apply 的
+        // domains，避免逐条流水线点查（N+1）。
+        let step_rows = pipeline_step::Entity::find()
+            .order_by_asc(pipeline_step::Column::OrderIndex)
+            .all(self.db)
+            .await?;
+        let mut step_counts: HashMap<i64, usize> = HashMap::new();
+        let mut apply_domains: HashMap<i64, Vec<String>> = HashMap::new();
+        for row in &step_rows {
+            *step_counts.entry(row.pipeline_id).or_default() += 1;
+            if row.type_id.trim() == "cert.apply" && !apply_domains.contains_key(&row.pipeline_id) {
+                // 兼容顶层与 config 包裹两种 JSON 形态。
+                let root = row.input.get("config").unwrap_or(&row.input);
+                let domains = root
+                    .get("domains")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(serde_json::Value::as_str)
+                            .map(str::trim)
+                            .filter(|domain| !domain.is_empty())
+                            .map(ToOwned::to_owned)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                apply_domains.insert(row.pipeline_id, domains);
+            }
+        }
+
         let mut summaries = Vec::with_capacity(rows.len());
         for row in rows {
-            let step_count = self.steps_of(row.id).await?.len();
             summaries.push(PipelineSummary {
                 id: row.id,
                 name: row.name,
                 description: row.description,
                 enabled: row.enabled,
                 notification_channels: parse_notification_channels(&row.notification_channels),
-                step_count,
+                step_count: step_counts.get(&row.id).copied().unwrap_or(0),
+                domains: apply_domains.get(&row.id).cloned().unwrap_or_default(),
                 updated_at: row.updated_at,
             });
         }
@@ -329,6 +364,58 @@ fn normalize_deploy_inputs(steps: &mut [PipelineStepInput]) {
     }
 }
 
+/// 对 `cert.apply` 步骤的域名集合做通配裸域补全。
+///
+/// 凡以 `*.` 开头的域名，剥掉一层前缀得到裸域（`*.example.com` →
+/// `example.com`、`*.ex1.a.com` → `ex1.a.com`，不推导注册域）；裸域不在
+/// 列表中时追加到末尾。通配与裸域在 CA 处是两张证书，成对配置免去手动
+/// 补填。已存在不重复，非通配原样，非 `cert.apply` 步骤不参与。兼容
+/// 顶层与 `config` 包裹两种 JSON 形态。
+fn normalize_apply_domains(steps: &mut [PipelineStepInput]) {
+    for step in steps.iter_mut() {
+        if step.type_id.trim() != "cert.apply" {
+            continue;
+        }
+        fill_wildcard_bare_domains(&mut step.input);
+        if let Some(config) = step.input.get_mut("config") {
+            fill_wildcard_bare_domains(config);
+        }
+    }
+}
+
+/// 对单个输入对象的 `domains` 数组补全通配裸域；无数组或缺省时原样。
+fn fill_wildcard_bare_domains(input: &mut serde_json::Value) {
+    let Some(domains) = input
+        .get_mut("domains")
+        .and_then(serde_json::Value::as_array_mut)
+    else {
+        return;
+    };
+    let existing: Vec<String> = domains
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|domain| !domain.is_empty())
+        .map(ToOwned::to_owned)
+        .collect();
+    let mut additions: Vec<String> = Vec::new();
+    for domain in &existing {
+        let Some(bare) = domain
+            .strip_prefix("*.")
+            .map(str::trim)
+            .filter(|b| !b.is_empty())
+        else {
+            continue;
+        };
+        if !existing.iter().any(|item| item == bare) && !additions.iter().any(|item| item == bare) {
+            additions.push(bare.to_owned());
+        }
+    }
+    for bare in additions {
+        domains.push(serde_json::Value::String(bare));
+    }
+}
+
 /// 从 `cert.apply` 步骤输入里解析主域（`domains[0]`）。
 ///
 /// 兼容顶层与 `config` 包裹两种 JSON 形态；`domains` 为空或非数组时视为未知。
@@ -384,9 +471,23 @@ fn normalize_deploy_config(input: &mut serde_json::Value, prefix: Option<&str>) 
         });
 
     match target.as_str() {
-        "local" | "ssh" => {
+        "local" => {
             // `cert_path` 是 `fullchain_path` 的旧别名：仅剩旧键的存量配置
             // 也要补全，避免目录写法拖到部署期才被兜底。
+            for (field, default_name) in [
+                ("fullchain_path", &fullchain_name),
+                ("cert_path", &fullchain_name),
+                ("ca_path", &ca_name),
+                ("key_path", &key_name),
+            ] {
+                fill_directory_field(config, field, default_name);
+            }
+        }
+        "ssh" => {
+            // 部署目录单独归一化为带尾 `/` 的目录形态；路径字段随后既支持
+            // 相对文件名（执行时与 deploy_dir 拼接），也兼容绝对路径与
+            // `/` 结尾目录写法（存量）。
+            normalize_directory_value(config, "deploy_dir");
             for (field, default_name) in [
                 ("fullchain_path", &fullchain_name),
                 ("cert_path", &fullchain_name),
@@ -445,6 +546,23 @@ fn normalize_joined_prefix(config: &mut serde_json::Map<String, serde_json::Valu
         return;
     };
     let trimmed = value.trim().trim_matches('/').to_owned();
+    *value = if trimmed.is_empty() {
+        trimmed
+    } else {
+        format!("{trimmed}/")
+    };
+}
+
+/// 文件系统目录值归一化：去首尾空白，尾部恰有一个 `/`；空白归一为空。
+///
+/// 与 [`normalize_joined_prefix`]（S3/WebDAV 的对象键前缀）的差异：保留
+/// 前导 `/`——`deploy_dir` 是远端文件系统目录，绝对路径的前导斜杠是
+/// 语义的一部分，不能被当对象键剥掉。
+fn normalize_directory_value(config: &mut serde_json::Map<String, serde_json::Value>, field: &str) {
+    let Some(serde_json::Value::String(value)) = config.get_mut(field) else {
+        return;
+    };
+    let trimmed = value.trim().trim_end_matches('/').to_owned();
     *value = if trimmed.is_empty() {
         trimmed
     } else {
@@ -738,5 +856,90 @@ mod tests {
 
         assert_eq!(normalized(apply.clone()).input, apply.input);
         assert_eq!(normalized(unknown.clone()).input, unknown.input);
+    }
+
+    fn apply_step(input: serde_json::Value) -> PipelineStepInput {
+        PipelineStepInput {
+            type_id: "cert.apply".to_owned(),
+            input,
+            enabled: true,
+        }
+    }
+
+    fn normalized_apply(input: serde_json::Value) -> serde_json::Value {
+        let mut step = apply_step(input);
+        normalize_apply_domains(std::slice::from_mut(&mut step));
+        step.input
+    }
+
+    #[test]
+    fn wildcard_domain_gets_a_bare_domain_appended() {
+        assert_eq!(
+            normalized_apply(json!({ "domains": ["*.example.com"] }))["domains"],
+            json!(["*.example.com", "example.com"])
+        );
+    }
+
+    #[test]
+    fn multi_level_wildcard_strips_one_prefix_layer() {
+        assert_eq!(
+            normalized_apply(json!({ "domains": ["*.ex1.a.com"] }))["domains"],
+            json!(["*.ex1.a.com", "ex1.a.com"])
+        );
+    }
+
+    #[test]
+    fn existing_bare_domain_is_not_duplicated() {
+        assert_eq!(
+            normalized_apply(json!({ "domains": ["*.example.com", "example.com"] }))["domains"],
+            json!(["*.example.com", "example.com"])
+        );
+    }
+
+    #[test]
+    fn non_wildcard_domains_stay_untouched() {
+        let input = json!({ "domains": ["a.example.com", "b.example.com"] });
+        assert_eq!(normalized_apply(input.clone())["domains"], input["domains"]);
+    }
+
+    #[test]
+    fn apply_domains_inside_config_are_completed_too() {
+        assert_eq!(
+            normalized_apply(json!({ "config": { "domains": ["*.example.com"] } }))["config"]["domains"],
+            json!(["*.example.com", "example.com"])
+        );
+    }
+
+    #[test]
+    fn ssh_deploy_dir_is_normalized_to_a_trailing_slash() {
+        let step = normalized(deploy_step(
+            "ssh",
+            json!({ "credential_id": 1, "deploy_dir": "/srv/acme/ssl", "key_path": "example.cn.key" }),
+        ));
+        assert_eq!(step.input["config"]["deploy_dir"], "/srv/acme/ssl/");
+
+        let step = normalized(deploy_step(
+            "ssh",
+            json!({ "credential_id": 1, "deploy_dir": "/srv/acme/ssl/" }),
+        ));
+        assert_eq!(step.input["config"]["deploy_dir"], "/srv/acme/ssl/");
+
+        let step = normalized(deploy_step(
+            "ssh",
+            json!({ "credential_id": 1, "deploy_dir": "   " }),
+        ));
+        assert_eq!(step.input["config"]["deploy_dir"], "", "空白归一为空");
+    }
+
+    #[test]
+    fn local_target_has_no_deploy_dir_normalization() {
+        let step = normalized(deploy_step(
+            "local",
+            json!({ "deploy_dir": "/srv/acme/ssl", "key_path": "/data/key.pem" }),
+        ));
+        assert_eq!(
+            step.input["config"]["deploy_dir"], "/srv/acme/ssl",
+            "local 目标不参与 deploy_dir 归一化"
+        );
     }
 }

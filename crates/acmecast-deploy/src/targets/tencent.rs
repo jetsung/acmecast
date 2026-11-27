@@ -406,7 +406,7 @@ impl Default for TencentSslTarget {
 }
 
 /// 证书下拉项的显示文本：无别名时 `证书ID (域名)`，有别名时
-/// `证书ID (域名 - 别名)`（如 `a9ZwitUs (idev.top - idev)`）。
+/// `证书ID (域名 - 别名)`（如 `a9ZwitUs (example.com - idev)`）。
 ///
 /// 部署 crate 与同步端点共用：label 是部署表单「证书 ID」下拉的显示口径，
 /// 与 spec 示例保持同一分隔符（` - `，非全角破折号）。空白别名按无别名处理。

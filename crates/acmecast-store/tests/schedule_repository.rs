@@ -57,6 +57,7 @@ async fn enabled_schedule_without_any_trigger_is_rejected() {
                 renewal_domains: None,
                 renewal_threshold_days: None,
             },
+            chrono_tz::UTC,
         )
         .await
         .expect_err("启用且双空的调度应被拒绝");
@@ -73,6 +74,7 @@ async fn enabled_schedule_without_any_trigger_is_rejected() {
                 renewal_domains: Some(vec![]),
                 renewal_threshold_days: None,
             },
+            chrono_tz::UTC,
         )
         .await
         .expect_err("空续期域名集合视同未配置");
@@ -93,6 +95,7 @@ async fn disabled_schedule_may_have_no_trigger() {
                 renewal_domains: None,
                 renewal_threshold_days: None,
             },
+            chrono_tz::UTC,
         )
         .await
         .expect("停用调度允许双空，可先占位后补配置");
@@ -116,6 +119,7 @@ async fn enabled_schedule_with_only_cron_is_saved() {
                 renewal_domains: None,
                 renewal_threshold_days: None,
             },
+            chrono_tz::UTC,
         )
         .await
         .expect("仅 cron 的启用调度合法");
@@ -140,6 +144,7 @@ async fn enabled_schedule_with_only_renewal_domains_is_saved() {
                 renewal_domains: Some(vec!["Example.COM".to_owned()]),
                 renewal_threshold_days: None,
             },
+            chrono_tz::UTC,
         )
         .await
         .expect("仅续期域名集合的启用调度合法");
@@ -164,6 +169,7 @@ async fn save_overwrites_the_existing_schedule_for_the_same_pipeline() {
             renewal_domains: None,
             renewal_threshold_days: None,
         },
+        chrono_tz::UTC,
     )
     .await
     .expect("首次保存应成功");
@@ -178,6 +184,7 @@ async fn save_overwrites_the_existing_schedule_for_the_same_pipeline() {
                 renewal_domains: Some(vec!["example.com".to_owned()]),
                 renewal_threshold_days: None,
             },
+            chrono_tz::UTC,
         )
         .await
         .expect("同流水线再次保存是整体覆盖");

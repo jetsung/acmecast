@@ -654,6 +654,8 @@ export interface components {
                  * @description 下次预计触发时间。
                  */
                 next_trigger_at?: string | null;
+                /** @description cron 触发点的解释时区（IANA 名）；前端 cron 预览按它对齐。 */
+                timezone: string;
                 /**
                  * Format: date-time
                  * @description 更新时间。
@@ -901,6 +903,8 @@ export interface components {
                 items: {
                     /** @description 可选描述。 */
                     description?: string | null;
+                    /** @description 该流水线 `cert.apply` 步骤设置的域名集合（无 `cert.apply` 时为空）。 */
+                    domains: string[];
                     /** @description 是否启用。 */
                     enabled: boolean;
                     /**
@@ -1403,6 +1407,8 @@ export interface components {
              * @description 下次预计触发时间。
              */
             next_trigger_at?: string | null;
+            /** @description cron 触发点的解释时区（IANA 名）；前端 cron 预览按它对齐。 */
+            timezone: string;
             /**
              * Format: date-time
              * @description 更新时间。
@@ -1673,6 +1679,8 @@ export interface components {
             items: {
                 /** @description 可选描述。 */
                 description?: string | null;
+                /** @description 该流水线 `cert.apply` 步骤设置的域名集合（无 `cert.apply` 时为空）。 */
+                domains: string[];
                 /** @description 是否启用。 */
                 enabled: boolean;
                 /**
@@ -1823,6 +1831,8 @@ export interface components {
         PipelineSummaryResponse: {
             /** @description 可选描述。 */
             description?: string | null;
+            /** @description 该流水线 `cert.apply` 步骤设置的域名集合（无 `cert.apply` 时为空）。 */
+            domains: string[];
             /** @description 是否启用。 */
             enabled: boolean;
             /**

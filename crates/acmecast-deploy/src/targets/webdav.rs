@@ -472,25 +472,25 @@ mod tests {
         let input = input(json!({
             "credential_id": 1,
             "base_path": "/dav/acmecast/",
-            "fullchain_path": "/tmp/t3/_wildcard.w.idev.top.fullchain.cer",
-            "ca_path": "/tmp/t3/_wildcard.w.idev.top.ca.cer",
-            "key_path": "/tmp/t3/_wildcard.w.idev.top.key"
+            "fullchain_path": "/tmp/t3/_wildcard.w.example.com.fullchain.cer",
+            "ca_path": "/tmp/t3/_wildcard.w.example.com.ca.cer",
+            "key_path": "/tmp/t3/_wildcard.w.example.com.key"
         }));
 
         let paths = webdav_paths(
             &input,
-            "*.w.idev.top",
+            "*.w.example.com",
             "dav/acmecast/",
-            "https://dav.asfd.cn/dav",
+            "https://dav.example.net/dav",
         );
         assert_eq!(
             paths,
             [
-                "https://dav.asfd.cn/dav/dav/acmecast/tmp/t3/_wildcard.w.idev.top.fullchain.cer"
+                "https://dav.example.net/dav/dav/acmecast/tmp/t3/_wildcard.w.example.com.fullchain.cer"
                     .to_owned(),
-                "https://dav.asfd.cn/dav/dav/acmecast/tmp/t3/_wildcard.w.idev.top.ca.cer"
+                "https://dav.example.net/dav/dav/acmecast/tmp/t3/_wildcard.w.example.com.ca.cer"
                     .to_owned(),
-                "https://dav.asfd.cn/dav/dav/acmecast/tmp/t3/_wildcard.w.idev.top.key".to_owned(),
+                "https://dav.example.net/dav/dav/acmecast/tmp/t3/_wildcard.w.example.com.key".to_owned(),
             ]
         );
     }

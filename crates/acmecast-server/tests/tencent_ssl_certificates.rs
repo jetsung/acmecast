@@ -126,7 +126,7 @@ async fn sync_returns_certificates_with_declared_labels() {
     let transport = ScriptedTransport::new(vec![describe_page(
         2,
         &[
-            ("idev.top", "a9ZwitUs", Some("idev")),
+            ("example.com", "a9ZwitUs", Some("idev")),
             ("example.com", "CERTB", None),
         ],
     )]);
@@ -154,7 +154,7 @@ async fn sync_returns_certificates_with_declared_labels() {
     assert_eq!(options.len(), 2);
     assert_eq!(options[0]["value"], "a9ZwitUs");
     assert_eq!(
-        options[0]["label"], "a9ZwitUs (idev.top - idev)",
+        options[0]["label"], "a9ZwitUs (example.com - idev)",
         "有别名：证书ID (域名 - 别名)"
     );
     assert_eq!(options[1]["value"], "CERTB");

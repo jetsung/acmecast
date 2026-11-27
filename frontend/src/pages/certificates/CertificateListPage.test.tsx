@@ -530,5 +530,18 @@ describe("证书列表域名列 Tooltip", () => {
     expect(tooltip.textContent).toContain("b.example.com");
     expect(tooltip.textContent).toContain("fp-tooltip");
     expect(tooltip.textContent).toContain("Let's Encrypt");
+
+    // 布局结构：条目为 flex 两栏、标签列与值列分离——值（多行域名）换行后
+    // 与「冒号之后」对齐，而非与标签首字顶格。
+    const entries = Array.from(tooltip.querySelectorAll<HTMLElement>("div")).filter(
+      (el) => el.style.display === "flex" && el.textContent?.startsWith("域名:"),
+    );
+    expect(entries).toHaveLength(1);
+    const label = entries[0].querySelector("strong");
+    expect(label?.textContent).toBe("域名:");
+    const valueNode = label?.nextElementSibling;
+    expect(valueNode?.tagName).toBe("SPAN");
+    expect(valueNode?.textContent).toContain("a.example.com");
+    expect(valueNode?.textContent).toContain("b.example.com");
   });
 });

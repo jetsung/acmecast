@@ -681,12 +681,14 @@ function TaskSchemaFields({
  * SSH 变体表单只保留的字段：`credential_id` 引用 SSH 主机档案——连接信息
  * （host/port/user）与认证材料在执行时从档案取，权限位用档案值或系统缺省；
  * `bastion_credential_id` 可选地再引用一份档案作跳板；其余是部署输入，
- * 绑定「证书装到哪、怎么重载」，档案不携带。声明顺序即渲染顺序：key 与
- * fullchain 成对、ca 与 reload_command 成对（两行两列）。
+ * 绑定「证书装到哪、怎么重载」，档案不携带。声明顺序即渲染顺序：
+ * `deploy_dir`（部署目录）在路径字段之前——路径字段填文件名即可，执行时
+ * 与目录拼接；留空目录时路径字段写绝对路径。
  */
 const SSH_FIELDS = [
   "credential_id",
   "bastion_credential_id",
+  "deploy_dir",
   "key_path",
   "fullchain_path",
   "ca_path",
@@ -718,6 +720,7 @@ const LOCAL_FIELD_ORDER = [
 const SSH_LABELS: Record<string, string> = {
   credential_id: "SSH 主机档案",
   bastion_credential_id: "跳板机",
+  deploy_dir: "部署目录",
 };
 
 /**

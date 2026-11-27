@@ -186,9 +186,9 @@ favicon 能力 MUST 可被自动化验证，避免后续重构或路由变更导
 #### R1 通配符单域
 当 `domains` 仅含一个元素且为 `*.xxx.xx` 形式时，`dns_zone` 缺省为剥离前缀 `*.` 后剩余的合法 zone。
 
-- 输入 `*.gcli.cn` → 推导 `gcli.cn`
+- 输入 `*.example.org` → 推导 `example.org`
 - 输入 `*.example.com` → 推导 `example.com`
-- 输入 `*.x.idev.top` → 候选逐级为 `x.idev.top`、`idev.top`，取提供商侧首个已托管者；若均无，则回退 `x.idev.top` 并由创建阶段报错（不在此处吞错）。
+- 输入 `*.x.example.com` → 候选逐级为 `x.example.com`、`example.com`，取提供商侧首个已托管者；若均无，则回退 `x.example.com` 并由创建阶段报错（不在此处吞错）。
 - 若剥离后非合法 zone（如 `*.com`、`*.`、`*.example.`），视为无法推导，按 R4 处理。
 
 #### R2 非通配三级及以上单域
@@ -201,7 +201,7 @@ favicon 能力 MUST 可被自动化验证，避免后续重构或路由变更导
 #### R3 单域且本身为二级域名
 当 `domains` 仅含一个元素且本身就是二级域名（`xxx.xx`，恰含一个点）时，`dns_zone` 即其本身。
 
-- 输入 `skiy.net`、`example.com` → 推导自身 `skiy.net`、`example.com`
+- 输入 `example.test`、`example.com` → 推导自身 `example.test`、`example.com`
 
 #### R4 无法推导或多域必填
 当无法通过 R1–R3 推导（如 `*.com`、空输入、非合法形态）或 `domains` 含多个域名时，`dns_zone` 为必填，缺失则在校验或执行期报错：
@@ -244,11 +244,11 @@ favicon 能力 MUST 可被自动化验证，避免后续重构或路由变更导
 
 | 输入 domains | 推导 dns_zone | 说明 |
 |---|---|---|
-| `*.gcli.cn` | `gcli.cn` | R1 |
-| `*.x.idev.top` | `x.idev.top` 或其父域的已托管者 | R1 + 逐级探测 |
+| `*.example.org` | `example.org` | R1 |
+| `*.x.example.com` | `x.example.com` 或其父域的已托管者 | R1 + 逐级探测 |
 | `a.example.com` | `example.com` | R2 |
 | `a.b.example.com` | `b.example.com` | R2 |
-| `skiy.net` | `skiy.net` | R3 |
+| `example.test` | `example.test` | R3 |
 | `*.com` | 无法推导，必填 | R4 |
 | `["example.com","*.example.com"]` | 必填 `dns_zone` | R4 |
 | `a.com` + `dns_zone=b.com` + `dns_alias=myalias.b.com` | 显式 `b.com`、写入名 `myalias.b.com` | R7 |
@@ -1109,7 +1109,7 @@ ORDER BY (archived_at IS NULL) DESC,  -- 活跃 (1) 排前，已归档 (0) 排�
 
 ### 同步云端证书列表端点
 
-控制台后端提供 HTTP 端点，按给定腾讯云凭据调用 `DescribeCertificates`（[接口文档](https://cloud.tencent.com/document/product/400/41671)）拉取云端服务器证书列表，供部署表单的「证书 ID」下拉框同步填充。端点 MUST 接收凭据标识，按凭据 `account_site` 走对应站点端点，返回每张证书的标识与显示文本：`value` 为云端证书 ID，`label` 为「证书ID（域名）」或「证书ID（域名 - 别名）」（如 `a9ZwitUs (idev.top - idev)`）。端点 MUST 遍历全部分页不漏返回；对非 `cloud.tencent` 类型凭据 MUST 以可读的输入错误失败，不发起云端调用。
+控制台后端提供 HTTP 端点，按给定腾讯云凭据调用 `DescribeCertificates`（[接口文档](https://cloud.tencent.com/document/product/400/41671)）拉取云端服务器证书列表，供部署表单的「证书 ID」下拉框同步填充。端点 MUST 接收凭据标识，按凭据 `account_site` 走对应站点端点，返回每张证书的标识与显示文本：`value` 为云端证书 ID，`label` 为「证书ID（域名）」或「证书ID（域名 - 别名）」（如 `a9ZwitUs (example.com - idev)`）。端点 MUST 遍历全部分页不漏返回；对非 `cloud.tencent` 类型凭据 MUST 以可读的输入错误失败，不发起云端调用。
 
 ### 部署表单证书 ID 下拉与同步交互
 

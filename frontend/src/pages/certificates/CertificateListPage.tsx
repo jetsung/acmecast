@@ -245,8 +245,12 @@ export function CertificateListPage() {
             title={
               <div>
                 {info.map(([label, value]) => (
-                  <div key={label}>
-                    <strong>{label}:</strong> {value}
+                  // 标签与值拆为 flex 两栏：值（多行域名/长文本）换行后与
+                  // 「冒号之后」对齐，不回绕到与标签首字顶格；minWidth:0 防
+                  // 长值撑破 flex 子项。
+                  <div key={label} style={{ display: "flex" }}>
+                    <strong style={{ flexShrink: 0 }}>{label}:</strong>
+                    <span style={{ marginLeft: 4, minWidth: 0 }}>{value}</span>
                   </div>
                 ))}
               </div>

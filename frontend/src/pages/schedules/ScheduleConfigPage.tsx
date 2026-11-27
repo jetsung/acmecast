@@ -21,16 +21,16 @@ const TRIGGER_SOURCE_LABEL: Record<string, { label: string; color: string }> = {
 };
 
 /** cron 前置校验（3.3）：无法解析时给出提示；能解析则预览下一次触发。 */
-function cronPreview(expr: string): { error?: string; next?: string } {
+function cronPreview(expr: string, timezone?: string): { error?: string; next?: string } {
   if (!expr.trim()) return {};
+  // 与后端共用同一时区语义：响应携带生效时区；未拿到时回退浏览器本地时区。
+  const tz = timezone || Intl.DateTimeFormat().resolvedOptions().timeZone;
   try {
     const parse = (CronExpressionParser as unknown as {
       parse: (expression: string, options?: { tz?: string }) => { next(): Date };
     }).parse;
-    const next = parse(expr, { tz: "UTC" }).next();
-    const local = next.toLocaleString("zh-CN", { hour12: false });
-    const utc = next.toISOString().replace("T", " ").slice(0, 16);
-    return { next: `${local}（UTC ${utc}）` };
+    const next = parse(expr, { tz }).next();
+    return { next: next.toLocaleString("zh-CN", { hour12: false }) };
   } catch (error) {
     return { error: error instanceof Error ? error.message : "表达式无法解析" };
   }
@@ -64,7 +64,7 @@ function GlobalScheduleCard({ onSaved }: { onSaved: () => void }) {
     }
   }, [globalSchedule]);
 
-  const preview = cron.trim() ? cronPreview(cron) : null;
+  const preview = cron.trim() ? cronPreview(cron, globalSchedule?.timezone) : null;
 
   const save = async () => {
     setSaving(true);
@@ -133,7 +133,9 @@ function GlobalScheduleCard({ onSaved }: { onSaved: () => void }) {
         </Space>
         {preview?.error && <Typography.Text type="danger">{preview.error}</Typography.Text>}
         {preview?.next && (
-          <Typography.Text type="secondary">下次触发时刻：{preview.next}</Typography.Text>
+          <Typography.Text type="secondary">
+            下次触发时刻（时区 {globalSchedule?.timezone ?? "本地"}）：{preview.next}
+          </Typography.Text>
         )}
       </Space>
     </Card>
@@ -461,9 +463,18 @@ function ScheduleEditorModal({
   const [form] = Form.useForm();
   const [saving, setSaving] = useState(false);
 
+  // 与后端共用同一时区语义：cron 预览按生效时区解析（全局调度响应携带）。
+  const { data: globalSchedule } = useQuery({
+    queryKey: ["global-schedule"],
+    queryFn: async () => {
+      const result = await client.GET("/api/schedules/global", {});
+      return unwrapData<GlobalScheduleRow>(result);
+    },
+  });
+
   const cronValue = Form.useWatch("cron", form);
   const enabledValue = Form.useWatch("enabled", form);
-  const preview = cronPreview(cronValue ?? "");
+  const preview = cronPreview(cronValue ?? "", globalSchedule?.timezone);
 
   useEffect(() => {
     if (!open) return;
@@ -549,7 +560,7 @@ function ScheduleEditorModal({
         )}
         {preview.next && (
           <Typography.Text type="secondary" style={{ display: "block", marginBottom: 8 }}>
-            下一次触发（按 UTC 判定，与后端一致）：{preview.next}
+            下一次触发（时区 {globalSchedule?.timezone ?? "本地"}）：{preview.next}
           </Typography.Text>
         )}
         <Space size={24} wrap>

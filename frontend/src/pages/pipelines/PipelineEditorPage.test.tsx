@@ -40,7 +40,7 @@ const TASKS = [
 vi.mock("@/api/client", () => ({
   ApiError: class ApiError extends Error {},
   fetchTencentSslCertificates: vi.fn(async (_credentialId: number) => [
-    { value: "CERTA", label: "CERTA (idev.top - idev)" },
+    { value: "CERTA", label: "CERTA (example.com - idev)" },
     { value: "CERTB", label: "CERTB (example.com)" },
   ]),
   client: {
@@ -207,9 +207,16 @@ vi.mock("@/api/client", () => ({
                                 cert_path: { type: ["string", "null"] },
                                 port: { type: ["integer", "null"] },
                                 host: { type: ["string", "null"] },
+                                deploy_dir: {
+                                  type: ["string", "null"],
+                                  description:
+                                    "远端证书保存目录（如 /srv/acme/ssl）；路径字段填文件名时执行时与它拼接，留空时路径字段写绝对路径。",
+                                },
                                 reload_command: {
                                   type: ["string", "null"],
                                   description: "写入成功后在远程执行的重载命令。",
+                                  // 模拟后端 input_schema 注入：重载命令渲染为多行文本框。
+                                  "x-multiline": true,
                                 },
                                 credential_id: {
                                   type: ["integer", "null"],
@@ -334,7 +341,7 @@ vi.mock("@/api/client", () => ({
                     dns_credential_id: 4,
                     dns_zone: null,
                     wait_propagation: true,
-                    contacts: ["i@jetsung.com"],
+                    contacts: ["admin@example.com"],
                     insecure_skip_verify: false,
                   },
                   enabled: true,
@@ -444,7 +451,7 @@ describe("PipelineEditorPage", () => {
         dns_credential_id: 4,
         dns_zone: null,
         wait_propagation: true,
-        contacts: ["i@jetsung.com"],
+        contacts: ["admin@example.com"],
         insecure_skip_verify: false,
       }),
     );
@@ -721,10 +728,13 @@ describe("PipelineEditorPage", () => {
     for (const banned of ["host", "port", "user", "auth", "cert_mode", "key_mode", "cert_path"]) {
       expect(screen.queryByLabelText(banned)).toBeNull();
     }
+    expect(screen.getByLabelText("部署目录")).toBeTruthy();
     expect(screen.getByLabelText("fullchain_path")).toBeTruthy();
     expect(screen.getByLabelText("ca_path")).toBeTruthy();
     expect(screen.getByLabelText("key_path")).toBeTruthy();
-    expect(screen.getByLabelText("reload_command")).toBeTruthy();
+    // 重载命令按 x-multiline 渲染为多行文本框。
+    const reload = screen.getByLabelText("reload_command");
+    expect(reload.tagName).toBe("TEXTAREA");
     // 目标主机档案选定后跳板字段渲染出来（未选档案时隐藏，见联动用例）。
     expect(screen.getByLabelText("跳板机")).toBeTruthy();
 
@@ -738,31 +748,36 @@ describe("PipelineEditorPage", () => {
     expect(rootOrder.indexOf("target")).toBeLessThan(rootOrder.indexOf("SSH 主机档案"));
 
     // 布局:SSH 主机档案、跳板机各独占一行(右侧空列占位),
-    // key/fullchain 与 ca/reload_command 两两成对同行(半宽)。
+    // 部署目录与路径字段两两成对同行(半宽);重载命令为多行文本框,
+    // 按 x-multiline 语义整行渲染(span 24)。
     const colOf = (label: string) =>
       allItems.find((item) => item.querySelector("label")?.textContent === label)
         ?.closest(".ant-col");
     expect(colOf("SSH 主机档案")?.className).toContain("ant-col-12");
     expect(colOf("跳板机")?.className).toContain("ant-col-12");
+    expect(colOf("部署目录")?.className).toContain("ant-col-12");
     expect(colOf("key_path")?.className).toContain("ant-col-12");
     expect(colOf("fullchain_path")?.className).toContain("ant-col-12");
     expect(colOf("ca_path")?.className).toContain("ant-col-12");
-    expect(colOf("reload_command")?.className).toContain("ant-col-12");
+    expect(colOf("reload_command")?.className).toContain("ant-col-24");
     // 空列占位:档案与跳板所在行的行尾各有一个无 label 的空列。
     const emptyCols = document.querySelectorAll<HTMLElement>(".ant-col[aria-hidden]");
     expect(emptyCols.length).toBe(2);
 
-    // 渲染顺序随 SSH_FIELDS(注入的 x-field-order):key→fullchain→ca→reload_command。
-    const fieldOrder = ["key_path", "fullchain_path", "ca_path", "reload_command"].map((label) =>
-      rootOrder.indexOf(label),
+    // 渲染顺序随 SSH_FIELDS(注入的 x-field-order):
+    // deploy_dir→key_path→fullchain_path→ca_path→reload_command。
+    const fieldOrder = ["部署目录", "key_path", "fullchain_path", "ca_path", "reload_command"].map(
+      (label) => rootOrder.indexOf(label),
     );
-    expect(fieldOrder[0]).toBeLessThan(fieldOrder[1]);
-    expect(fieldOrder[1]).toBeLessThan(fieldOrder[2]);
-    expect(fieldOrder[2]).toBeLessThan(fieldOrder[3]);
+    expect(fieldOrder[0]).toBeGreaterThan(-1);
+    for (let i = 0; i < fieldOrder.length - 1; i++) {
+      expect(fieldOrder[i]).toBeLessThan(fieldOrder[i + 1]);
+    }
 
-    fireEvent.change(screen.getByLabelText("fullchain_path"), { target: { value: "/srv/ssl/site.fullchain.cer" } });
-    fireEvent.change(screen.getByLabelText("ca_path"), { target: { value: "/srv/ssl/site.ca.cer" } });
-    fireEvent.change(screen.getByLabelText("key_path"), { target: { value: "/srv/ssl/site.key" } });
+    fireEvent.change(screen.getByLabelText("部署目录"), { target: { value: "/srv/acme/ssl" } });
+    fireEvent.change(screen.getByLabelText("fullchain_path"), { target: { value: "example.cn.fullchain.cer" } });
+    fireEvent.change(screen.getByLabelText("ca_path"), { target: { value: "example.cn.ca.cer" } });
+    fireEvent.change(screen.getByLabelText("key_path"), { target: { value: "example.cn.key" } });
 
     const body = await save();
     expect(body.steps[0].input).toEqual({
@@ -773,9 +788,10 @@ describe("PipelineEditorPage", () => {
       config: {
         credential_id: 10,
         bastion_credential_id: null,
-        fullchain_path: "/srv/ssl/site.fullchain.cer",
-        ca_path: "/srv/ssl/site.ca.cer",
-        key_path: "/srv/ssl/site.key",
+        deploy_dir: "/srv/acme/ssl",
+        fullchain_path: "example.cn.fullchain.cer",
+        ca_path: "example.cn.ca.cer",
+        key_path: "example.cn.key",
       },
     });
   });
@@ -1074,7 +1090,7 @@ describe("PipelineEditorPage", () => {
     await waitFor(() => expect(vi.mocked(fetchTencentSslCertificates)).toHaveBeenCalled());
 
     // 同步后下拉选项可用：选 CERTA。选中后 repeatable 禁用且值固定。
-    await chooseOption(screen.getByLabelText("certificate_id"), "CERTA (idev.top - idev)");
+    await chooseOption(screen.getByLabelText("certificate_id"), "CERTA (example.com - idev)");
     const repeatSwitch = await waitFor(() => {
       const repeat = screen.getByLabelText("repeatable");
       expect(
@@ -1121,7 +1137,7 @@ describe("PipelineEditorPage", () => {
   }
 
   it("cert.apply 多域名留空 dns_zone 被拦截，填写后放行", async () => {
-    // 多域名下静默推导 zone 容易踩错（*.skiy.net 曾被推成 net），表单要求
+    // 多域名下静默推导 zone 容易踩错（*.example.test 曾被推成 net），表单要求
     // 显式配置：domains ≥ 2 时 dns_zone 必填。保存成功会跳转页面，
     // 所以「拦截 → 放行」在同一次渲染里完成，删减场景另起用例。
     posted.length = 0;

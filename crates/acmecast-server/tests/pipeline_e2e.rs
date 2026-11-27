@@ -476,7 +476,7 @@ async fn the_full_pipeline_applies_stores_and_deploys_a_certificate() {
 }
 
 /// zone 推导失败必须早于任何 DNS 调用：无点单标签（`com`）不符合
-/// R4 的合法 zone 形态，无法推导。历史上一度把注册域 `skiy.net`
+/// R4 的合法 zone 形态，无法推导。历史上一度把注册域 `example.test`
 /// 推导成 `net` 拿去查 Cloudflare 才报错（histories/26）；R3 起二级域
 /// 推导为自身，无法推导的场景收窄为无点等非法形态，仍要求早失败
 /// 并提示显式配置，错误里带上域名。
@@ -930,6 +930,7 @@ async fn renewal_scan_triggers_a_single_reissue() {
                 renewal_domains: Some(vec!["e2e.acmecast.test".to_owned()]),
                 renewal_threshold_days: None,
             },
+            chrono_tz::UTC,
         )
         .await
         .expect("调度应能保存");
@@ -1114,6 +1115,7 @@ async fn three_consecutive_reissues_archive_each_previous_active_certificate() {
                 renewal_domains: Some(vec!["e2e.acmecast.test".to_owned()]),
                 renewal_threshold_days: None,
             },
+            chrono_tz::UTC,
         )
         .await
         .expect("调度应能保存");

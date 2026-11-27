@@ -90,7 +90,7 @@ impl<'a> SchedulerEngine<'a> {
                 continue;
             }
 
-            let next = acmecast_store::repository::next_cron_trigger(cron, now);
+            let next = acmecast_store::repository::next_cron_trigger(cron, now, self.config.tz);
             if schedule.catch_up {
                 // 追赶最近一次：把「错过的最后一个点」补上——实际执行一次。
                 // 运行中检查拦下时不记 last（没有真触发），只推进触发点。
@@ -148,7 +148,7 @@ impl<'a> SchedulerEngine<'a> {
         if global.enabled && global.cron.is_some() {
             let cron = global.cron.as_deref().expect("enabled 时必有 cron");
             if global.next_trigger_at.is_none_or(|next| next <= now) {
-                let next = next_cron_trigger(cron, now);
+                let next = next_cron_trigger(cron, now, self.config.tz);
                 if global.catch_up {
                     match self.start_global_sequence(now) {
                         Ok(true) => {
@@ -230,7 +230,8 @@ impl<'a> SchedulerEngine<'a> {
                     // 定时触发也是一次真实触发，落审计记录（9.7）。
                     self.record_trigger(schedule.pipeline_id, TriggerSource::Cron, None, now)
                         .await?;
-                    let next = acmecast_store::repository::next_cron_trigger(cron, now);
+                    let next =
+                        acmecast_store::repository::next_cron_trigger(cron, now, self.config.tz);
                     if next.is_none() {
                         tracing::warn!(
                             pipeline_id = schedule.pipeline_id,
@@ -248,7 +249,11 @@ impl<'a> SchedulerEngine<'a> {
                         .mark_triggered(
                             schedule.pipeline_id,
                             Some(None),
-                            acmecast_store::repository::next_cron_trigger(cron, now),
+                            acmecast_store::repository::next_cron_trigger(
+                                cron,
+                                now,
+                                self.config.tz,
+                            ),
                         )
                         .await?;
                 }
@@ -284,7 +289,7 @@ impl<'a> SchedulerEngine<'a> {
             return Ok(());
         }
 
-        let next = next_cron_trigger(cron, now);
+        let next = next_cron_trigger(cron, now, self.config.tz);
         if next.is_none() {
             tracing::warn!(
                 cron = %cron,

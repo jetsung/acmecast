@@ -33,6 +33,20 @@ pub struct AppConfig {
     /// 日志级别与输出格式。
     #[serde(default)]
     pub log: LogConfig,
+    /// 调度参数（cron 触发点时区等）。
+    #[serde(default)]
+    pub scheduler: SchedulerConfig,
+}
+
+/// 调度相关配置。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct SchedulerConfig {
+    /// cron 触发点的解释时区（IANA 名，如 `Asia/Shanghai`）。
+    ///
+    /// 缺省（`None`）取服务器本地时区；cron 表达式中的「时」「分」按此时区
+    /// 解释，存储仍为 UTC 时刻。见 specs：cron 触发点按可配置时区判定。
+    #[serde(default)]
+    pub timezone: Option<String>,
 }
 
 /// HTTP 服务与静态资源托管配置。
@@ -276,6 +290,12 @@ impl AppConfig {
         if let Ok(v) = var("ACMECAST__SECURITY__CREDENTIAL_KEY") {
             self.security.credential_key = Some(v);
         }
+        // 调度时区：用平名（ACMECAST_TIMEZONE）而非双下划线全名，好记好写。
+        if let Ok(v) = var("ACMECAST_TIMEZONE")
+            && !v.trim().is_empty()
+        {
+            self.scheduler.timezone = Some(v);
+        }
         if let Ok(v) = var("ACMECAST__SECURITY__JWT_SECRET") {
             self.security.jwt_secret = Some(v);
         }
@@ -334,7 +354,21 @@ impl AppConfig {
         if self.database.url.trim().is_empty() {
             return Err(Error::Config("缺少 database.url".into()));
         }
+
+        // 时区在启动时就当场解析：配置写错不如启动报错——拖到第一次触发
+        // 才发现，用户只会看到「到点没执行」。
+        scheduler_timezone(&self.scheduler)?;
         Ok(())
+    }
+
+    /// 解析生效的调度时区：显式配置优先，否则取服务器本地时区；
+    /// 本地时区探测失败回退 UTC（容器内可能没有 tzdata）。
+    ///
+    /// 返回的是解析后的 `chrono_tz::Tz`，调用方（调度引擎与 HTTP 保存路径）
+    /// 直接持有同一份，保证「保存时认为的」与「引擎执行的」是同一时区。
+    #[must_use]
+    pub fn scheduler_tz(&self) -> chrono_tz::Tz {
+        resolve_tz(self.scheduler.timezone.as_deref())
     }
 
     /// 判定数据库方言，委托给 [`DatabaseConfig::kind`]。
@@ -345,6 +379,48 @@ impl AppConfig {
     /// 数据目录路径。
     pub fn data_dir(&self) -> PathBuf {
         PathBuf::from(&self.storage.data_dir)
+    }
+}
+
+/// 校验配置中的调度时区可解析；`None`（跟随时区探测）视为合法。
+pub fn scheduler_timezone(config: &SchedulerConfig) -> Result<()> {
+    if let Some(name) = config.timezone.as_deref() {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(Error::Config(
+                "scheduler.timezone 不能为空串：留空表示跟随服务器本地时区".into(),
+            ));
+        }
+        if name.parse::<chrono_tz::Tz>().is_err() {
+            return Err(Error::Config(format!(
+                "scheduler.timezone `{name}` 不是合法的 IANA 时区名（例如 Asia/Shanghai）"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// 解析生效时区：显式配置优先；否则先读标准的 `TZ` 环境变量（Docker/K8s
+/// 部署的惯用手段，与 glibc 语义一致——容器内往往没有 `/etc/localtime`），
+/// 再回退到系统探测，全部失败按 UTC 计算并 `warn`。
+#[must_use]
+pub fn resolve_tz(configured: Option<&str>) -> chrono_tz::Tz {
+    if let Some(name) = configured.and_then(|name| name.trim().parse::<chrono_tz::Tz>().ok()) {
+        return name;
+    }
+    if let Ok(name) = std::env::var("TZ")
+        && let Ok(tz) = name.trim().parse::<chrono_tz::Tz>()
+    {
+        return tz;
+    }
+    match iana_time_zone::get_timezone() {
+        Ok(tz_name) => tz_name.parse::<chrono_tz::Tz>().unwrap_or(chrono_tz::UTC),
+        Err(_) => {
+            tracing::warn!(
+                "无法探测服务器本地时区，cron 触发点回退按 UTC 计算；可显式配置 scheduler.timezone 或 TZ 环境变量"
+            );
+            chrono_tz::UTC
+        }
     }
 }
 
@@ -371,6 +447,54 @@ impl DatabaseKind {
                 "不支持的数据库方言 `{other}`，仅支持 sqlite / mysql / postgres"
             ))),
         }
+    }
+}
+
+#[cfg(test)]
+// Rust 2024 起 `std::env::set_var` / `remove_var` 为 unsafe。本模块用例已标注
+// `#[serial]` 独占环境变量键，运行时无并发访问，故允许在此使用 unsafe。
+#[allow(unsafe_code)]
+mod timezone_tests {
+    use super::{SchedulerConfig, resolve_tz, scheduler_timezone};
+    use serial_test::serial;
+
+    #[test]
+    fn valid_iana_names_are_accepted() {
+        let config = SchedulerConfig {
+            timezone: Some("Asia/Shanghai".into()),
+        };
+        assert!(scheduler_timezone(&config).is_ok());
+    }
+
+    #[test]
+    fn invalid_iana_names_are_rejected() {
+        for bad in ["Not/AZone", ""] {
+            let config = SchedulerConfig {
+                timezone: Some(bad.into()),
+            };
+            assert!(scheduler_timezone(&config).is_err(), "`{bad}` 应被拒绝");
+        }
+    }
+
+    #[test]
+    fn missing_timezone_is_valid_and_resolves_to_a_tz() {
+        assert!(scheduler_timezone(&SchedulerConfig::default()).is_ok());
+        // 未配置时按探测结果（或 UTC 回退）解析，总之必须拿到一个时区。
+        assert!(resolve_tz(None) == resolve_tz(None));
+    }
+
+    #[test]
+    #[serial]
+    fn tz_env_var_is_honored_when_nothing_is_configured() {
+        // Docker 部署只设 TZ（如 TZ=Asia/Shanghai）即可标定时区。
+        // Rust 2024 下 set_var/remove_var 为 unsafe；该键独占本测试进程内无并发。
+        unsafe { std::env::set_var("TZ", "Asia/Shanghai") };
+        assert_eq!(
+            resolve_tz(None),
+            resolve_tz(Some("Asia/Shanghai")),
+            "TZ 环境变量应作为缺省时区来源"
+        );
+        unsafe { std::env::remove_var("TZ") };
     }
 }
 

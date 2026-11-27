@@ -54,6 +54,7 @@ async-stream.workspace = true
 futures-util.workspace = true
 axum.workspace = true
 chrono.workspace = true
+chrono-tz.workspace = true
 # 访问令牌（HS256 JWT）。
 jsonwebtoken.workspace = true
 # cert.apply 步骤在申请时生成密钥对与 CSR。

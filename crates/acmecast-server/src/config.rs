@@ -59,6 +59,10 @@ pub struct ServerConfig {
     pub network_timeout: std::time::Duration,
     /// Redis / Valkey 缓存连接串（可选）；缺省时禁用缓存。
     pub redis_url: Option<String>,
+    /// cron 触发点的解释时区；来自 `[scheduler] timezone` 与环境变量
+    /// `ACMECAST_TIMEZONE` 的合并（`builtin < config.toml < env`）。
+    /// 缺省按服务器本地时区（探测失败回退 UTC）。
+    pub scheduler_tz: chrono_tz::Tz,
 }
 
 impl Default for ServerConfig {
@@ -79,6 +83,7 @@ impl Default for ServerConfig {
             proxy_url: None,
             network_timeout: default_network_timeout(),
             redis_url: None,
+            scheduler_tz: acmecast_core::config::resolve_tz(None),
         }
     }
 }
@@ -121,6 +126,18 @@ pub struct AppConfig {
     /// 流水线网络操作超时；缺省段即内置默认值。
     #[serde(default)]
     pub network: NetworkSection,
+    /// 调度参数：cron 触发点的解释时区。
+    #[serde(default)]
+    pub scheduler: SchedulerSection,
+}
+
+/// `config.toml` 中 `[scheduler]` 段的字段：cron 触发点时区。
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SchedulerSection {
+    /// IANA 时区名（如 `Asia/Shanghai`）；留空/缺省取服务器本地时区。
+    #[serde(default)]
+    pub timezone: Option<String>,
 }
 
 /// `config.toml` 中 `[network]` 段的字段：流水线网络操作超时。
@@ -379,6 +396,11 @@ fn apply_file(config: &mut ServerConfig, file: &AppConfig) -> acmecast_core::Res
     if s.redis_url.is_some() {
         config.redis_url = s.redis_url.clone();
     }
+    // 调度时区：文件值当场解析，非法名让服务拒绝启动——触发点错位的最坏
+    // 表现是「到点不执行」，用户无从排查。
+    if let Some(name) = file.scheduler.timezone.as_deref() {
+        config.scheduler_tz = parse_tz_name(name, "scheduler.timezone")?;
+    }
     Ok(())
 }
 
@@ -463,7 +485,20 @@ fn apply_env(config: &mut ServerConfig) -> acmecast_core::Result<()> {
             .map_err(|e| acmecast_core::Error::Config(format!("{PROXY_URL_ENV} 不合法: {e}")))?;
         config.proxy_url = Some(url);
     }
+    // 调度时区 env 覆盖文件值：非空才覆盖，非法同样拒绝启动（与文件值同一口径）。
+    if let Some(name) = normalized_proxy_url(std::env::var("ACMECAST_TIMEZONE").ok().as_deref()) {
+        config.scheduler_tz = parse_tz_name(&name, "ACMECAST_TIMEZONE")?;
+    }
     Ok(())
+}
+
+/// 解析 IANA 时区名；非法名返回配置错误并指明来源（文件键或环境变量名）。
+fn parse_tz_name(name: &str, source: &str) -> acmecast_core::Result<chrono_tz::Tz> {
+    name.trim().parse::<chrono_tz::Tz>().map_err(|_| {
+        acmecast_core::Error::Config(format!(
+            "{source} `{name}` 不是合法的 IANA 时区名（例如 Asia/Shanghai）"
+        ))
+    })
 }
 
 /// 按优先级从环境变量解析 Redis / Valkey 缓存地址：
@@ -546,6 +581,13 @@ pub fn template_content() -> String {
     );
     out.push_str("[proxy]\n");
     out.push_str("# url = \"socks5://127.0.0.1:7890\"\n\n");
+
+    out.push_str("# 调度参数（可选）：cron 触发点的解释时区。\n");
+    out.push_str("# 填 IANA 时区名（如 Asia/Shanghai）；留空或本段缺省取服务器本地时区\n");
+    out.push_str("#（探测失败回退 UTC）。cron 表达式中的「时」「分」按此时区解释，\n");
+    out.push_str("# 全局调度与流水线级调度共用。环境变量 ACMECAST_TIMEZONE 可覆盖。\n");
+    out.push_str("[scheduler]\n");
+    out.push_str("# timezone = \"Asia/Shanghai\"\n\n");
 
     out.push_str("# DNS-01 传播检测解析器扩展（可选）。\n");
     out.push_str("# type: doh / dot / dns；dot/dns 目前仅校验，传输层尚未实现。\n");

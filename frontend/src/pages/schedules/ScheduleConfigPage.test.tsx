@@ -101,6 +101,7 @@ function defaultGetImplementation(path: string) {
               last_triggered_at: null,
               next_trigger_at: "2026-12-01T03:00:00Z",
               updated_at: "2026-11-20T00:00:00Z",
+              timezone: "Asia/Shanghai",
             },
           },
           response: new Response(),
@@ -148,15 +149,15 @@ function renderPage() {
 }
 
 describe("cron 预览", () => {
-  it("按 UTC 口径预览下一次触发并标注 UTC", async () => {
+  it("按后端生效时区预览下一次触发并标注该时区", async () => {
     renderPage();
     fireEvent.click(screen.getByRole("button", { name: "新建调度" }));
     const cronInput = await screen.findByPlaceholderText("0 3 * * *");
     fireEvent.change(cronInput, { target: { value: "0 3 * * *" } });
 
-    // toISOString 恒为 UTC：UTC 03:00 与浏览器时区无关，口径由此钉死。
+    // 预览与后端共用同一时区语义：标注生效时区而非 UTC 双轨。
     await waitFor(() => {
-      expect(screen.getByText(/下一次触发.*UTC.*03:00/)).toBeTruthy();
+      expect(screen.getByText(/下一次触发（时区 Asia\/Shanghai）/)).toBeTruthy();
     });
   });
 

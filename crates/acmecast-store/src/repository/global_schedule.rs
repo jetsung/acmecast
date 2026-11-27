@@ -81,7 +81,11 @@ impl<'db> GlobalScheduleRepository<'db> {
     /// cron 非法或「启用但无 cron」时拒绝保存；`next_trigger_at` 随保存算出
     /// 初始值，引擎装载时会重算兜底（与流水线级调度同一理由：让「刚保存、
     /// 引擎还没装载」的窗口里也有合理的下一次触发点）。
-    pub async fn save(&self, input: GlobalScheduleInput) -> Result<GlobalScheduleConfig> {
+    pub async fn save(
+        &self,
+        input: GlobalScheduleInput,
+        tz: chrono_tz::Tz,
+    ) -> Result<GlobalScheduleConfig> {
         let cron = input
             .cron
             .map(|expr| expr.trim().to_owned())
@@ -98,7 +102,7 @@ impl<'db> GlobalScheduleRepository<'db> {
         let now = Utc::now();
         let next_trigger_at = cron
             .as_deref()
-            .and_then(|expr| next_cron_trigger(expr, now));
+            .and_then(|expr| next_cron_trigger(expr, now, tz));
 
         let existing = global_schedule::Entity::find().one(self.db).await?;
         let row = match existing {

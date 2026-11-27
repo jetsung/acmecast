@@ -230,6 +230,7 @@ async fn run_suite(db: DatabaseConnection) {
                 renewal_domains: Some(vec![domain.clone()]),
                 renewal_threshold_days: None,
             },
+            chrono_tz::UTC,
         )
         .await
         .expect("调度应能保存");
@@ -245,6 +246,7 @@ async fn run_suite(db: DatabaseConnection) {
                 renewal_domains: None,
                 renewal_threshold_days: None,
             },
+            chrono_tz::UTC,
         )
         .await;
     assert!(rejected.is_err(), "非法 cron 应被拒绝");

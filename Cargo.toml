@@ -51,6 +51,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # 时间
 chrono = { version = "0.4", features = ["serde"] }
+# IANA 时区数据库（cron 触发点按可配置时区解释）。
+chrono-tz = { version = "0.10", features = ["serde"] }
+# 从操作系统探测本地 IANA 时区名。
+iana-time-zone = "0.1"
 # cron 表达式解析与触发时刻推算（定时调度）。
 cron = "0.13"
 

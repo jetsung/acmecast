@@ -184,6 +184,7 @@ pub fn spawn_scheduler(
     redis: Option<Arc<redis::aio::ConnectionManager>>,
     run_control: Arc<crate::run_control::RunControl>,
     shutdown: watch::Receiver<bool>,
+    tz: chrono_tz::Tz,
 ) -> JoinHandle<()> {
     let cipher = cipher.cloned();
     tokio::spawn(async move {
@@ -198,7 +199,14 @@ pub fn spawn_scheduler(
             )
             .with_run_control(run_control),
         );
-        let engine = SchedulerEngine::new(&db, launcher, SchedulerConfig::default());
+        let engine = SchedulerEngine::new(
+            &db,
+            launcher,
+            SchedulerConfig {
+                tz,
+                ..Default::default()
+            },
+        );
 
         if let Err(error) = engine.load(chrono::Utc::now()).await {
             tracing::error!(%error, "调度装载失败，本进程内调度不可用");
